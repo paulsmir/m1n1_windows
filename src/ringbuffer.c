@@ -1,6 +1,9 @@
 #include "ringbuffer.h"
+#ifdef RINGBUFFER_HOST_TEST
+#include <stdlib.h>
+#else
 #include "malloc.h"
-#include "types.h"
+#endif
 
 ringbuffer_t *ringbuffer_alloc(size_t len)
 {
@@ -77,5 +80,7 @@ size_t ringbuffer_get_used(ringbuffer_t *bfr)
 
 size_t ringbuffer_get_free(ringbuffer_t *bfr)
 {
-    return bfr->len - ringbuffer_get_used(bfr);
+    if (!bfr->len)
+        return 0;
+    return bfr->len - ringbuffer_get_used(bfr) - 1;
 }

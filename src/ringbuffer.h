@@ -1,7 +1,13 @@
 #ifndef RINGBUFFER_H
 #define RINGBUFFER_H
 
+#ifdef RINGBUFFER_HOST_TEST
+#include <stddef.h>
+#include <stdint.h>
+typedef uint8_t u8;
+#else
 #include "types.h"
+#endif
 
 typedef struct {
     u8 *buffer;
