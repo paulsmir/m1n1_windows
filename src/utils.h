@@ -437,6 +437,7 @@ typedef struct {
 #define DECLARE_SPINLOCK(n) spinlock_t n = SPINLOCK_INIT;
 
 void spin_init(spinlock_t *lock);
+bool spin_try_lock(spinlock_t *lock);
 void spin_lock(spinlock_t *lock);
 void spin_unlock(spinlock_t *lock);
 

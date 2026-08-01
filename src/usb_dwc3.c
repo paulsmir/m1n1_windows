@@ -1426,6 +1426,13 @@ bool usb_dwc3_can_write(dwc3_dev_t *dev, cdc_acm_pipe_id_t pipe)
     return dev->pipe[pipe].ready;
 }
 
+size_t usb_dwc3_write_space(dwc3_dev_t *dev, cdc_acm_pipe_id_t pipe)
+{
+    if (!dev || !dev->pipe[pipe].ready || !dev->pipe[pipe].device2host)
+        return 0;
+    return ringbuffer_get_free(dev->pipe[pipe].device2host);
+}
+
 void usb_dwc3_flush(dwc3_dev_t *dev, cdc_acm_pipe_id_t pipe)
 {
     if (!dev || !dev->pipe[pipe].ready)

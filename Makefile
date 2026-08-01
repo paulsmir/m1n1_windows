@@ -160,7 +160,7 @@ OBJECTS := \
 	tunables.o tunables_static.o \
 	tps6598x.o \
 	uart.o \
-	uartproxy.o \
+	uartproxy.o uartproxy_event.o \
 	usb.o usb_dwc3.o \
 	utils.o utils_asm.o \
 	vsprintf.o \

@@ -26,11 +26,17 @@ typedef enum _iodev_usage_t {
 struct iodev_ops {
     ssize_t (*can_read)(void *opaque);
     bool (*can_write)(void *opaque);
+    size_t (*write_space)(void *opaque);
     ssize_t (*read)(void *opaque, void *buf, size_t length);
     ssize_t (*write)(void *opaque, const void *buf, size_t length);
     ssize_t (*queue)(void *opaque, const void *buf, size_t length);
     void (*flush)(void *opaque);
     void (*handle_events)(void *opaque);
+};
+
+struct iodev_iovec {
+    const void *data;
+    size_t length;
 };
 
 struct iodev {
@@ -49,6 +55,8 @@ bool iodev_can_write(iodev_id_t id);
 ssize_t iodev_read(iodev_id_t id, void *buf, size_t length);
 ssize_t iodev_write(iodev_id_t id, const void *buf, size_t length);
 ssize_t iodev_queue(iodev_id_t id, const void *buf, size_t length);
+bool iodev_try_writev(iodev_id_t id, const struct iodev_iovec *iov, size_t iov_count,
+                      size_t total_size);
 void iodev_flush(iodev_id_t id);
 void iodev_handle_events(iodev_id_t id);
 void iodev_lock(iodev_id_t id);

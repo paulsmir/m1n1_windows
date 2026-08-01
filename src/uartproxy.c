@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: MIT */
 
 #include "uartproxy.h"
+#include "uartproxy_event.h"
 #include "assert.h"
 #include "exception.h"
 #include "iodev.h"
@@ -94,11 +95,6 @@ static u32 __attribute__((noinline)) checksum_block(void *start, u32 length, u32
 static inline u32 checksum_start(void *start, u32 length)
 {
     return checksum_block(start, length, CHECKSUM_INIT);
-}
-
-static inline u32 checksum_add(void *start, u32 length, u32 sum)
-{
-    return checksum_block(start, length, sum);
 }
 
 static inline u32 checksum_finish(u32 sum)
@@ -296,22 +292,33 @@ int uartproxy_run(struct uartproxy_msg_start *start)
 
 void uartproxy_send_event(u16 event_type, void *data, u16 length)
 {
-    UartEventHdr hdr;
-    u32 csum;
+    uartproxy_try_send_eventv(event_type, NULL, 0, data, length);
+}
 
-    hdr.type = REQ_EVENT;
-    hdr.len = length;
-    hdr.event_type = event_type;
+static bool uartproxy_iodev_try_writev(void *opaque, const struct uartproxy_iovec *iov,
+                                       u32 iov_count, u32 total_size)
+{
+    struct iodev_iovec vectors[4];
 
-    if (disable_data_csums) {
-        csum = CHECKSUM_SENTINEL;
-    } else {
-        csum = checksum_start(&hdr, sizeof(UartEventHdr));
-        csum = checksum_finish(checksum_add(data, length, csum));
+    if (iov_count > sizeof(vectors) / sizeof(vectors[0]))
+        return false;
+    for (u32 i = 0; i < iov_count; i++) {
+        vectors[i].data = iov[i].data;
+        vectors[i].length = iov[i].length;
     }
-    iodev_lock(uartproxy_iodev);
-    iodev_queue(uartproxy_iodev, &hdr, sizeof(UartEventHdr));
-    iodev_queue(uartproxy_iodev, data, length);
-    iodev_write(uartproxy_iodev, &csum, sizeof(csum));
-    iodev_unlock(uartproxy_iodev);
+
+    return iodev_try_writev((iodev_id_t)(uintptr_t)opaque, vectors, iov_count, total_size);
+}
+
+bool uartproxy_try_send_eventv(u16 event_type, const void *prefix, u16 prefix_len,
+                               const void *payload, u16 payload_len)
+{
+    const struct uartproxy_event_backend backend = {
+        .try_writev = uartproxy_iodev_try_writev,
+        .opaque = (void *)(uintptr_t)uartproxy_iodev,
+        .data_checksums_disabled = disable_data_csums,
+    };
+
+    return uartproxy_event_try_sendv(&backend, event_type, prefix, prefix_len, payload,
+                                     payload_len);
 }

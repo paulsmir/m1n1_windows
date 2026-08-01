@@ -41,5 +41,7 @@ struct uartproxy_msg_start {
 
 int uartproxy_run(struct uartproxy_msg_start *start);
 void uartproxy_send_event(u16 event_type, void *data, u16 length);
+bool uartproxy_try_send_eventv(u16 event_type, const void *prefix, u16 prefix_len,
+                               const void *payload, u16 payload_len);
 
 #endif

@@ -114,6 +114,43 @@ ssize_t iodev_queue(iodev_id_t id, const void *buf, size_t length)
     return ret;
 }
 
+bool iodev_try_writev(iodev_id_t id, const struct iodev_iovec *iov, size_t iov_count,
+                      size_t total_size)
+{
+    if (id >= IODEV_NUM || !iodevs[id] || !iodevs[id]->ops->queue ||
+        !iodevs[id]->ops->write_space || !iodevs[id]->ops->write || (!iov && iov_count))
+        return false;
+
+    bool locked = false;
+    if (mmu_active()) {
+        if (!spin_try_lock(&iodevs[id]->lock))
+            return false;
+        locked = true;
+    }
+
+    bool ok = iodevs[id]->ops->write_space(iodevs[id]->opaque) >= total_size;
+    if (ok) {
+        size_t queued = 0;
+        for (size_t i = 0; i < iov_count; i++) {
+            ssize_t wrote = iodevs[id]->ops->queue(iodevs[id]->opaque, iov[i].data,
+                                                   iov[i].length);
+            if (wrote < 0 || (size_t)wrote != iov[i].length) {
+                ok = false;
+                break;
+            }
+            queued += iov[i].length;
+        }
+        if (ok && queued == total_size)
+            iodevs[id]->ops->write(iodevs[id]->opaque, NULL, 0);
+        else
+            ok = false;
+    }
+
+    if (locked)
+        spin_unlock(&iodevs[id]->lock);
+    return ok;
+}
+
 void iodev_flush(iodev_id_t id)
 {
     if (!iodevs[id] || !iodevs[id]->ops->flush)

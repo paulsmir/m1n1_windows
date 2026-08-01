@@ -138,6 +138,25 @@ void spin_init(spinlock_t *lock)
     lock->count = 0;
 }
 
+bool spin_try_lock(spinlock_t *lock)
+{
+    s64 me = smp_id();
+    s64 expected = -1;
+
+    if (__atomic_load_n(&lock->lock, __ATOMIC_ACQUIRE) == me) {
+        lock->count++;
+        return true;
+    }
+
+    if (!__atomic_compare_exchange_n(&lock->lock, &expected, me, false, __ATOMIC_ACQUIRE,
+                                     __ATOMIC_RELAXED))
+        return false;
+
+    assert(lock->count == 0);
+    lock->count = 1;
+    return true;
+}
+
 void spin_lock(spinlock_t *lock)
 {
     s64 tmp;
