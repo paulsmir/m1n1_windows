@@ -493,6 +493,7 @@ static struct {
     int fpc_read;
     int fpc_state;
     u64 bcd[5];         // KiBugCheckData: code + params 1..4, from x19
+    u64 bcd_va;
     bool bcd_ok;
     u64 stack[32];      // filled a few words per tick, see hv_read_stack_slice()
     u64 stack_pa;
@@ -632,7 +633,20 @@ static void __attribute__((noinline)) hv_collect_stuck(struct exc_info *ctx)
     // settles the 0xA-vs-0xC8 question and says whether the fault happened at raised
     // IRQL. One translation, five reads, done once here.
     //
-    u64 bcd_pa = hv_translate(stuck.regs[19] & ~7UL, false, false, NULL);
+    stuck.bcd_va = stuck.regs[19] & ~7UL;
+    u64 bcd_pa = hv_translate(stuck.bcd_va, false, false, NULL);
+    //
+    // Once KiDisplayBlueScreen is running, x19 no longer points at KiBugCheckData. This
+    // Windows 26100.8037 build spins in HalpGitQueryCounter at nt+0x213a98 while drawing
+    // the blue screen; use that uniquely identified PC to recover nt base and the public
+    // KiBugCheckData symbol (nt+0xdbb9a0). The image/PDB-specific offsets are already the
+    // basis of the stack decoder above, and the opcode check prevents a false match.
+    //
+    if ((!bcd_pa || !read64(bcd_pa) || read64(bcd_pa) >= 0x1000) &&
+        stuck.code[4] == 0xd53be040) {
+        stuck.bcd_va = stuck.pc - 0x213a98UL + 0xdbb9a0UL;
+        bcd_pa = hv_translate(stuck.bcd_va, false, false, NULL);
+    }
     stuck.bcd_ok = bcd_pa != 0;
     for (int i = 0; i < 5; i++)
         stuck.bcd[i] = bcd_pa ? read64(bcd_pa + i * 8) : 0;
@@ -767,11 +781,12 @@ static void hv_print_stuck_line(void)
         // an unrelated register, so bcd[] is garbage. Only print it when x19 is a kernel
         // VA and bcd[0] is a plausible bugcheck code (small, non-zero); else say so.
         //
-        if ((stuck.regs[19] >> 40) == 0xfffff8 && stuck.bcd[0] && stuck.bcd[0] < 0x1000)
+        if (stuck.bcd_ok && stuck.bcd[0] && stuck.bcd[0] < 0x1000)
             printf("HV STUCK: bugcheck=%lx P1=0x%lx P2=0x%lx P3=0x%lx P4=0x%lx\n", stuck.bcd[0],
                    stuck.bcd[1], stuck.bcd[2], stuck.bcd[3], stuck.bcd[4]);
         else
-            printf("HV STUCK: bugcheck n/a (x19=0x%lx not KiBugCheckData)\n", stuck.regs[19]);
+            printf("HV STUCK: bugcheck n/a (candidate=0x%lx x19=0x%lx)\n", stuck.bcd_va,
+                   stuck.regs[19]);
     }
     else if (n <= 4) {
         int g = (n - 2) * 8;    // n = 2,3,4 -> x0-x7, x8-x15, x16-x23
@@ -863,6 +878,11 @@ static void hv_sample_pc(struct exc_info *ctx)
         // be mistaken for a hang; that false positive spammed the log before.
         //
         u32 need = ((ctx->elr >> 40) == 0xfffff8) ? 2 : 8;
+        if (!repeats && (ctx->elr >> 40) == 0xfffff8) {
+            u64 held_pa = hv_translate(ctx->elr & ~3UL, false, false, NULL);
+            printf("HV SAMPLE: held pc=0x%lx insn=%08x\n", ctx->elr,
+                   held_pa ? read32(held_pa) : 0);
+        }
         if (++repeats >= need && (ctx->spsr & BIT(7))) {
             //
             // Skip the CPU idle loop. A repeating PC with interrupts masked, sitting one

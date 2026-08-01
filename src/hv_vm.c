@@ -495,6 +495,27 @@ u64 hv_pt_walk(u64 addr)
     return l4d;
 }
 
+//
+// Translate a guest-physical address (IPA) to the real PA, for EL2 code that needs to touch
+// guest memory by pointer (NVMe queues, PRP pages). Guest RAM is normally identity-mapped, so
+// a direct cast happens to work there - but NOT for translated stage-2 windows such as the
+// firmware's low DRAM window (guest 0x100000..0x40000000 backed by 0x8A0100000). Dereferencing
+// such an IPA directly faults in EL2 and reboots the machine, which is exactly what the NVMe
+// PRP path hit (FAR=0x2031000). Returns 0 if the IPA is not backed by a normal mapping.
+//
+u64 hv_ipa_to_pa(u64 ipa)
+{
+    u64 pte = hv_pt_walk(ipa);
+
+    if (!IS_HW(pte))
+        return 0;
+
+    // hv_pt_walk() already folds bits [13:2] of the address into the PTE, so take the L4-granule
+    // target mask and add back the low two bits - masking with VADDR_L3_ALIGN_MASK (GENMASK(13,2))
+    // silently dropped them, misaligning any address that is not 4-byte aligned.
+    return (pte & PTE_TARGET_MASK_L4) | (ipa & MASK(VADDR_L4_OFFSET_BITS));
+}
+
 #define CHECK_RN                                                                                   \
     if (Rn == 31)                                                                                  \
     return false

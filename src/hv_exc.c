@@ -1399,6 +1399,7 @@ static void hv_exc_entry(void)
 static void hv_exc_exit(struct exc_info *ctx)
 {
     hv_wdt_breadcrumb('x');
+    hv_nvme_poll_irq();
     hv_update_fiq();
     /* reenable PMU counters */
     reg_set(SYS_IMP_APL_PMCR0, PERCPU(exc_entry_pmcr0_cnt));

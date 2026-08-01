@@ -10,5 +10,7 @@ void nvme_shutdown(void);
 
 bool nvme_flush(u32 nsid);
 bool nvme_read(u32 nsid, u64 lba, void *buffer);
+bool nvme_write(u32 nsid, u64 lba, const void *buffer);
+bool nvme_get_namespace_info(u32 nsid, u64 *blocks, u32 *lba_size);
 
 #endif

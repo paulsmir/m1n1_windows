@@ -1,228 +1,383 @@
 /* SPDX-License-Identifier: MIT */
 
-//
-// Emulated NVMe controller behind BAR0 (armed by hv_pci.c once the guest programs the BAR).
-// Layer 2 here: the controller register file (CAP/VS/CC/CSTS/AQA/ASQ/ACQ) and the doorbell
-// window. CC.EN 0->1 latches the admin-queue geometry and raises CSTS.RDY - that is the gate
-// stornvme/NvmExpressDxe waits on before it touches the admin queue. Actual SQE processing,
-// CQE completion + phase tag, and INTx are Layer 3 (nvme_admin_doorbell below is the seam).
-//
-// Guest queue memory (ASQ/ACQ and later I/O queues, PRP pages) is guest-physical and, because
-// m1n1 identity-maps guest RAM in stage-2, directly dereferenceable from EL2 - same primitive
-// hv_virtio.c uses.
-//
+// Standards-facing NVMe controller for the Windows/UEFI guest. The guest queue engine is
+// kept in hv_nvme_queue.c so its command and PRP semantics can be tested on a host. This
+// file owns the BAR register model, Apple ANS backend connection, and virtual INTx line.
 
 #include "hv.h"
+#include "hv_nvme_queue.h"
+#include "hv_vgic.h"
+#include "nvme.h"
 #include "string.h"
 #include "types.h"
 #include "utils.h"
 
-// BAR0 register offsets (NVMe 1.3).
-#define NVME_CAP   0x00 // 64-bit, RO
-#define NVME_VS    0x08 // 32-bit, RO
-#define NVME_INTMS 0x0c // 32-bit, RW1S
-#define NVME_INTMC 0x10 // 32-bit, RW1C
-#define NVME_CC    0x14 // 32-bit, RW
-#define NVME_CSTS  0x1c // 32-bit, RO to guest
-#define NVME_AQA   0x24 // 32-bit, RW
-#define NVME_ASQ   0x28 // 64-bit, RW
-#define NVME_ACQ   0x30 // 64-bit, RW
-#define NVME_DBS   0x1000 // doorbell base; stride 4 (CAP.DSTRD=0)
+#define NVME_CAP   0x00
+#define NVME_VS    0x08
+#define NVME_INTMS 0x0c
+#define NVME_INTMC 0x10
+#define NVME_CC    0x14
+#define NVME_CSTS  0x1c
+#define NVME_AQA   0x24
+#define NVME_ASQ   0x28
+#define NVME_ACQ   0x30
+#define NVME_DBS   0x1000
 
-#define CC_EN      BIT(0)
-#define CC_SHN_SHIFT 14
-#define CC_SHN_MASK  (3u << CC_SHN_SHIFT)
+#define CC_EN         BIT(0)
+#define CC_CSS        GENMASK(6, 4)
+#define CC_MPS        GENMASK(10, 7)
+#define CC_SHN        GENMASK(15, 14)
+#define CC_IOSQES     GENMASK(19, 16)
+#define CC_IOCQES     GENMASK(23, 20)
+#define CC_SHN_NORMAL FIELD_PREP(CC_SHN, 1)
 
-#define CSTS_RDY   BIT(0)
-#define CSTS_CFS   BIT(1)
-#define CSTS_SHST_SHIFT 2
-#define CSTS_SHST_NORMAL   (0u << CSTS_SHST_SHIFT)
-#define CSTS_SHST_COMPLETE (2u << CSTS_SHST_SHIFT)
+#define CSTS_RDY           BIT(0)
+#define CSTS_CFS           BIT(1)
+#define CSTS_SHST          GENMASK(3, 2)
+#define CSTS_SHST_COMPLETE FIELD_PREP(CSTS_SHST, 2)
 
-// CAP: MQES=63 (64 entries), CQR=1, TO=10 (5s), DSTRD=0, CSS bit0=NVM command set, MPS 0.
-#define NVME_CAP_VALUE                                                                             \
-    (0x3fULL | BIT(16) | (10ULL << 24) | (1ULL << 37))
-#define NVME_VS_VALUE 0x00010300 // 1.3.0
+// 256-entry queues, contiguous queues required, five-second ready timeout, 4 KiB pages,
+// and the NVM command set. DSTRD is zero, so doorbells have a four-byte stride.
+#define NVME_CAP_VALUE    ((VNVME_MAX_QSIZE - 1ULL) | BIT(16) | (10ULL << 24) | (1ULL << 37))
+#define NVME_VS_VALUE     0x00010300
+#define NVME_BAR_SIZE     0x1000000
+#define NVME_TRACE_BUDGET 64
 
-// Provided by hv_pci.c.
 extern int hv_pci_intx_irq(void);
 
 static u64 bar_base;
+static bool backend_ready;
+static u64 backend_blocks;
+static bool irq_injected;
+static u32 nvme_trace_budget;
+static struct vnvme_ctrl queue_ctrl;
 
 static struct {
     u32 intms;
-    u32 intmc;
     u32 cc;
     u32 csts;
     u32 aqa;
     u64 asq;
     u64 acq;
-    u32 sq0tail, cq0head; // admin queue doorbell shadows
-} nvme;
+} regs;
 
-// Layer-3 seam: called on an admin submission-queue doorbell write with the new tail.
-static void nvme_admin_doorbell(u32 new_tail)
+static bool nvme_trace_take(void)
 {
-    // TODO(Layer 3): walk ASQ from old head to new_tail, fetch 64-byte SQEs from guest RAM,
-    // execute IDENTIFY / SET_FEATURES / CREATE_IO_*Q / GET_LOG_PAGE (park ASYNC_EVENT), post
-    // CQEs to ACQ with the phase tag, and assert INTx via aic_set_sw(hv_pci_intx_irq(), true).
-    printf("HV: NVMe admin SQ0 doorbell -> tail %u (admin processing: Layer 3)\n", new_tail);
-    nvme.sq0tail = new_tail;
+    if (!nvme_trace_budget)
+        return false;
+    nvme_trace_budget--;
+    return true;
+}
+
+static bool backend_read(void *opaque, u64 lba, void *buffer)
+{
+    UNUSED(opaque);
+    return nvme_read(1, lba, buffer);
+}
+
+static bool backend_write(void *opaque, u64 lba, const void *buffer)
+{
+    UNUSED(opaque);
+    return nvme_write(1, lba, buffer);
+}
+
+static bool backend_flush(void *opaque)
+{
+    UNUSED(opaque);
+    return nvme_flush(1);
+}
+
+static void backend_publish(void *opaque)
+{
+    UNUSED(opaque);
+    dma_wmb();
+}
+
+static void try_raise_intx(void)
+{
+    int irq = hv_pci_intx_irq();
+    bool enabled = hv_vgic3_irq_enabled(irq);
+    int free_lr = hv_vgic3_get_free_lr();
+    if (!vnvme_intx_can_inject(queue_ctrl.irq_asserted, regs.intms, irq_injected, enabled,
+                               free_lr)) {
+        if (queue_ctrl.irq_asserted && !regs.intms && !irq_injected && !enabled) {
+            static u32 disabled_logs;
+            if (disabled_logs++ < 8)
+                printf("HV: NVMe INTx %d pending: GICD disabled\n", irq);
+        } else if (queue_ctrl.irq_asserted && !regs.intms && !irq_injected && free_lr < 0) {
+            static u32 no_lr_logs;
+            if (no_lr_logs++ < 8)
+                printf("HV: NVMe INTx %d delayed: no free vGIC LR\n", irq);
+        }
+        return;
+    }
+
+    hv_vgic3_inject_irq(irq, hv_vgic3_get_priority(irq), false, true, false, 0);
+    irq_injected = true;
+}
+
+void hv_nvme_poll_irq(void)
+{
+    try_raise_intx();
+}
+
+static void backend_irq(void *opaque, bool asserted)
+{
+    UNUSED(opaque);
+    if (nvme_trace_take())
+        printf("HV: NVMe INTx logical=%d masked=0x%x injected=%d\n", asserted, regs.intms,
+               irq_injected);
+    if (!asserted) {
+        irq_injected = false;
+        return;
+    }
+    try_raise_intx();
+}
+
+static void backend_trace(void *opaque, const struct vnvme_trace_event *event)
+{
+    UNUSED(opaque);
+    if (!nvme_trace_take())
+        return;
+
+    if (event->type == VNVME_TRACE_SUBMISSION) {
+        printf("HV: NVMe SQ q=%u cq=%u slot=%u head=%u tail=%u opc=0x%x cid=0x%x status=0x%x "
+               "irq=%d\n",
+               event->qid, event->cqid, event->slot, event->head, event->tail, event->opcode,
+               event->cid, event->status, event->irq_asserted);
+    } else {
+        printf("HV: NVMe CQE cq=%u sq=%u slot=%u head=%u tail=%u phase=%u cid=0x%x "
+               "status=0x%x irq=%d\n",
+               event->cqid, event->qid, event->slot, event->head, event->tail, event->phase,
+               event->cid, event->status, event->irq_asserted);
+    }
+}
+
+static const struct vnvme_backend_ops backend_ops = {
+    .read = backend_read,
+    .write = backend_write,
+    .flush = backend_flush,
+    .publish = backend_publish,
+    .irq = backend_irq,
+    .trace = backend_trace,
+};
+
+bool hv_nvme_init_backend(void)
+{
+    if (backend_ready)
+        return true;
+    if (!nvme_init()) {
+        printf("HV: NVMe backend: Apple ANS initialization failed\n");
+        return false;
+    }
+
+    u32 lba_size = 0;
+    if (!nvme_get_namespace_info(1, &backend_blocks, &lba_size)) {
+        printf("HV: NVMe backend: Identify Namespace 1 failed\n");
+        return false;
+    }
+    if (lba_size != VNVME_LBA_SIZE) {
+        printf("HV: NVMe backend: unsupported physical LBA size %u (expected %u)\n", lba_size,
+               VNVME_LBA_SIZE);
+        return false;
+    }
+
+    backend_ready = true;
+    printf("HV: NVMe backend: namespace 1, %lu x %u-byte blocks (%lu MiB)\n", backend_blocks,
+           lba_size, backend_blocks / 256);
+    return true;
+}
+
+static void reset_frontend(void)
+{
+    memset(&regs, 0, sizeof(regs));
+    irq_injected = false;
+    nvme_trace_budget = NVME_TRACE_BUDGET;
+    vnvme_init(&queue_ctrl, backend_blocks, &backend_ops, NULL);
+    hv_vgic3_trace_intid(hv_pci_intx_irq(), NVME_TRACE_BUDGET);
+}
+
+static bool valid_cc(u32 cc)
+{
+    return !FIELD_GET(CC_CSS, cc) && !FIELD_GET(CC_MPS, cc) && FIELD_GET(CC_IOSQES, cc) == 6 &&
+           FIELD_GET(CC_IOCQES, cc) == 4;
+}
+
+static void cc_write(u32 value)
+{
+    u32 old = regs.cc;
+    regs.cc = value;
+
+    if ((value & CC_EN) && !(old & CC_EN)) {
+        u16 asq_size = (regs.aqa & 0xfff) + 1;
+        u16 acq_size = ((regs.aqa >> 16) & 0xfff) + 1;
+        if (nvme_trace_take())
+            printf("HV: NVMe enable CC=0x%x ASQS=%u ACQS=%u max=%u backend=%d\n", value, asq_size,
+                   acq_size, VNVME_MAX_QSIZE, backend_ready);
+        if (!backend_ready || !valid_cc(value) ||
+            !vnvme_set_admin_queue(&queue_ctrl, regs.asq, regs.acq, asq_size, acq_size)) {
+            regs.csts = CSTS_CFS;
+            printf("HV: NVMe enable rejected: backend=%d CC=0x%x AQA=0x%x ASQ=0x%lx ACQ=0x%lx\n",
+                   backend_ready, value, regs.aqa, regs.asq, regs.acq);
+            return;
+        }
+        regs.csts = CSTS_RDY;
+        printf("HV: NVMe ready: AQA=0x%x ASQ=0x%lx ACQ=0x%lx\n", regs.aqa, regs.asq, regs.acq);
+    } else if (!(value & CC_EN) && (old & CC_EN)) {
+        vnvme_init(&queue_ctrl, backend_blocks, &backend_ops, NULL);
+        irq_injected = false;
+        regs.csts = 0;
+    }
+
+    if ((value & CC_SHN) == CC_SHN_NORMAL)
+        regs.csts = (regs.csts & ~CSTS_SHST) | CSTS_SHST_COMPLETE;
+    else if (!(value & CC_SHN))
+        regs.csts &= ~CSTS_SHST;
+}
+
+static u64 register_value(u32 off)
+{
+    switch (off) {
+        case NVME_CAP:
+            return NVME_CAP_VALUE;
+        case NVME_VS:
+            return NVME_VS_VALUE;
+        case NVME_INTMS:
+        case NVME_INTMC:
+            return regs.intms;
+        case NVME_CC:
+            return regs.cc;
+        case NVME_CSTS:
+            return regs.csts;
+        case NVME_AQA:
+            return regs.aqa;
+        case NVME_ASQ:
+            return regs.asq;
+        case NVME_ACQ:
+            return regs.acq;
+        default:
+            return 0;
+    }
 }
 
 static u64 reg_read(u32 off, int width)
 {
-    u64 v;
-    switch (off & ~7u) {
-        case NVME_CAP:
-            v = NVME_CAP_VALUE;
-            break;
-        case NVME_ASQ:
-            v = nvme.asq;
-            break;
-        case NVME_ACQ:
-            v = nvme.acq;
-            break;
-        default:
-            // 32-bit register file
-            switch (off & ~3u) {
-                case NVME_VS:
-                    v = NVME_VS_VALUE;
-                    break;
-                case NVME_INTMS:
-                    v = nvme.intms;
-                    break;
-                case NVME_INTMC:
-                    v = nvme.intmc;
-                    break;
-                case NVME_CC:
-                    v = nvme.cc;
-                    break;
-                case NVME_CSTS:
-                    v = nvme.csts;
-                    break;
-                case NVME_AQA:
-                    v = nvme.aqa;
-                    break;
-                default:
-                    v = 0;
-                    break;
-            }
-            // shift into place if this is the high dword of an 8-byte-aligned slot
-            if (off & 4)
-                v <<= 32;
-            break;
-    }
-    // extract the accessed sub-field
-    u32 boff = off & 7;
+    u32 base = off & ~3u;
+    if ((off & ~7u) == NVME_CAP || (off & ~7u) == NVME_ASQ || (off & ~7u) == NVME_ACQ)
+        base = off & ~7u;
+    u64 value = register_value(base);
+    u32 byte_offset = off - base;
     u32 bytes = 1u << width;
     if (bytes >= 8)
-        return v;
+        return value;
     u64 mask = (1ULL << (bytes * 8)) - 1;
-    return (v >> (boff * 8)) & mask;
+    return (value >> (byte_offset * 8)) & mask;
 }
 
-static void cc_write(u32 val)
+static u64 merge_write(u64 old, u32 byte_offset, int width, u64 value)
 {
-    u32 old = nvme.cc;
-    nvme.cc = val;
-
-    if ((val & CC_EN) && !(old & CC_EN)) {
-        // Enable: admin queue geometry in AQA/ASQ/ACQ is now valid; come ready.
-        printf("HV: NVMe CC.EN 0->1 (AQA=0x%x ASQ=0x%lx ACQ=0x%lx), CSTS.RDY=1\n",
-               nvme.aqa, nvme.asq, nvme.acq);
-        nvme.csts |= CSTS_RDY;
-    } else if (!(val & CC_EN) && (old & CC_EN)) {
-        nvme.csts &= ~CSTS_RDY;
-    }
-
-    if (val & CC_SHN_MASK) {
-        // Clean shutdown requested.
-        nvme.csts = (nvme.csts & ~(3u << CSTS_SHST_SHIFT)) | CSTS_SHST_COMPLETE;
-    }
+    u32 bytes = 1u << width;
+    if (bytes >= 8)
+        return value;
+    u64 mask = ((1ULL << (bytes * 8)) - 1) << (byte_offset * 8);
+    return (old & ~mask) | ((value << (byte_offset * 8)) & mask);
 }
 
-static void reg_write(u32 off, int width, u64 val)
+static void reg_write(u32 off, int width, u64 value)
 {
-    switch (off & ~7u) {
-        case NVME_ASQ:
-            if (width >= 3)
-                nvme.asq = val;
-            else if (off & 4)
-                nvme.asq = (nvme.asq & 0xffffffffULL) | (val << 32);
-            else
-                nvme.asq = (nvme.asq & ~0xffffffffULL) | (u32)val;
-            return;
-        case NVME_ACQ:
-            if (width >= 3)
-                nvme.acq = val;
-            else if (off & 4)
-                nvme.acq = (nvme.acq & 0xffffffffULL) | (val << 32);
-            else
-                nvme.acq = (nvme.acq & ~0xffffffffULL) | (u32)val;
-            return;
-        default:
-            break;
+    if ((off & ~7u) == NVME_ASQ) {
+        regs.asq = merge_write(regs.asq, off - NVME_ASQ, width, value);
+        return;
     }
-    switch (off & ~3u) {
+    if ((off & ~7u) == NVME_ACQ) {
+        regs.acq = merge_write(regs.acq, off - NVME_ACQ, width, value);
+        return;
+    }
+
+    u32 base = off & ~3u;
+    u32 byte_offset = off - base;
+    u32 merged = merge_write(register_value(base), byte_offset, width, value);
+    switch (base) {
         case NVME_INTMS:
-            nvme.intms |= (u32)val; // mask INTx
+            if (nvme_trace_take())
+                printf("HV: NVMe INTMS old=0x%x set=0x%x new=0x%x\n", regs.intms, merged,
+                       regs.intms | merged);
+            regs.intms |= merged;
             break;
         case NVME_INTMC:
-            nvme.intms &= ~(u32)val; // unmask INTx
+            if (nvme_trace_take())
+                printf("HV: NVMe INTMC old=0x%x clear=0x%x new=0x%x\n", regs.intms, merged,
+                       regs.intms & ~merged);
+            regs.intms &= ~merged;
+            try_raise_intx();
             break;
         case NVME_CC:
-            cc_write((u32)val);
+            cc_write(merged);
             break;
         case NVME_AQA:
-            nvme.aqa = (u32)val;
+            regs.aqa = merged;
             break;
         default:
-            break; // CAP/VS/CSTS read-only; drop
+            break;
     }
 }
 
-// Stage-2 hook over the 16 MB BAR0 region.
-static bool handle_nvme_bar(struct exc_info *ctx, u64 addr, u64 *val, bool write, int width)
+static bool doorbell_write(u32 index, u32 value)
+{
+    if (!(regs.csts & CSTS_RDY))
+        return true;
+    u16 qid = index / 2;
+    if (nvme_trace_take())
+        printf("HV: NVMe doorbell q=%u %s=%u irq=%d injected=%d masked=0x%x\n", qid,
+               (index & 1) ? "CQH" : "SQT", value, queue_ctrl.irq_asserted, irq_injected,
+               regs.intms);
+    bool ok;
+    if (index & 1) {
+        ok = vnvme_cq_doorbell(&queue_ctrl, qid, value);
+    } else {
+        dma_rmb();
+        ok = vnvme_sq_doorbell(&queue_ctrl, qid, value);
+        try_raise_intx();
+    }
+    if (!ok)
+        printf("HV: NVMe invalid doorbell q=%u %s=%u\n", qid, (index & 1) ? "CQH" : "SQT", value);
+    return true;
+}
+
+static bool handle_nvme_bar(struct exc_info *ctx, u64 addr, u64 *value, bool write, int width)
 {
     UNUSED(ctx);
     u32 off = addr - bar_base;
-
     if (off >= NVME_DBS) {
-        // Doorbell window: stride 4. Even index = SQ tail, odd = CQ head; queue = index/2.
-        u32 idx = (off - NVME_DBS) / 4;
-        if (write) {
-            if (idx == 0)
-                nvme_admin_doorbell((u32)*val); // SQ0 tail (admin)
-            else if (idx == 1)
-                nvme.cq0head = (u32)*val; // CQ0 head (admin) - INTx deassert point (Layer 3)
-            else
-                printf("HV: NVMe doorbell idx %u <- %u (I/O queue: Layer 3)\n", idx, (u32)*val);
-        } else {
-            *val = 0; // doorbells are write-only
-        }
+        u32 index = (off - NVME_DBS) / 4;
+        if (write)
+            return doorbell_write(index, *value);
+        *value = 0;
         return true;
     }
 
     if (write)
-        reg_write(off, width, *val);
+        reg_write(off, width, *value);
     else
-        *val = reg_read(off, width);
+        *value = reg_read(off, width);
     return true;
 }
 
 void hv_nvme_map_bar(u64 base)
 {
+    if (bar_base && bar_base != base)
+        hv_unmap(bar_base, NVME_BAR_SIZE);
     bar_base = base;
-    memset(&nvme, 0, sizeof(nvme));
-    hv_map_hook(base, handle_nvme_bar, 0x1000000); // 16 MB
-    printf("HV: NVMe BAR0 MMIO live at 0x%lx\n", base);
+    reset_frontend();
+    hv_map_hook(base, handle_nvme_bar, NVME_BAR_SIZE);
+    printf("HV: NVMe BAR0 MMIO live at 0x%lx (backend=%d)\n", base, backend_ready);
 }
 
 void hv_nvme_unmap_bar(void)
 {
-    if (bar_base) {
-        hv_unmap(bar_base, 0x1000000);
-        bar_base = 0;
-    }
+    if (!bar_base)
+        return;
+    hv_unmap(bar_base, NVME_BAR_SIZE);
+    bar_base = 0;
+    reset_frontend();
 }

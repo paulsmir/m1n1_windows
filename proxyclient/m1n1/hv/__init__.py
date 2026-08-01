@@ -1836,18 +1836,21 @@ class HV(Reloadable):
         # Emulated PCIe root + NVMe (m1n1 hv_pci.c / hv_nvme.c). ECAM and the MMIO BAR window
         # match MCFG/DSDT and the firmware PCDs. INTx GSIV 512 is provisional and must equal
         # the DSDT _PRT GSIV / the vGIC SPI asserted at Layer 3 (reconcile empirically).
-        from .virtutils import collect_aic_irqs_in_use
         # ECAM/BAR sit inside the arm-io pass-through ranges, but map_pci() runs AFTER the HW
         # pass-through setup above, so our hook overrides those pages - and everything else in
         # the region stays mapped (pass-through), so stray firmware accesses don't fault. The
         # free-hole alternative (0x3_0000_0000) faults the firmware on any unmapped neighbour.
+        # INTx is a small vSPI (64) injected directly into the vGIC (no AIC line), so no ADT
+        # irq reservation is needed; it just has to match the DSDT _PRT GSIV.
         ecam = 0x690000000
         bar_window = 0x400000000
-        irq = 512
-        if irq in collect_aic_irqs_in_use(self.adt):
-            print(f"WARNING: NVMe INTx SPI {irq} already claimed in the ADT")
+        irq = 64
         self.p.hv_pci_init(ecam, bar_window, irq)
-        print(f"HV: emulated PCIe/NVMe: ECAM 0x{ecam:x}, BAR window 0x{bar_window:x}, INTx {irq}")
+        # hv_pci_init() installs a C stage-2 hook. Preserve it when pt_update() later
+        # replays the broad /arm-io pass-through map over this address range, exactly as
+        # map_vuart() does for its C hook.
+        self.add_tracer(irange(ecam, 0x100000), "PCI-ECAM", TraceMode.RESERVED)
+        print(f"HV: emulated PCIe/NVMe: ECAM 0x{ecam:x}, BAR window 0x{bar_window:x}, INTx vSPI {irq}")
 
     def map_essential(self):
         # Things we always map/take over, for the hypervisor to work

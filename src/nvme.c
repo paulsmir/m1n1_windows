@@ -59,6 +59,7 @@
 #define NVME_ADMIN_CMD_CREATE_SQ 0x01
 #define NVME_ADMIN_CMD_DELETE_CQ 0x04
 #define NVME_ADMIN_CMD_CREATE_CQ 0x05
+#define NVME_ADMIN_CMD_IDENTIFY  0x06
 #define NVME_QUEUE_CONTIGUOUS    BIT(0)
 
 #define NVME_CMD_FLUSH 0x00
@@ -544,7 +545,60 @@ bool nvme_read(u32 nsid, u64 lba, void *buffer)
     cmd.prp1 = (u64)buffer_addr;
     cmd.cdw10 = lba;
     cmd.cdw11 = lba >> 32;
-    cmd.cdw12 = 1; // 4096 bytes
+    cmd.cdw12 = 0; // one logical block (the NVMe NLB field is zero-based)
 
     return nvme_exec_command(&ioq, &cmd, NULL);
+}
+
+bool nvme_write(u32 nsid, u64 lba, const void *buffer)
+{
+    struct nvme_command cmd;
+    u64 buffer_addr = (u64)buffer;
+
+    if (!nvme_initialized)
+        return false;
+    if (buffer_addr & (SZ_4K - 1))
+        return false;
+
+    memset(&cmd, 0, sizeof(cmd));
+    cmd.opcode = NVME_CMD_WRITE;
+    cmd.nsid = nsid;
+    cmd.prp1 = buffer_addr;
+    cmd.cdw10 = lba;
+    cmd.cdw11 = lba >> 32;
+    cmd.cdw12 = 0; // one logical block
+
+    return nvme_exec_command(&ioq, &cmd, NULL);
+}
+
+bool nvme_get_namespace_info(u32 nsid, u64 *blocks, u32 *lba_size)
+{
+    if (!nvme_initialized || !blocks || !lba_size)
+        return false;
+
+    u8 *identify = memalign(SZ_4K, SZ_4K);
+    if (!identify)
+        return false;
+    memset(identify, 0, SZ_4K);
+
+    struct nvme_command cmd;
+    memset(&cmd, 0, sizeof(cmd));
+    cmd.opcode = NVME_ADMIN_CMD_IDENTIFY;
+    cmd.nsid = nsid;
+    cmd.prp1 = (u64)identify;
+    cmd.cdw10 = 0; // CNS 0: Identify Namespace
+
+    bool ok = nvme_exec_command(&adminq, &cmd, NULL);
+    if (ok) {
+        memcpy(blocks, identify, sizeof(*blocks));
+        u8 flbas = identify[26] & 0xf;
+        u8 lbads = identify[128 + flbas * 4 + 2];
+        if (!*blocks || lbads >= 32)
+            ok = false;
+        else
+            *lba_size = 1u << lbads;
+    }
+
+    free(identify);
+    return ok;
 }

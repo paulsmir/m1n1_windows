@@ -60,8 +60,12 @@ static u64 bar0_addr(void)
 static void bar_reeval(void)
 {
     u64 addr = bar0_addr();
-    bool want = (cfg_command & CMD_MEM_SPACE) && addr != 0 &&
-                addr != (BAR0_ADDR_MASK & ~0U) && (addr & (BAR0_SIZE - 1)) == 0;
+    // Never arm on the all-ones BAR-sizing pattern. The enumerator writes 0xFFFFFFFF to BOTH
+    // dwords of a 64-bit BAR during sizing; checking only the low dword (old addr != 0xFF000000)
+    // let bar0_addr()==0xFFFFFFFFFF000000 through and would map the trap at a bogus address.
+    bool sizing = (cfg_bar0_hi == 0xFFFFFFFF) || ((cfg_bar0_lo & BAR0_ADDR_MASK) == BAR0_ADDR_MASK);
+    bool want = (cfg_command & CMD_MEM_SPACE) && addr != 0 && !sizing &&
+                (addr & (BAR0_SIZE - 1)) == 0;
 
     if (want && !bar_mapped) {
         printf("HV: PCI BAR0 programmed at 0x%lx, arming NVMe MMIO trap\n", addr);
@@ -183,13 +187,18 @@ void hv_pci_init(u64 ecam, u64 bar_window, int irq)
     cfg_bar0_lo = cfg_bar0_hi = 0;
     bar_mapped = false;
 
+    // m1n1 retains ownership of the native Apple ANS controller. Initialize it before the
+    // guest enumerates PCI so Identify can return the real namespace geometry immediately.
+    bool backend = hv_nvme_init_backend();
+
     int r = hv_map_hook(ecam_base, handle_pci_cfg, 0x100000); // 1 MB = one bus
     // Self-check: confirm our SPTE_HOOK actually replaced the arm-io pass-through mapping at
     // the ECAM base (vs. failing to split a HW block, which would leave the pass-through and
     // send guest config reads to real hardware instead of us).
     u64 pte = hv_pt_walk(ecam_base);
-    printf("HV: emulated PCIe ECAM at 0x%lx (map_hook=%d pte=0x%lx), NVMe 00:00.0 (INTx SPI %d)\n",
-           ecam_base, r, pte, intx_irq);
+    printf("HV: emulated PCIe ECAM at 0x%lx (map_hook=%d pte=0x%lx), NVMe 00:00.0 "
+           "(INTx SPI %d backend=%d)\n",
+           ecam_base, r, pte, intx_irq, backend);
 }
 
 // Exposed so hv_nvme.c can raise/lower the wired INTx line and know the window base.

@@ -1674,6 +1674,15 @@ u8 hv_vgic3_get_priority(u64 intd){
     return *reg_val;
 }
 
+bool hv_vgic3_irq_enabled(u32 intid)
+{
+    if (intid < 32)
+        return redistributors[smp_id()].sgi_region.gicr_isenabler0 & BIT(intid);
+    if (intid >= 1024)
+        return false;
+    return distributor->gicd_interrupt_set_enable_regs[intid / 32] & BIT(intid % 32);
+}
+
 int hv_vgic3_get_free_lr(void)
 {
     u64 elrsr = mrs(ICH_ELRSR_EL2);
@@ -1745,7 +1754,22 @@ void hv_vgic3_write_lr(u32 lr_num, u64 lr_val){
 }
 
 
-static int dbg_injects = 0;
+static u32 trace_intid = 0xffffffff;
+static u32 trace_budget;
+
+void hv_vgic3_trace_intid(u32 intid, u32 budget)
+{
+    trace_intid = intid;
+    trace_budget = budget;
+}
+
+static bool trace_take(u32 intid)
+{
+    if (intid != trace_intid || !trace_budget)
+        return false;
+    trace_budget--;
+    return true;
+}
 
 void hv_vgic3_inject_irq(u32 vintid, u8 priority, bool active, bool pending, bool hw_status, u64 hw_irq){
     u64 val = 0;
@@ -1766,11 +1790,16 @@ void hv_vgic3_inject_irq(u32 vintid, u8 priority, bool active, bool pending, boo
     }
     
 
+    u64 elrsr = mrs(ICH_ELRSR_EL2);
     int free_lr = hv_vgic3_get_free_lr();
     hv_vgic3_write_lr(free_lr, val);
 
     hv_vgic3_update_vi();
     sysop("isb");
+    if (trace_take(vintid))
+        printf("HV: NVMe IRQ inject intid=%u prio=0x%x lr=%d value=0x%lx "
+               "ELRSR=0x%lx VMCR=0x%lx HCR=0x%lx\n",
+               vintid, priority, free_lr, val, elrsr, mrs(ICH_VMCR_EL2), mrs(HCR_EL2));
 }
 
 //
@@ -1874,6 +1903,7 @@ int hv_vgic3_do_iar1(void){
     }
 
     u64 lr_val = hv_vgic3_read_lr(found_lr);
+    u64 before = lr_val;
     u32 intid = (lr_val >> ICH_LR_VIRTUAL_SHIFT) & ICH_LR_VIRTUAL_MASK;
     lr_val &= ~ICH_LR_STATE_PENDING;
     lr_val |= ICH_LR_STATE_ACTIVE;
@@ -1886,22 +1916,32 @@ int hv_vgic3_do_iar1(void){
     //
     hv_vgic3_update_vi();
     sysop("isb");
+    if (trace_take(intid))
+        printf("HV: NVMe IRQ IAR intid=%u lr=%d before=0x%lx after=0x%lx HCR=0x%lx\n",
+               intid, found_lr, before, lr_val, mrs(HCR_EL2));
 
     return intid;
 }
 
 void hv_vgic3_do_eoir1(u64 reg){
     u32 intd = reg & ICH_LR_VIRTUAL_MASK;
+    int trace_lr = -1;
+    u64 trace_before = 0;
     for(int lr = 0; lr < 8; lr++){
         u64 lr_val = hv_vgic3_read_lr(lr);
         //vgic_log("CHECKING LR: 0x%lx %d %d %d\n", lr_val, intd, (lr_val >> ICH_LR_VIRTUAL_SHIFT) & ICH_LR_VIRTUAL_MASK, lr_val & ICH_LR_STATE_ACTIVE);
         if( ((lr_val >> ICH_LR_VIRTUAL_SHIFT) & ICH_LR_VIRTUAL_MASK) == intd && (lr_val & ICH_LR_STATE_ACTIVE)){
             //vgic_log("DOING EOIR 0x%lx, found LR%d: 0x%lx, setting to 0\n", reg, lr, lr_val);
+            trace_lr = lr;
+            trace_before = lr_val;
             hv_vgic3_write_lr(lr, 0);
         }
     }
 
     hv_vgic3_update_vi();
+    if (trace_lr >= 0 && trace_take(intd))
+        printf("HV: NVMe IRQ EOI intid=%u lr=%d before=0x%lx after=0 HCR=0x%lx\n", intd,
+               trace_lr, trace_before, mrs(HCR_EL2));
 }
 
 void hv_vgic3_set_igrpen1(u64 reg){
@@ -2036,4 +2076,3 @@ void hv_vgicv3_init(void)
     return;
 #endif //ENABLE_VGIC_MODULE
 }
-
