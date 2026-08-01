@@ -17,10 +17,12 @@ typedef uint64_t u64;
 #define HV_FB_STREAM_MAGIC 0x31424656u
 
 #ifndef HV_FB_STREAM_PAYLOAD_SIZE
-#define HV_FB_STREAM_PAYLOAD_SIZE 0xf000u
+// Keep the complete UART proxy event within one 16 KiB DWC3 transfer:
+// 8-byte event header + 28-byte framebuffer header + payload + 4-byte checksum.
+#define HV_FB_STREAM_PAYLOAD_SIZE 0x3fc0u
 #endif
 
-#define HV_FB_STREAM_CHUNKS_PER_TICK 2u
+#define HV_FB_STREAM_CHUNKS_PER_TICK 1u
 
 // hv_tick() runs at 5 kHz. A 1000-tick pause after every complete frame keeps the
 // bulk USB stream around 2-3 fps instead of permanently saturating the proxy link.

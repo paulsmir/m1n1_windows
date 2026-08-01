@@ -66,12 +66,16 @@ int main(void)
                                   translate_identity, fake_send, &sender));
 
     hv_fb_stream_tick(&stream);
-    assert(sender.count == 2);
+    assert(sender.count == 1);
     assert(sender.events[0].header.magic == HV_FB_STREAM_MAGIC);
     assert(sender.events[0].header.frame_id == 0);
     assert(sender.events[0].header.offset == 0);
     assert(sender.events[0].header.payload_size == 4);
     assert(memcmp(sender.events[0].payload, frame, 4) == 0);
+    assert(stream.offset == 4);
+
+    hv_fb_stream_tick(&stream);
+    assert(sender.count == 2);
     assert(sender.events[1].header.frame_id == 0);
     assert(sender.events[1].header.offset == 4);
     assert(sender.events[1].header.payload_size == 4);
@@ -99,7 +103,7 @@ int main(void)
     assert(sender.count == 3);
 
     hv_fb_stream_tick(&stream);
-    assert(sender.count == 5);
+    assert(sender.count == 4);
     assert(sender.events[3].header.frame_id == 1);
     assert(sender.events[3].header.offset == 0);
     assert(sender.events[3].header.payload_size == 4);
