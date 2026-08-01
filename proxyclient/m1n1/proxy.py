@@ -59,6 +59,7 @@ class EXC(IntEnum):
 class EVENT(IntEnum):
     MMIOTRACE = 1
     IRQTRACE = 2
+    FRAMEBUFFER = 3
 
 class EXC_RET(IntEnum):
     UNHANDLED = 1
@@ -627,6 +628,7 @@ class M1N1Proxy(Reloadable):
     # src/proxy.h lacks, so C values run 1 lower from P_HV_ADD_TIME on. The C P_HV_MAP_PCI is
     # therefore 0xc19 (not 0xc1a); match it here so the opcode dispatches instead of S_BADCMD.
     P_HV_MAP_PCI = 0xc19
+    P_HV_FB_STREAM_CONFIG = 0xc1a
 
     P_FB_INIT = 0xd00
     P_FB_SHUTDOWN = 0xd01
@@ -1084,6 +1086,8 @@ class M1N1Proxy(Reloadable):
         return self.request(self.P_HV_MAP_VUART, base, irq, iodev)
     def hv_pci_init(self, ecam, bar_window, irq):
         return self.request(self.P_HV_MAP_PCI, ecam, bar_window, irq)
+    def hv_fb_stream_config(self, ipa, size, width, height, stride):
+        return self.request(self.P_HV_FB_STREAM_CONFIG, ipa, size, width, height, stride)
     def hv_trace_irq(self, evt_type, num, count, flags):
         return self.request(self.P_HV_TRACE_IRQ, evt_type, num, count, flags)
     def hv_wdt_start(self, cpu):

@@ -497,6 +497,11 @@ int proxy_process(ProxyRequest *request, ProxyReply *reply)
             // Emulated PCIe ECAM + NVMe (hv_pci.c / hv_nvme.c). args: ecam, bar_window, intx_irq.
             hv_pci_init(request->args[0], request->args[1], request->args[2]);
             break;
+        case P_HV_FB_STREAM_CONFIG:
+            reply->retval = hv_configure_fb_stream(
+                request->args[0], request->args[1], request->args[2], request->args[3],
+                request->args[4]);
+            break;
         case P_HV_MAP_VIRTIO:
             hv_map_virtio(request->args[0], (void *)request->args[1]);
             break;

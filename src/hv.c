@@ -5,11 +5,13 @@
 #include "cpu_regs.h"
 #include "display.h"
 #include "gxf.h"
+#include "hv_fb_stream.h"
 #include "memory.h"
 #include "pcie.h"
 #include "smp.h"
 #include "string.h"
 #include "usb.h"
+#include "uartproxy.h"
 #include "utils.h"
 #include "adt.h"
 #include "xnuboot.h"
@@ -35,6 +37,28 @@ static bool hv_should_exit[MAX_CPUS];
 bool hv_started_cpus[MAX_CPUS];
 u64 hv_cpus_in_guest;
 u64 hv_saved_sp[MAX_CPUS];
+static struct hv_fb_stream hv_framebuffer_stream;
+
+static bool hv_send_fb_chunk(void *opaque, const struct hv_fb_chunk_header *header,
+                             const void *payload)
+{
+    (void)opaque;
+    return uartproxy_try_send_eventv(EVT_FRAMEBUFFER, header, sizeof(*header), payload,
+                                     header->payload_size);
+}
+
+bool hv_configure_fb_stream(u64 ipa, u64 size, u64 width, u64 height, u64 stride)
+{
+    if (!ipa && !size && !width && !height && !stride) {
+        hv_fb_stream_disable(&hv_framebuffer_stream);
+        return true;
+    }
+    if (width > 0xffffffffULL || height > 0xffffffffULL || stride > 0xffffffffULL)
+        return false;
+
+    return hv_fb_stream_configure(&hv_framebuffer_stream, ipa, size, width, height, stride,
+                                  hv_ipa_to_pa, hv_send_fb_chunk, NULL);
+}
 
 struct hv_secondary_info_t {
     uint64_t hcr;
@@ -55,6 +79,7 @@ static struct hv_secondary_info_t hv_secondary_info;
 
 void hv_init(void)
 {
+    hv_fb_stream_disable(&hv_framebuffer_stream);
     pcie_shutdown();
     // Make sure we wake up DCP if we put it to sleep, just quiesce it to match ADT
     if (display_is_external && display_start_dcp() >= 0)
@@ -914,4 +939,5 @@ void hv_tick(struct exc_info *ctx)
             hv_exc_proxy(ctx, START_HV, HV_USER_INTERRUPT, NULL);
     }
     hv_vuart_poll();
+    hv_fb_stream_tick(&hv_framebuffer_stream);
 }
