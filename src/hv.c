@@ -481,7 +481,10 @@ void hv_maybe_exit(void)
 // So the handler only ever copies. Collection is a fixed set of loads into static storage;
 // printing is one line per tick, from that storage, long after the fact.
 //
-bool hv_pc_sampling = true;
+// This diagnostic walks mutable guest stacks from the timer FIQ. Keep it opt-in:
+// a transient Windows spinlock is not a crash, and an unlucky cross-page diagnostic
+// read must never take down the timer/event path used by the guest and framebuffer.
+bool hv_pc_sampling = false;
 
 #define STUCK_FRAMES 12
 #define STUCK_CODE   12

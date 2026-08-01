@@ -86,16 +86,23 @@ int main(void)
 
     sender.accept = true;
     hv_fb_stream_tick(&stream);
-    assert(sender.count == 4);
+    assert(sender.count == 3);
     assert(sender.events[2].header.frame_id == 0);
     assert(sender.events[2].header.offset == 8);
     assert(sender.events[2].header.payload_size == 3);
     assert(memcmp(sender.events[2].payload, frame + 8, 3) == 0);
+    assert(stream.frame_id == 1);
+    assert(stream.offset == 0);
+
+    for (unsigned i = 0; i < HV_FB_STREAM_INTERFRAME_TICKS; i++)
+        hv_fb_stream_tick(&stream);
+    assert(sender.count == 3);
+
+    hv_fb_stream_tick(&stream);
+    assert(sender.count == 5);
     assert(sender.events[3].header.frame_id == 1);
     assert(sender.events[3].header.offset == 0);
     assert(sender.events[3].header.payload_size == 4);
-    assert(stream.frame_id == 1);
-    assert(stream.offset == 4);
 
     assert(!hv_fb_stream_configure(&stream, (uint64_t)frame, 0, 1, 1, 4,
                                    translate_identity, fake_send, &sender));

@@ -114,6 +114,7 @@ class HV(Reloadable):
         self.switching_context = False
         self.show_timestamps = False
         self.virtio_devs = {}
+        self.pre_guest_start = None
 
     def _reloadme(self):
         super()._reloadme()
@@ -2303,6 +2304,11 @@ class HV(Reloadable):
 
         print("Shutting down framebuffer...")
         self.p.fb_shutdown(True)
+
+        if self.pre_guest_start is not None:
+            print("Running pre-guest-start hook...")
+            self.pre_guest_start()
+
         print("Enabling SPRR...")
         self.u.msr(SPRR_CONFIG_EL1, 1)
 

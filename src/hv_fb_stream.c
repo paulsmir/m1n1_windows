@@ -56,6 +56,11 @@ void hv_fb_stream_tick(struct hv_fb_stream *stream)
     if (!stream || !stream->enabled)
         return;
 
+    if (stream->cooldown_ticks) {
+        stream->cooldown_ticks--;
+        return;
+    }
+
     for (u32 i = 0; i < HV_FB_STREAM_CHUNKS_PER_TICK; i++) {
         u32 remaining = stream->total_size - stream->offset;
         u32 payload_size = remaining < HV_FB_STREAM_PAYLOAD_SIZE
@@ -84,6 +89,8 @@ void hv_fb_stream_tick(struct hv_fb_stream *stream)
             stream->stats.completed_frames++;
             stream->frame_id++;
             stream->offset = 0;
+            stream->cooldown_ticks = HV_FB_STREAM_INTERFRAME_TICKS;
+            break;
         }
     }
 }

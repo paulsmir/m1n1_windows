@@ -22,6 +22,12 @@ typedef uint64_t u64;
 
 #define HV_FB_STREAM_CHUNKS_PER_TICK 2u
 
+// hv_tick() runs at 5 kHz. A 1000-tick pause after every complete frame keeps the
+// bulk USB stream around 2-3 fps instead of permanently saturating the proxy link.
+#ifndef HV_FB_STREAM_INTERFRAME_TICKS
+#define HV_FB_STREAM_INTERFRAME_TICKS 1000u
+#endif
+
 struct hv_fb_chunk_header {
     u32 magic;
     u32 frame_id;
@@ -55,6 +61,7 @@ struct hv_fb_stream {
     u32 stride;
     u32 frame_id;
     u32 offset;
+    u32 cooldown_ticks;
     hv_fb_send_fn send;
     void *send_opaque;
     struct hv_fb_stream_stats stats;
