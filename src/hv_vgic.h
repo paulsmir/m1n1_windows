@@ -599,10 +599,12 @@ u8 hv_vgic3_get_priority(u64 intd);
 int hv_vgic3_get_free_lr(void);
 
 u64 hv_vgic3_read_lr(u32 lr_num);
+u8 hv_vgic3_running_priority(void);
 
 void hv_vgic3_write_lr(u32 lr_num, u64 lr_val);
 
 void hv_vgic3_inject_irq(u32 vintid, u8 priority, bool active, bool pending, bool hw_status, u64 hw_irq);
+void hv_vgic3_update_vi(void);
 
 int hv_vgic3_do_iar1(void);
 

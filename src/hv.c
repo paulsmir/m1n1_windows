@@ -81,6 +81,20 @@ void hv_init(void)
                  HCR_AMO | // Trap SError exceptions
                  HCR_IMO | // Trap IRQ exceptions (for now)
                  HCR_FMO | // Trap FIQ exceptions (effectively required for now)
+#ifdef ENABLE_VGIC_MODULE
+                 //
+                 // Trap EL1 reads of the ID registers. Without this the "advertise GIC"
+                 // case for ID_AA64PFR0_EL1 in hv_exc.c never runs: the guest reads the
+                 // real register, sees GIC = 0 (the M1 implements the GIC system
+                 // registers but does not advertise them), and both EDK2 and the Windows
+                 // HAL fall back to driving a GICv2 over MMIO -- for which there is no
+                 // delivery path. hv_handle_msr_unlocked() serves the whole ID space.
+                 //
+                 // Note: this must live here and not in exception_initialize(), because
+                 // this call rewrites HCR_EL2 wholesale and would drop the bit.
+                 //
+                 HCR_TID3 | // Trap ID register reads from EL1
+#endif
                  HCR_VM);  // Enable stage 2 translation
 
     // No guest vectors initially
@@ -431,9 +445,447 @@ void hv_maybe_exit(void)
     }
 }
 
+//
+// Sample where the guest is, from the hypervisor's own timer, and report a stop.
+//
+// Everything here obeys one hard rule, learned four times over: the FIQ handler runs on a
+// small stack and a tight budget, and *any* extra work inside it kills the entire FIQ path.
+// The failure is deceptive - PC samples and the heartbeat vanish together while
+// synchronous-exception handling carries on, so it looks like an unrelated breakage.
+//
+// So the handler only ever copies. Collection is a fixed set of loads into static storage;
+// printing is one line per tick, from that storage, long after the fact.
+//
+bool hv_pc_sampling = true;
+
+#define STUCK_FRAMES 12
+#define STUCK_CODE   12
+#define STUCK_LINES  (4 + STUCK_CODE + STUCK_FRAMES + 1 + 1 + 1 + STUCK_CODE)
+
+static struct {
+    u64 pc, pa, spsr, sp;
+    u64 regs[31];
+    u32 code[STUCK_CODE];
+    u64 frame_fp[STUCK_FRAMES];
+    u64 frame_lr[STUCK_FRAMES];
+    u64 frame_code[STUCK_FRAMES];   // the instruction that made the call
+    u64 octx[4];        // Fp, Lr, Sp, Pc of the CONTEXT KiDispatchException built
+    bool octx_ok;
+    u64 far;            // guest FAR_EL1 at collect time; brk does not overwrite it, so
+                        // it should still hold the original abort's faulting address
+    //
+    // Rather than guess where the KTRAP_FRAME is, scan the abort-dispatch stack for the
+    // faulting address itself: KTRAP_FRAME.Pc == far for an instruction abort, so every
+    // slot holding far is a candidate, and the words on either side are Lr/Fp/Sp. No
+    // offset is trusted - the match locates the frame.
+    //
+    //
+    // The abort's faulting instruction, resolved through the KTRAP_FRAME:
+    // trap_ptr = [frame_fp[7]+0x28] (KiAbortException's saved x20 = its trap-frame arg),
+    // fault_pc = [trap_ptr+0x148], and [trap_ptr+0x90] is the abort ESR (a self-check).
+    // Offsets are from KiAbortException's disassembly, not guessed.
+    //
+    u64 trap_ptr;
+    u64 fault_pc;
+    u64 tf_esr;
+    u64 fpc_pa;
+    u32 fpc_code[STUCK_CODE];
+    int fpc_read;
+    int fpc_state;
+    u64 bcd[5];         // KiBugCheckData: code + params 1..4, from x19
+    bool bcd_ok;
+    u64 stack[32];      // filled a few words per tick, see hv_read_stack_slice()
+    u64 stack_pa;
+    u64 stack_base;
+    int stack_read;
+    //
+    // Two EXCEPTION_RECORDs, one per pass through KiSynchronousException: index 0 is the
+    // inner one (the bugcheck path's own debug break), index 1 the outer one - the
+    // original abort that started it all. Same geometry both times: the record lives at
+    // that pass's frame fp + 0x18.
+    //
+    u64 rec_base[2];
+    u64 rec_pa[2];
+    u64 rec[2][8];
+    int rec_read[2];
+    u64 exc_addr[2];    // ExceptionAddress out of each record
+    u64 exc_pa[2];
+    u32 exc_code[2][STUCK_CODE];
+    int exc_read[2];
+    int frames;
+    int printed;
+    bool valid;
+} stuck;
+
+static void __attribute__((noinline)) hv_collect_stuck(struct exc_info *ctx)
+{
+    u64 pa = hv_translate(ctx->elr & ~3UL, false, false, NULL);
+
+    stuck.pc = ctx->elr;
+    stuck.pa = pa;
+    stuck.spsr = ctx->spsr;
+    stuck.sp = ctx->sp[1];
+
+    for (int i = 0; i < 31; i++)
+        stuck.regs[i] = ctx->regs[i];
+
+    for (int i = 0; i < STUCK_CODE; i++)
+        stuck.code[i] = pa ? read32(pa + (i - 4) * 4) : 0;
+
+    //
+    // The kernel image is physically contiguous, so every address inside it is reachable
+    // by arithmetic from the stop point. That matters: one hv_translate per frame is
+    // affordable here, two was not.
+    //
+    u64 off = pa ? pa - (ctx->elr & ~3UL) : 0;
+    u64 fp = ctx->regs[29];
+
+    //
+    // The frames all live on the same kernel stack, so cache the page translation:
+    // twelve frames cost one to three hv_translate calls instead of twelve. A record
+    // straddling a page boundary (fp ending in 0xff8) skips the cache.
+    //
+    u64 page_va = 1, page_pa = 0;
+
+    stuck.frames = 0;
+    for (int depth = 0; depth < STUCK_FRAMES && fp && off; depth++) {
+        u64 va = fp & ~7UL;
+        u64 fp_pa;
+        if (page_pa && (va & ~0xFFFUL) == page_va && (va & 0xFFF) <= 0xFF0) {
+            fp_pa = page_pa + (va & 0xFFF);
+        } else {
+            fp_pa = hv_translate(va, false, false, NULL);
+            if (!fp_pa)
+                break;
+            page_va = va & ~0xFFFUL;
+            page_pa = fp_pa - (va & 0xFFF);
+        }
+
+        u64 next_fp = read64(fp_pa);
+        u64 lr = read64(fp_pa + 8);
+
+        stuck.frame_fp[depth] = fp;
+        stuck.frame_lr[depth] = lr;
+        //
+        // The instruction two words before the return address: for the frame that called
+        // KeBugCheckEx that is the `mov w0, #<code>` setting the bugcheck code.
+        //
+        // Only if lr is plausibly inside the same physically-contiguous image as the
+        // stop pc: the pa here comes from arithmetic, not from a translation, and an
+        // lr from another module (or a garbage lr slot) sends the read into arbitrary
+        // physical space - which faults at EL2 and takes the whole hypervisor down.
+        // That is precisely how the vUART kept dying seconds after the guest stopped.
+        //
+        stuck.frame_code[depth] =
+            (lr - stuck.pc + 0x800000UL) < 0x1000000UL ? read32(lr + off - 8) : 0;
+        stuck.frames = depth + 1;
+
+        if (next_fp <= fp)
+            break;
+        fp = next_fp;
+    }
+
+    //
+    // Window the stack on frame 1 rather than on the stop's own SP.
+    //
+    // Frame 1 is the function that called KeBugCheckEx - the disassembly showed it loading
+    // the parameters and setting w0 to 0x1e - so its frame is where those arguments live.
+    // The window from SP showed only the breakpoint spin's own frame. Same cost: one
+    // translation either way, and the reading is still spread over later ticks.
+    //
+    stuck.stack_base = stuck.frames > 1 ? stuck.frame_fp[1] - 0x40 : ctx->sp[1];
+    stuck.stack_pa = hv_translate(stuck.stack_base & ~7UL, false, false, NULL);
+    stuck.stack_read = 0;
+    //
+    // Frame 3's fp pair is the one KiSynchronousException saved (the lr chain runs one
+    // deeper than the fp chain), and its prologue is `stp x29,x30,[sp,#-0xb0]!; mov
+    // x29,sp` with the original EXCEPTION_RECORD built at sp+0x18 (`add x0,sp,#0x18`
+    // just before `bl KiDispatchException`). Confirmed against the dump: the pointer
+    // spilled at window+0x40 equals fp3+0x18.
+    //
+    stuck.rec_base[0] = stuck.frames > 3 ? stuck.frame_fp[3] + 0x18 : 0;
+    stuck.rec_base[1] = stuck.frames > 9 ? stuck.frame_fp[9] + 0x18 : 0;
+    for (int r = 0; r < 2; r++) {
+        stuck.rec_pa[r] = 0;
+        stuck.rec_read[r] = 0;
+        stuck.exc_addr[r] = 0;
+        stuck.exc_pa[r] = 0;
+        stuck.exc_read[r] = 0;
+    }
+    //
+    // Read the CONTEXT words (window+0x140..0x158: X29, X30, Sp, Pc at the moment of
+    // the inner exception) here rather than on a later tick: four reads on a page
+    // already translated. They have to be in the very first printed line - the vUART
+    // link now dies within a tick or two of the guest stopping, so anything essential
+    // must go out immediately.
+    //
+    stuck.octx_ok = stuck.stack_pa && ((stuck.stack_base & 0xFFF) + 0x158) < 0x1000;
+    for (int i = 0; i < 4; i++)
+        stuck.octx[i] = stuck.octx_ok ? read64(stuck.stack_pa + 0x140 + i * 8) : 0;
+
+    stuck.far = mrs(FAR_EL12);
+
+    //
+    // KiBugCheckData: x19 held its address at the KeBugCheckEx call (x19 = nt+0xdbb9a0,
+    // confirmed against symbols). Five qwords: BugCheckCode then Parameters 1..4. For
+    // bugcheck 0xA that is (referenced address, IRQL, access type, faulting PC) - which
+    // settles the 0xA-vs-0xC8 question and says whether the fault happened at raised
+    // IRQL. One translation, five reads, done once here.
+    //
+    u64 bcd_pa = hv_translate(stuck.regs[19] & ~7UL, false, false, NULL);
+    stuck.bcd_ok = bcd_pa != 0;
+    for (int i = 0; i < 5; i++)
+        stuck.bcd[i] = bcd_pa ? read64(bcd_pa + i * 8) : 0;
+
+    stuck.trap_ptr = 0;
+    stuck.fault_pc = 0;
+    stuck.tf_esr = 0;
+    stuck.fpc_pa = 0;
+    stuck.fpc_read = 0;
+    stuck.fpc_state = stuck.frames > 7 ? 0 : 9;
+
+    stuck.printed = 0;
+    stuck.valid = true;
+}
+
+//
+// Four words per tick. The measured budget of the FIQ handler is about seven address
+// translations and thirty reads; anything beyond that kills the whole FIQ path, silently
+// and in a way that looks like an unrelated failure.
+//
+static void hv_read_stack_slice(void)
+{
+    if (!stuck.valid || !stuck.stack_pa)
+        return;
+
+    if (stuck.stack_read < 32) {
+        for (int i = 0; i < 4; i++, stuck.stack_read++)
+            stuck.stack[stuck.stack_read] = read64(stuck.stack_pa + stuck.stack_read * 8);
+        return;
+    }
+
+    //
+    // The stack words are in; next comes the original EXCEPTION_RECORD. One translation
+    // on its own tick, then four words per tick - the same pacing the stack reads
+    // survive. Everything here changes per boot with the kernel base, so it all has to
+    // come from the walked frames, not from constants.
+    //
+    //
+    // Each record, then the code around its ExceptionAddress (rec[2]). One phase per
+    // tick, one translation per phase at most.
+    //
+    for (int r = 0; r < 2; r++) {
+        if (stuck.rec_base[r] && !stuck.rec_pa[r]) {
+            stuck.rec_pa[r] = hv_translate(stuck.rec_base[r] & ~7UL, false, false, NULL);
+            if (!stuck.rec_pa[r])
+                stuck.rec_base[r] = 0;  // translation failed; skip record and code dump
+            return;
+        }
+
+        if (stuck.rec_pa[r] && stuck.rec_read[r] < 8) {
+            for (int i = 0; i < 4; i++, stuck.rec_read[r]++)
+                stuck.rec[r][stuck.rec_read[r]] =
+                    read64(stuck.rec_pa[r] + stuck.rec_read[r] * 8);
+            return;
+        }
+
+        if (!stuck.exc_addr[r]) {
+            u64 addr = stuck.rec_base[r] ? stuck.rec[r][2] : 0;
+            if ((addr >> 40) != 0xfffff8)   // not a kernel VA; leave exc_pa 0, give up
+                addr = ~0UL;
+            else
+                stuck.exc_pa[r] = hv_translate(addr & ~3UL, false, false, NULL);
+            stuck.exc_addr[r] = addr;
+            return;
+        }
+
+        if (stuck.exc_pa[r] && stuck.exc_read[r] < STUCK_CODE) {
+            for (int i = 0; i < 4; i++, stuck.exc_read[r]++)
+                stuck.exc_code[r][stuck.exc_read[r]] =
+                    read32(stuck.exc_pa[r] + (stuck.exc_read[r] - 4) * 4);
+            return;
+        }
+    }
+
+    //
+    // Resolve the faulting instruction through the KTRAP_FRAME, one deref per tick.
+    //
+    if (stuck.fpc_state == 0) {   // trap_ptr = [frame_fp[7]+0x28]
+        u64 pa = hv_translate((stuck.frame_fp[7] + 0x28) & ~7UL, false, false, NULL);
+        stuck.trap_ptr = pa ? read64(pa) : 0;
+        stuck.fpc_state = ((stuck.trap_ptr >> 40) == 0xfffff8) ? 1 : 9;
+        return;
+    }
+
+    if (stuck.fpc_state == 1) {   // esr self-check and fault_pc
+        u64 ea = hv_translate((stuck.trap_ptr + 0x90) & ~7UL, false, false, NULL);
+        stuck.tf_esr = ea ? read64(ea + ((stuck.trap_ptr + 0x90) & 7)) : 0;
+        u64 pa = hv_translate((stuck.trap_ptr + 0x148) & ~7UL, false, false, NULL);
+        stuck.fault_pc = pa ? read64(pa + ((stuck.trap_ptr + 0x148) & 7)) : 0;
+        stuck.fpc_state = ((stuck.fault_pc >> 40) == 0xfffff8) ? 2 : 9;
+        return;
+    }
+
+    if (stuck.fpc_state == 2) {   // translate fault_pc
+        stuck.fpc_pa = hv_translate(stuck.fault_pc & ~3UL, false, false, NULL);
+        stuck.fpc_state = stuck.fpc_pa ? 3 : 9;
+        return;
+    }
+
+    if (stuck.fpc_state == 3 && stuck.fpc_read < STUCK_CODE) {   // code around fault_pc
+        for (int i = 0; i < 4; i++, stuck.fpc_read++)
+            stuck.fpc_code[stuck.fpc_read] = read32(stuck.fpc_pa + (stuck.fpc_read - 4) * 4);
+        if (stuck.fpc_read >= STUCK_CODE)
+            stuck.fpc_state = 9;
+        return;
+    }
+}
+
+static void hv_print_stuck_line(void)
+{
+    int n = stuck.printed;
+
+    if (!stuck.valid || n >= STUCK_LINES)
+        return;
+
+    stuck.printed++;
+
+    if (n == 0)
+        //
+        // Everything essential in one line, printed on the collect tick itself: the
+        // vUART link tends to die within a tick or two of the guest stopping. code= is
+        // the `mov w0, #<bugcheck>` of the frame that called KeBugCheckEx; olr/opc are
+        // Lr and Pc at the moment of the inner exception.
+        //
+        printf("HV STUCK: pc=0x%lx code=%08x f1lr=0x%lx olr=0x%lx opc=0x%lx far=0x%lx\n",
+               stuck.pc, (u32)stuck.frame_code[1], stuck.frame_lr[1], stuck.octx[1],
+               stuck.octx[3], stuck.far);
+    else if (n == 1) {
+        //
+        // KiBugCheckData (code + params 1..4) - but x19 only points at it in the frame
+        // that called KeBugCheckEx. Anywhere else (e.g. an idle or spinlock stop) x19 is
+        // an unrelated register, so bcd[] is garbage. Only print it when x19 is a kernel
+        // VA and bcd[0] is a plausible bugcheck code (small, non-zero); else say so.
+        //
+        if ((stuck.regs[19] >> 40) == 0xfffff8 && stuck.bcd[0] && stuck.bcd[0] < 0x1000)
+            printf("HV STUCK: bugcheck=%lx P1=0x%lx P2=0x%lx P3=0x%lx P4=0x%lx\n", stuck.bcd[0],
+                   stuck.bcd[1], stuck.bcd[2], stuck.bcd[3], stuck.bcd[4]);
+        else
+            printf("HV STUCK: bugcheck n/a (x19=0x%lx not KiBugCheckData)\n", stuck.regs[19]);
+    }
+    else if (n <= 4) {
+        int g = (n - 2) * 8;    // n = 2,3,4 -> x0-x7, x8-x15, x16-x23
+        printf("HV STUCK: x%d-x%d = %016lx %016lx %016lx %016lx\n", g, g + 3,
+               stuck.regs[g], stuck.regs[g + 1], stuck.regs[g + 2], stuck.regs[g + 3]);
+    } else if (n < 5 + STUCK_CODE) {
+        int i = n - 5;
+        printf("HV STUCK:   %c0x%lx: %08x\n", i == 4 ? '*' : ' ', stuck.pc + (i - 4) * 4,
+               stuck.code[i]);
+    } else if (n < 5 + STUCK_CODE + STUCK_FRAMES) {
+        int i = n - 5 - STUCK_CODE;
+        if (i < stuck.frames)
+            printf("HV STUCK: frame %d: lr=0x%lx setup=%08x\n", i, stuck.frame_lr[i],
+                   stuck.frame_code[i]);
+    } else if (n < 5 + STUCK_CODE + STUCK_FRAMES + 1) {
+        if (stuck.octx_ok)
+            printf("HV STUCK: orig fp=0x%lx lr=0x%lx sp=0x%lx pc=0x%lx\n", stuck.octx[0],
+                   stuck.octx[1], stuck.octx[2], stuck.octx[3]);
+    } else {
+        //
+        // The faulting-instruction block. Wait here until the KTRAP_FRAME walk and the
+        // code reads have finished (they run one step a tick). Rewind printed so this
+        // same line index is retried next tick.
+        //
+        if (stuck.fpc_state != 9) {
+            stuck.printed--;
+            return;
+        }
+        int i = n - (5 + STUCK_CODE + STUCK_FRAMES + 1);
+        if (i == 0)
+            printf("HV STUCK: trap=0x%lx fault_pc=0x%lx tf_esr=0x%lx far=0x%lx\n",
+                   stuck.trap_ptr, stuck.fault_pc, stuck.tf_esr, stuck.far);
+        else {
+            int j = i - 1;
+            if (stuck.fpc_pa && j < stuck.fpc_read)
+                printf("HV STUCK:   %c0x%lx: %08x\n", j == 4 ? '*' : ' ',
+                       stuck.fault_pc + (j - 4) * 4, stuck.fpc_code[j]);
+        }
+    }
+}
+
+static void hv_sample_pc(struct exc_info *ctx)
+{
+    static u64 counter = 0;
+    static u64 last_pc = 0;
+    static u32 repeats = 0;
+
+    if (!hv_pc_sampling)
+        return;
+
+    if (++counter % (HV_TICK_RATE / 2))
+        return;
+
+    //
+    // Once a report is latched, keep draining it out on every tick regardless of where
+    // the guest's PC wanders. A guest that is *looping* (a busy-wait) rather than spinning
+    // on one instruction otherwise re-triggered collection endlessly and never finished
+    // printing the frames - which is exactly where the bugcheck code lives.
+    //
+    if (stuck.valid) {
+        hv_read_stack_slice();
+        hv_print_stuck_line();
+        //
+        // Once the whole report is drained, release the latch and resume normal
+        // sampling. A genuinely wedged guest re-collects the same report next tick
+        // (confirming the hang); a guest that only spun briefly with interrupts masked
+        // (a spinlock) is seen to move on. Without this, the latch blinds us to a guest
+        // that is actually still making progress.
+        //
+        if (stuck.printed >= STUCK_LINES) {
+            stuck.valid = false;
+            last_pc = 0;
+            repeats = 0;
+        }
+        return;
+    }
+
+    if (ctx->elr == last_pc) {
+        //
+        // The vUART link dies seconds after the Windows kernel stops, so for kernel
+        // addresses the report cannot afford the usual four-second confirmation: two
+        // repeats (one second) and collect. Firmware-time waits keep the longer fuse -
+        // they resolve on their own and would otherwise spam false reports.
+        //
+        //
+        // Only a PC that repeats *with interrupts masked* (SPSR.I = bit 7) is a real
+        // stop - a bugcheck/halt spin runs with DAIF set. A microsecond delay/poll loop
+        // (KeStallExecutionProcessor, UEFI waits) keeps interrupts enabled and must not
+        // be mistaken for a hang; that false positive spammed the log before.
+        //
+        u32 need = ((ctx->elr >> 40) == 0xfffff8) ? 2 : 8;
+        if (++repeats >= need && (ctx->spsr & BIT(7))) {
+            //
+            // Skip the CPU idle loop. A repeating PC with interrupts masked, sitting one
+            // instruction past a WFI, is HalProcessorIdle (dsb; isb; wfi; ...), not a
+            // hang - the core is asleep with nothing to run and wakes each timer tick.
+            //
+            u64 pa = hv_translate((ctx->elr - 4) & ~3UL, false, false, NULL);
+            if (!pa || read32(pa) != 0xd503207f /* wfi */)
+                hv_collect_stuck(ctx);
+        }
+    } else {
+        if (repeats)
+            printf("HV SAMPLE: pc=0x%lx held for %u samples\n", last_pc, repeats + 1);
+        printf("HV SAMPLE: pc=0x%lx spsr=0x%lx sp=0x%lx\n", ctx->elr, ctx->spsr, ctx->sp[1]);
+        last_pc = ctx->elr;
+        repeats = 0;
+    }
+}
+
 void hv_tick(struct exc_info *ctx)
 {
     hv_wdt_pet();
+    hv_sample_pc(ctx);
     iodev_handle_events(uartproxy_iodev);
     if (iodev_can_read(uartproxy_iodev)) {
         printf("HV: User interrupt\n");

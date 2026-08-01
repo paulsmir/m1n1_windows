@@ -181,6 +181,45 @@
 #define HCR_VM       BIT(0)
 
 #define ID_AA64PFR0_EL1        sys_reg(3, 0, 0, 4, 0)
+
+//
+// The rest of the ID register space (op0=3, op1=0, CRn=0, CRm=1..7). Needed because
+// enabling HCR_EL2.TID3 -- which is what makes the guest see the advertised GIC field
+// in ID_AA64PFR0_EL1 -- traps reads of *every* register in this space, so the
+// hypervisor has to serve all of them, not just the one it wants to patch.
+//
+#define ID_PFR0_EL1            sys_reg(3, 0, 0, 1, 0)
+#define ID_PFR1_EL1            sys_reg(3, 0, 0, 1, 1)
+#define ID_DFR0_EL1            sys_reg(3, 0, 0, 1, 2)
+#define ID_AFR0_EL1            sys_reg(3, 0, 0, 1, 3)
+#define ID_MMFR0_EL1           sys_reg(3, 0, 0, 1, 4)
+#define ID_MMFR1_EL1           sys_reg(3, 0, 0, 1, 5)
+#define ID_MMFR2_EL1           sys_reg(3, 0, 0, 1, 6)
+#define ID_MMFR3_EL1           sys_reg(3, 0, 0, 1, 7)
+
+#define ID_ISAR0_EL1           sys_reg(3, 0, 0, 2, 0)
+#define ID_ISAR1_EL1           sys_reg(3, 0, 0, 2, 1)
+#define ID_ISAR2_EL1           sys_reg(3, 0, 0, 2, 2)
+#define ID_ISAR3_EL1           sys_reg(3, 0, 0, 2, 3)
+#define ID_ISAR4_EL1           sys_reg(3, 0, 0, 2, 4)
+#define ID_ISAR5_EL1           sys_reg(3, 0, 0, 2, 5)
+#define ID_MMFR4_EL1           sys_reg(3, 0, 0, 2, 6)
+#define ID_ISAR6_EL1           sys_reg(3, 0, 0, 2, 7)
+
+#define MVFR0_EL1              sys_reg(3, 0, 0, 3, 0)
+#define MVFR1_EL1              sys_reg(3, 0, 0, 3, 1)
+#define MVFR2_EL1              sys_reg(3, 0, 0, 3, 2)
+
+#define ID_AA64PFR1_EL1        sys_reg(3, 0, 0, 4, 1)
+#define ID_AA64DFR0_EL1        sys_reg(3, 0, 0, 5, 0)
+#define ID_AA64DFR1_EL1        sys_reg(3, 0, 0, 5, 1)
+#define ID_AA64AFR0_EL1        sys_reg(3, 0, 0, 5, 4)
+#define ID_AA64AFR1_EL1        sys_reg(3, 0, 0, 5, 5)
+#define ID_AA64ISAR0_EL1       sys_reg(3, 0, 0, 6, 0)
+#define ID_AA64ISAR1_EL1       sys_reg(3, 0, 0, 6, 1)
+#define ID_AA64MMFR0_EL1       sys_reg(3, 0, 0, 7, 0)
+#define ID_AA64MMFR1_EL1       sys_reg(3, 0, 0, 7, 1)
+#define ID_AA64MMFR2_EL1       sys_reg(3, 0, 0, 7, 2)
 #define SYS_ID_AA64MMFR0_EL1   sys_reg(3, 0, 0, 7, 0)
 #define ID_AA64MMFR0_ECV       GENMASK(63, 60)
 #define ID_AA64MMFR0_FGT       GENMASK(59, 56)
@@ -562,5 +601,14 @@
 #define ICC_EOIR0_EL1 sys_reg(3, 0, 12, 8, 1)
 #define ICC_EOIR1_EL1 sys_reg(3, 0, 12, 12, 1)
 #define ICC_BPR1_EL1 sys_reg(3, 0, 12, 12, 3)
+#define ICC_RPR_EL1 sys_reg(3, 0, 12, 11, 3)
 #define ICC_IGRPEN1_EL1 sys_reg(3, 0, 12, 12, 7)
 #define ICC_IAR1_EL1 sys_reg(3, 0, 12, 12, 0)
+//
+// Registers common to both interrupt groups. These are trapped by ICH_HCR_EL2.TC, not
+// by TALL1, and the hypervisor has to serve them once trapping is on -- otherwise EDK2's
+// GicV3Supported() check fails and the guest falls back to driving a GICv2 over MMIO.
+//
+#define ICC_PMR_EL1 sys_reg(3, 0, 4, 6, 0)
+#define ICC_CTLR_EL1 sys_reg(3, 0, 12, 12, 4)
+#define ICC_SRE_EL1 sys_reg(3, 0, 12, 12, 5)

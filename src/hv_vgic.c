@@ -81,7 +81,10 @@
 #define ITS_BASE_36_BIT 0xF20000000
 #define ITS_BASE_42_BIT 0x5200000000
 
-#define ENABLE_VGIC_LOGGING 1
+// Per-register tracing is ~5000 lines per boot and slows the guest by an order of
+// magnitude, which distorts every timing measurement. Turn on only when debugging the
+// distributor itself.
+#define ENABLE_VGIC_LOGGING 0
 
 #if ENABLE_VGIC_LOGGING
 #define vgic_log(...) printf(__VA_ARGS__)
@@ -1085,8 +1088,13 @@ static bool handle_vgic_redist_access(struct exc_info *ctx, u64 addr, u64 *val, 
                 }
                 redistributors[cpu_num].sgi_region.gicr_isactiver0 = value_is_enabler;
                 redistributors[cpu_num].sgi_region.gicr_icactiver0 = value_ic_enabler;
-                //TODO: should we also write to gicr_isenabler0?
-                redistributors[cpu_num].sgi_region.gicr_isenabler0 = *val;
+                //
+                // GICR_ISENABLER0 is set-enable: writing 1 enables an interrupt, writing
+                // 0 has no effect (disabling is done through GICR_ICENABLER0). A plain
+                // assignment cleared every other interrupt's enable - e.g. enabling the
+                // virtual timer (INTID 18) silently disabled the physical timer (17).
+                //
+                redistributors[cpu_num].sgi_region.gicr_isenabler0 |= *val;
                 register_handled = true;
                 break;
             case GIC_REDIST_ICENABLER0:
@@ -1408,8 +1416,17 @@ static bool handle_vgic_redist_access(struct exc_info *ctx, u64 addr, u64 *val, 
                 // u32 reg_num;
                 reg_num = (relative_addr - GIC_REDIST_IPRIORITYR4) / 4;
                 reg_offset = (relative_addr - GIC_REDIST_IPRIORITYR4) % 4;
+                //
+                // Read path: return the stored PPI priorities. This case used to assign
+                // *val INTO the register (a copy-paste of the write case) - so a guest
+                // read of GICR_IPRIORITYR4-7 corrupted the byte and returned garbage.
+                // Windows programs priorities with a read-modify-write, so every RMW read
+                // came back 0 and wrote back a single byte, clobbering the others - the
+                // timer PPI (INTID 17) ended up priority 0, which the injected LR then
+                // carried, and the HAL bugchecked 0xC8 IRQL_UNEXPECTED_VALUE.
+                //
                 if(reg_offset == 0)
-                    redistributors[cpu_num].sgi_region.gicr_ppi_ipriority_reg[reg_num] = *val;
+                    *val = redistributors[cpu_num].sgi_region.gicr_ppi_ipriority_reg[reg_num];
                 else{
                     //TODO: handle width
                     u8 *reg_u8 = (u8 *)&redistributors[cpu_num].sgi_region.gicr_ppi_ipriority_reg[reg_num];
@@ -1602,10 +1619,31 @@ int hv_vgicv3_enable_virtual_interrupts(void)
 {
     //set VMCR to reset values, then enable virtual group 0 and 1 interrupts
     msr(ICH_VMCR_EL2, 0);
-    msr(ICH_VMCR_EL2, (BIT(1)));
+    //
+    // VPMR (bits 31:24) is the guest's virtual priority mask. Leaving it at 0 blocks
+    // *every* virtual interrupt: the GIC only signals an interrupt whose priority is
+    // numerically lower than the mask, and nothing is lower than 0. Measured symptom:
+    // timer interrupts were injected into list registers (free_lr climbing 0,1,2,...)
+    // and never acknowledged, because the guest could not be signalled at all.
+    //
+    // The architectural reset value really is 0, and a guest that programs ICC_PMR_EL1
+    // itself would fix it -- but EDK2 never got that far here, so open the mask during
+    // bring-up. Also set VENG0: the original only set VENG1 despite the comment above
+    // saying both groups.
+    //
+    msr(ICH_VMCR_EL2, ((0xFFUL << 24) | BIT(1) | BIT(0)));
     //bit 0 enables the virtual CPU interface registers
     //AMO/IMO/FMO set by m1n1 on boot
-    msr(ICH_HCR_EL2, (BIT(0) | BIT(2)));
+    //
+    // TALL1 (bit 12) traps the guest's group 1 ICC_* accesses to EL2. Without it the
+    // guest talks straight to the hardware virtual CPU interface and hv_vgic3_do_iar1()
+    // / hv_vgic3_do_eoir1() -- which exist in this tree already -- are never reached, so
+    // an injected interrupt is never acknowledged and never completed. Measured: list
+    // registers filled up (free_lr climbing 0,1,2,...) with no IAR/EOIR from the guest.
+    //
+    // TC (bit 10) traps the registers common to both groups -- SRE, CTLR, PMR -- which
+    // TALL1 does not cover. All three are served in hv_handle_msr_unlocked().
+    msr(ICH_HCR_EL2, (BIT(0) | BIT(2) | BIT(10) | BIT(12)));
 
 
     return 0;
@@ -1671,6 +1709,9 @@ u64 hv_vgic3_read_lr(u32 lr_num){
             return mrs(ICH_LR7_EL2);
             break;
     }
+    // Out-of-range LR: return an invalid (State=0) entry rather than fall off the end
+    // (which was undefined behaviour and returned garbage).
+    return 0;
 }
 
 void hv_vgic3_write_lr(u32 lr_num, u64 lr_val){
@@ -1704,6 +1745,8 @@ void hv_vgic3_write_lr(u32 lr_num, u64 lr_val){
 }
 
 
+static int dbg_injects = 0;
+
 void hv_vgic3_inject_irq(u32 vintid, u8 priority, bool active, bool pending, bool hw_status, u64 hw_irq){
     u64 val = 0;
     val |= (u64)(vintid & ICH_LR_VIRTUAL_MASK) << ICH_LR_VIRTUAL_SHIFT;
@@ -1725,33 +1768,126 @@ void hv_vgic3_inject_irq(u32 vintid, u8 priority, bool active, bool pending, boo
 
     int free_lr = hv_vgic3_get_free_lr();
     hv_vgic3_write_lr(free_lr, val);
+
+    hv_vgic3_update_vi();
     sysop("isb");
 }
 
-int hv_vgic3_do_iar1(void){
-    bool found = false;
-    u8 found_priority = 0xff;
-    u8 found_lr = -1; 
+//
+// Decide whether the virtual IRQ line should be raised, honouring the guest's priority
+// mask. HCR_EL2.VI is used because the M1's GIC virtual CPU interface does not signal on
+// its own (measured: valid pending LR, group 1 enabled, VPMR open - and the guest never
+// takes the interrupt). But VI bypasses the GIC's signalling logic entirely, so the
+// masking the hardware would have done must be reproduced here: a pending group-1
+// interrupt signals only if group 1 is enabled and its priority is numerically lower
+// than the guest's priority mask.
+//
+// Found the hard way: raising VI unconditionally delivers interrupts that the guest's
+// IRQL says are masked (Windows maps IRQL onto ICC_PMR_EL1, which this hypervisor traps
+// straight into VMCR.VPMR). The HAL checks that invariant on interrupt entry and
+// bugchecks 0xC8 IRQL_UNEXPECTED_VALUE - which then nested into the 0xA abort and the
+// 0x1E stop this took a week to unpick.
+//
+//
+// Running priority = the highest-priority (numerically lowest) currently-active virtual
+// interrupt, or 0xff (idle) when none is active. We emulate IAR/EOI in software, so the
+// hardware ICH_AP1R/ICV_RPR are never populated; this derives the same value from the
+// active LR states instead. The HAL reads ICC_RPR_EL1 on interrupt entry to sanity-check
+// the IRQL it is about to set; returning garbage (0) there is a direct cause of 0xC8.
+//
+u8 hv_vgic3_running_priority(void){
+    u8 rp = 0xff;
     for(int lr = 0; lr < 8; lr++){
-        u64 lr_val = hv_vgic3_read_lr(lr);
-        if(lr_val & ICH_LR_STATE_PENDING){
+        u64 v = hv_vgic3_read_lr(lr);
+        if(v & ICH_LR_STATE_ACTIVE){
+            u8 prio = (v >> ICH_LR_PRIORITY_SHIFT) & ICH_LR_PRIORITY_MASK;
+            if(prio < rp)
+                rp = prio;
+        }
+    }
+    return rp;
+}
+
+void hv_vgic3_update_vi(void){
+    u64 vmcr = mrs(ICH_VMCR_EL2);
+    u8 vpmr = (vmcr >> 24) & 0xff;
+    bool veng1 = vmcr & BIT(1);
+    bool signal = false;
+
+    if(veng1){
+        for(int lr = 0; lr < 8; lr++){
+            u64 lr_val = hv_vgic3_read_lr(lr);
+            // Exact State == Pending (0b01), not merely the pending bit: a
+            // pending+active LR (0b11) must not re-signal while it is active.
+            if(((lr_val >> ICH_LR_STATE_SHIFT) & ICH_LR_STATE_MASK) != 1)
+                continue;
             u8 priority = (lr_val >> ICH_LR_PRIORITY_SHIFT) & ICH_LR_PRIORITY_MASK;
-            if(priority < found_priority){
-                found_lr = lr;
-                found_priority = priority;
+            if(priority < vpmr){
+                signal = true;
+                break;
             }
         }
     }
 
-    if(found_lr != -1){
-        u64 lr_val = hv_vgic3_read_lr(found_lr);
-        lr_val &= ~ICH_LR_STATE_PENDING;
-        lr_val |= ICH_LR_STATE_ACTIVE;
-        hv_vgic3_write_lr(found_lr, lr_val);
-        return (lr_val >> ICH_LR_VIRTUAL_SHIFT) & ICH_LR_VIRTUAL_MASK;
+    if(signal)
+        hv_write_hcr(mrs(HCR_EL2) | HCR_VI);
+    else
+        hv_write_hcr(mrs(HCR_EL2) & ~HCR_VI);
+}
+
+int hv_vgic3_do_iar1(void){
+    //
+    // found_lr must be a signed int: it used to be `u8 found_lr = -1`, which holds 255,
+    // and `found_lr != -1` promotes to `255 != -1` == always true - so the spurious path
+    // below was unreachable and a no-pending IAR fell into hv_vgic3_read_lr(255) (a
+    // switch with no default -> undefined behaviour, a garbage INTID). Windows re-enters
+    // the IRQ because VI was left asserted after the first ack (see below), reads IAR a
+    // second time with nothing Pending, and that garbage INTID is what the HAL bugchecks
+    // 0xC8 on.
+    //
+    int found_lr = -1;
+    u8 found_priority = 0xff;
+    for(int lr = 0; lr < 8; lr++){
+        u64 lr_val = hv_vgic3_read_lr(lr);
+        // Only a purely Pending (0b01) group-1 LR may be acknowledged; an
+        // Active+Pending (0b11) one must not be re-acknowledged while it is active.
+        if(((lr_val >> ICH_LR_STATE_SHIFT) & ICH_LR_STATE_MASK) != 1)
+            continue;
+        if(!(lr_val & ICH_LR_GRP1))
+            continue;
+        u8 priority = (lr_val >> ICH_LR_PRIORITY_SHIFT) & ICH_LR_PRIORITY_MASK;
+        if(found_lr < 0 || priority < found_priority){
+            found_lr = lr;
+            found_priority = priority;
+        }
     }
 
-    return 0x3FF;
+    if(found_lr < 0){
+        // Nothing to acknowledge: return the architectural spurious INTID and re-evaluate
+        // the line. Diagnostic: if this fires while VI is asserted, the re-entry chain is
+        // confirmed.
+        static int spurious_iar = 0;
+        if(spurious_iar++ < 16)
+            printf("VGIC IAR1 SPURIOUS: HCR=%lx VMCR=%lx\n", mrs(HCR_EL2), mrs(ICH_VMCR_EL2));
+        hv_vgic3_update_vi();
+        return 0x3FF;
+    }
+
+    u64 lr_val = hv_vgic3_read_lr(found_lr);
+    u32 intid = (lr_val >> ICH_LR_VIRTUAL_SHIFT) & ICH_LR_VIRTUAL_MASK;
+    lr_val &= ~ICH_LR_STATE_PENDING;
+    lr_val |= ICH_LR_STATE_ACTIVE;
+    hv_vgic3_write_lr(found_lr, lr_val);
+
+    //
+    // Acknowledging the only Pending LR must deassert VI immediately - not wait until
+    // EOIR. Leaving VI asserted after the ack lets the guest re-enter the IRQ and take a
+    // second, spurious IAR.
+    //
+    hv_vgic3_update_vi();
+    sysop("isb");
+
+    return intid;
 }
 
 void hv_vgic3_do_eoir1(u64 reg){
@@ -1764,6 +1900,8 @@ void hv_vgic3_do_eoir1(u64 reg){
             hv_vgic3_write_lr(lr, 0);
         }
     }
+
+    hv_vgic3_update_vi();
 }
 
 void hv_vgic3_set_igrpen1(u64 reg){
@@ -1772,6 +1910,7 @@ void hv_vgic3_set_igrpen1(u64 reg){
         for(int lr = 0; lr < 8; lr++)
             hv_vgic3_write_lr(lr, 0);
     }
+    hv_vgic3_update_vi();
 }
 
 u64 hv_vgic3_get_igrpen1(void){

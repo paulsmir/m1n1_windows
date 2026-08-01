@@ -1811,6 +1811,7 @@ class HV(Reloadable):
         self.u.msr(APSTS_EL12, 1)
 
         self.map_vuart()
+        self.map_pci()
 
         # ACTLR depends on the CPU part
         part = MIDR(self.u.mrs(MIDR_EL1)).PART
@@ -1830,6 +1831,23 @@ class HV(Reloadable):
         irq = node.interrupts[0]
         self.p.hv_map_vuart(base, irq, self.iodev)
         self.add_tracer(zone, "VUART", TraceMode.RESERVED)
+
+    def map_pci(self):
+        # Emulated PCIe root + NVMe (m1n1 hv_pci.c / hv_nvme.c). ECAM and the MMIO BAR window
+        # match MCFG/DSDT and the firmware PCDs. INTx GSIV 512 is provisional and must equal
+        # the DSDT _PRT GSIV / the vGIC SPI asserted at Layer 3 (reconcile empirically).
+        from .virtutils import collect_aic_irqs_in_use
+        # ECAM/BAR sit inside the arm-io pass-through ranges, but map_pci() runs AFTER the HW
+        # pass-through setup above, so our hook overrides those pages - and everything else in
+        # the region stays mapped (pass-through), so stray firmware accesses don't fault. The
+        # free-hole alternative (0x3_0000_0000) faults the firmware on any unmapped neighbour.
+        ecam = 0x690000000
+        bar_window = 0x400000000
+        irq = 512
+        if irq in collect_aic_irqs_in_use(self.adt):
+            print(f"WARNING: NVMe INTx SPI {irq} already claimed in the ADT")
+        self.p.hv_pci_init(ecam, bar_window, irq)
+        print(f"HV: emulated PCIe/NVMe: ECAM 0x{ecam:x}, BAR window 0x{bar_window:x}, INTx {irq}")
 
     def map_essential(self):
         # Things we always map/take over, for the hypervisor to work

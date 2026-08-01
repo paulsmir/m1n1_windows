@@ -28,6 +28,13 @@ extern spinlock_t bhl;
      ((op2) << ESR_ISS_MSR_OP2_SHIFT))
 #define SYSREG_ISS(...) _SYSREG_ISS(__VA_ARGS__)
 
+//
+// Note: trapped ID registers cannot be served through a helper macro. A register name
+// expands to seven comma-separated tokens, and a macro parameter is expanded before
+// substitution, so mrs() would receive seven arguments instead of one. Each case in
+// hv_handle_msr_unlocked() therefore names its register literally.
+//
+
 #define PERCPU(x) pcpu[mrs(TPIDR_EL2)].x
 #define PERCPU_N(x, y) pcpu[x].y
 
@@ -179,10 +186,51 @@ void hv_add_time(s64 time)
     stolen_time -= (u64)time;
 }
 
+//
+// Temporary instrumentation for chasing timer delivery. Rate-limited so it cannot flood
+// the log: we only need to know whether these paths are reached at all.
+//
+static int dbg_fiq_calls = 0;
+static int dbg_timer_p = 0;
+static int dbg_timer_v = 0;
+
+//
+// One timer injection per expiry, per CPU.
+//
+// hv_update_fiq() runs on every exception entry/exit, not just on timer FIQs. Until the
+// guest reprograms its comparator, CNTx_CTL_EL02.ISTATUS stays set -- so without a latch
+// every trapped access (and with ICH_HCR_EL2.TC|TALL1 that includes every ICC_IAR1 /
+// ICC_EOIR1 / ICC_PMR touch the guest makes while servicing the very same interrupt)
+// injected another timer interrupt.
+//
+// The guest counts interrupts as elapsed time, so its clock ran ~6x fast: it reported
+// 00:09:02 for a 90-second run. UEFI arms a five-minute boot watchdog, which then fired
+// after ~50 real seconds and called gRT->ResetSystem -> PSCI SYSTEM_RESET (0x84000009).
+// That was the mysterious "reset with no guest exception".
+//
+u64 hv_fiq_count = 0;
+u64 hv_fiq_ticks = 0;
+
+static bool timer_p_injected[MAX_CPUS];
+static bool timer_v_injected[MAX_CPUS];
+
+//
+// Measure the actual delivery rate. One line per 1024 injections, so the volume is
+// negligible. CNTFRQ on M1 is 24 MHz, so ticks/CNTFRQ gives seconds: comparing the
+// injection count against elapsed real time tells us directly whether the guest is being
+// woken more often than it asked for, and the programmed interval shows what it asked for.
+//
+static u64 dbg_inj_count = 0;
+static u64 dbg_inj_t0 = 0;
+
 static void hv_update_fiq(void)
-{ 
+{
     u64 hcr = mrs(HCR_EL2);
     bool fiq_pending = false;
+    int tcpu = smp_id();
+
+    if (tcpu < 0 || tcpu >= MAX_CPUS)
+        tcpu = 0;
 
     if (mrs(CNTP_CTL_EL02) == (CNTx_CTL_ISTATUS | CNTx_CTL_ENABLE)) {
         fiq_pending = true;
@@ -190,7 +238,19 @@ static void hv_update_fiq(void)
 
         //TODO: proper injection
 #ifdef ENABLE_VGIC_MODULE
-        if(hv_vgic3_get_free_lr() != -1){
+        if(timer_p_injected[tcpu]){
+            // Already delivered for this expiry; wait for the guest to rearm.
+        }
+        else if(hv_vgic3_get_free_lr() != -1){
+            timer_p_injected[tcpu] = true;
+            if (!dbg_inj_t0)
+                dbg_inj_t0 = mrs(CNTPCT_EL0);
+            if ((++dbg_inj_count & 1023) == 0) {
+                u64 now = mrs(CNTPCT_EL0);
+                printf("TIMERRATE: inj=0x%lx elapsed_ticks=0x%lx cntfrq=0x%lx interval=0x%lx\n",
+                       dbg_inj_count, now - dbg_inj_t0, mrs(CNTFRQ_EL0),
+                       mrs(CNTP_CVAL_EL02) - now);
+            }
             hv_vgic3_inject_irq(
                 17,                         //vintid
                 hv_vgic3_get_priority(17),  //priority
@@ -201,6 +261,7 @@ static void hv_update_fiq(void)
             );
         }
         else{
+            timer_p_injected[tcpu] = true;
             virq_t pending = { 
                 .vintid = 17, 
                 .priority = 0x20, 
@@ -213,6 +274,7 @@ static void hv_update_fiq(void)
         }
 #endif
     } else {
+        timer_p_injected[tcpu] = false;
         reg_set(SYS_IMP_APL_VM_TMR_FIQ_ENA_EL2, VM_TMR_FIQ_ENA_ENA_P);
     }
 
@@ -222,7 +284,11 @@ static void hv_update_fiq(void)
 
         //TODO: proper injection
 #ifdef ENABLE_VGIC_MODULE
-        if(hv_vgic3_get_free_lr() != -1){
+        if(timer_v_injected[tcpu]){
+            // Already delivered for this expiry; wait for the guest to rearm.
+        }
+        else if(hv_vgic3_get_free_lr() != -1){
+            timer_v_injected[tcpu] = true;
             hv_vgic3_inject_irq(
                 18,                         //vintid
                 hv_vgic3_get_priority(18),  //priority
@@ -233,6 +299,7 @@ static void hv_update_fiq(void)
             );
         }
         else{
+            timer_v_injected[tcpu] = true;
             virq_t pending = { 
                 .vintid = 18, 
                 .priority = 0x20, 
@@ -245,6 +312,7 @@ static void hv_update_fiq(void)
         }
 #endif
     } else {
+        timer_v_injected[tcpu] = false;
         reg_set(SYS_IMP_APL_VM_TMR_FIQ_ENA_EL2, VM_TMR_FIQ_ENA_ENA_V);
     }
 
@@ -376,47 +444,111 @@ static bool hv_handle_msr_unlocked(struct exc_info *ctx, u64 iss)
         SYSREG_PASS(sys_reg(2, 0, 0, 0, 7))
         SYSREG_PASS(sys_reg(2, 0, 1, 1, 4))
 
-        /* These only need to be trapped if ICH_HCR_EL2.TALL1 is set, currently not in use
+        //
+        // Enabled: ICH_HCR_EL2.TC | TALL1 are now set in
+        // hv_vgicv3_enable_virtual_interrupts(), so these traps do arrive.
+        // (This whole block used to sit inside a /* */ comment, which is why the
+        // handlers below never ran even though the cases looked present.)
+        //
+        //
+        // Common (group-agnostic) ICC registers, trapped by ICH_HCR_EL2.TC.
+        //
+        case SYSREG_ISS(ICC_SRE_EL1):
+            //
+            // Report SRE as enabled. EDK2's GicV3Supported() reads this back after
+            // writing it and falls back to the GICv2 MMIO interface if the bit does not
+            // stick, so it must read as 1. DFB/DIB are irrelevant here.
+            //
+            if(is_read) {
+                regs[rt] = 0x1;
+            }
+            else {
+            }
+            return true;
+        case SYSREG_ISS(ICC_PMR_EL1): {
+            //
+            // The guest's priority mask lives in ICH_VMCR_EL2.VPMR (bits 31:24). Keeping
+            // these in sync is what lets the guest open the mask itself instead of
+            // relying on the bring-up default set in hv_vgicv3_enable_virtual_interrupts.
+            //
+            u64 vmcr = mrs(ICH_VMCR_EL2);
+            if(is_read) {
+                regs[rt] = (vmcr >> 24) & 0xff;
+            }
+            else {
+                vmcr &= ~(0xffUL << 24);
+                vmcr |= (regs[rt] & 0xff) << 24;
+                msr(ICH_VMCR_EL2, vmcr);
+                //
+                // The mask moved, so the line may need to rise (an interrupt held back
+                // until now) or fall (the guest just raised its IRQL above a pending
+                // interrupt's priority).
+                //
+                hv_vgic3_update_vi();
+            }
+            return true;
+        }
+        case SYSREG_ISS(ICC_CTLR_EL1): {
+            u64 vmcr = mrs(ICH_VMCR_EL2);
+            if(is_read) {
+                //
+                // PRIbits = 4 means five implemented priority bits, which matches what
+                // the hardware reported back through VPMR (0xff written, 0xf8 read).
+                // IDbits = 0 means 16-bit INTIDs. EOImode mirrors VMCR.VEOIM (bit 9).
+                //
+                regs[rt] = (4UL << 8) | (((vmcr >> 9) & 1) << 1);
+            }
+            else {
+                vmcr &= ~BIT(9);
+                if(regs[rt] & BIT(1))
+                    vmcr |= BIT(9);
+                msr(ICH_VMCR_EL2, vmcr);
+            }
+            return true;
+        }
         case SYSREG_ISS(ICC_IAR1_EL1):
             if(is_read) {
                 regs[rt] = hv_vgic3_do_iar1();
-                printf("R: ICC_IAR1_EL1: 0x%lx\n", regs[rt]);
             }
             else{
-                printf("W: ICC_IAR1_EL1: 0x%lx\n", regs[rt]);
             }
             return true;
         case SYSREG_ISS(ICC_IGRPEN1_EL1):
             if(is_read) {
                 regs[rt] = hv_vgic3_get_igrpen1();
-                printf("R: ICC_IGRPEN1_EL1: 0x%lx\n", regs[rt]);
             }
             else{
                 hv_vgic3_set_igrpen1(regs[rt]);
-                printf("W: ICC_IGRPEN1_EL1: 0x%lx\n", regs[rt]);
             }
             return true;
         case SYSREG_ISS(ICC_BPR1_EL1):
             if(is_read) {
                 regs[rt] = 0;
-                printf("R: ICC_BPR1_EL1: 0x%lx\n", regs[rt]);
             }
             else{
-                printf("W: ICC_BPR1_EL1: 0x%lx\n", regs[rt]);
+            }
+            return true;
+        case SYSREG_ISS(ICC_RPR_EL1):
+            //
+            // Running priority. Emulated from active LRs (see hv_vgic3_running_priority).
+            // Was previously unhandled - the guest read whatever the trap left in the
+            // register. The HAL reads this on interrupt entry; a wrong value makes it
+            // compute an inconsistent IRQL and bugcheck 0xC8 IRQL_UNEXPECTED_VALUE.
+            //
+            if(is_read) {
+                regs[rt] = hv_vgic3_running_priority();
             }
             return true;
         case SYSREG_ISS(ICC_EOIR1_EL1):
             if(is_read) {
                 regs[rt] = 0;
-                printf("R: ICC_EOIR1_EL1: 0x%lx\n", regs[rt]);
             }
             else{
                 hv_vgic3_do_eoir1(regs[rt]);
                 aic_set_mask(regs[rt], false);
-                printf("W: ICC_EOIR1_EL1: 0x%lx\n", regs[rt]);
             }
             return true;
-        */
+
 
 #ifdef ENABLE_VGIC_MODULE
         /* m1n1_windows change - emulate SGIs */
@@ -480,6 +612,130 @@ static bool hv_handle_msr_unlocked(struct exc_info *ctx, u64 iss)
             else{
                 msr(ID_AA64PFR0_EL1, regs[rt]);
             }
+            return true;
+        //
+        // The rest of the ID register space. This only matters because the GIC
+        // advertisement above requires HCR_EL2.TID3, and TID3 traps reads of *every*
+        // register in this space -- without these cases the guest would take an
+        // unhandled trap on the first unrelated ID register it reads.
+        //
+        // ID registers are read-only, so writes are simply swallowed.
+        //
+        case SYSREG_ISS(ID_PFR0_EL1):
+            if (is_read)
+                regs[rt] = mrs(ID_PFR0_EL1);
+            return true;
+        case SYSREG_ISS(ID_PFR1_EL1):
+            if (is_read)
+                regs[rt] = mrs(ID_PFR1_EL1);
+            return true;
+        case SYSREG_ISS(ID_DFR0_EL1):
+            if (is_read)
+                regs[rt] = mrs(ID_DFR0_EL1);
+            return true;
+        case SYSREG_ISS(ID_AFR0_EL1):
+            if (is_read)
+                regs[rt] = mrs(ID_AFR0_EL1);
+            return true;
+        case SYSREG_ISS(ID_MMFR0_EL1):
+            if (is_read)
+                regs[rt] = mrs(ID_MMFR0_EL1);
+            return true;
+        case SYSREG_ISS(ID_MMFR1_EL1):
+            if (is_read)
+                regs[rt] = mrs(ID_MMFR1_EL1);
+            return true;
+        case SYSREG_ISS(ID_MMFR2_EL1):
+            if (is_read)
+                regs[rt] = mrs(ID_MMFR2_EL1);
+            return true;
+        case SYSREG_ISS(ID_MMFR3_EL1):
+            if (is_read)
+                regs[rt] = mrs(ID_MMFR3_EL1);
+            return true;
+        case SYSREG_ISS(ID_ISAR0_EL1):
+            if (is_read)
+                regs[rt] = mrs(ID_ISAR0_EL1);
+            return true;
+        case SYSREG_ISS(ID_ISAR1_EL1):
+            if (is_read)
+                regs[rt] = mrs(ID_ISAR1_EL1);
+            return true;
+        case SYSREG_ISS(ID_ISAR2_EL1):
+            if (is_read)
+                regs[rt] = mrs(ID_ISAR2_EL1);
+            return true;
+        case SYSREG_ISS(ID_ISAR3_EL1):
+            if (is_read)
+                regs[rt] = mrs(ID_ISAR3_EL1);
+            return true;
+        case SYSREG_ISS(ID_ISAR4_EL1):
+            if (is_read)
+                regs[rt] = mrs(ID_ISAR4_EL1);
+            return true;
+        case SYSREG_ISS(ID_ISAR5_EL1):
+            if (is_read)
+                regs[rt] = mrs(ID_ISAR5_EL1);
+            return true;
+        case SYSREG_ISS(ID_MMFR4_EL1):
+            if (is_read)
+                regs[rt] = mrs(ID_MMFR4_EL1);
+            return true;
+        case SYSREG_ISS(ID_ISAR6_EL1):
+            if (is_read)
+                regs[rt] = mrs(ID_ISAR6_EL1);
+            return true;
+        case SYSREG_ISS(MVFR0_EL1):
+            if (is_read)
+                regs[rt] = mrs(MVFR0_EL1);
+            return true;
+        case SYSREG_ISS(MVFR1_EL1):
+            if (is_read)
+                regs[rt] = mrs(MVFR1_EL1);
+            return true;
+        case SYSREG_ISS(MVFR2_EL1):
+            if (is_read)
+                regs[rt] = mrs(MVFR2_EL1);
+            return true;
+        case SYSREG_ISS(ID_AA64PFR1_EL1):
+            if (is_read)
+                regs[rt] = mrs(ID_AA64PFR1_EL1);
+            return true;
+        case SYSREG_ISS(ID_AA64DFR0_EL1):
+            if (is_read)
+                regs[rt] = mrs(ID_AA64DFR0_EL1);
+            return true;
+        case SYSREG_ISS(ID_AA64DFR1_EL1):
+            if (is_read)
+                regs[rt] = mrs(ID_AA64DFR1_EL1);
+            return true;
+        case SYSREG_ISS(ID_AA64AFR0_EL1):
+            if (is_read)
+                regs[rt] = mrs(ID_AA64AFR0_EL1);
+            return true;
+        case SYSREG_ISS(ID_AA64AFR1_EL1):
+            if (is_read)
+                regs[rt] = mrs(ID_AA64AFR1_EL1);
+            return true;
+        case SYSREG_ISS(ID_AA64ISAR0_EL1):
+            if (is_read)
+                regs[rt] = mrs(ID_AA64ISAR0_EL1);
+            return true;
+        case SYSREG_ISS(ID_AA64ISAR1_EL1):
+            if (is_read)
+                regs[rt] = mrs(ID_AA64ISAR1_EL1);
+            return true;
+        case SYSREG_ISS(ID_AA64MMFR0_EL1):
+            if (is_read)
+                regs[rt] = mrs(ID_AA64MMFR0_EL1);
+            return true;
+        case SYSREG_ISS(ID_AA64MMFR1_EL1):
+            if (is_read)
+                regs[rt] = mrs(ID_AA64MMFR1_EL1);
+            return true;
+        case SYSREG_ISS(ID_AA64MMFR2_EL1):
+            if (is_read)
+                regs[rt] = mrs(ID_AA64MMFR2_EL1);
             return true;
 #endif
         /* m1n1_windows change - Trap the ARM standard PMU regs */
@@ -987,11 +1243,72 @@ static bool hv_handle_msr_unlocked(struct exc_info *ctx, u64 iss)
                 regs[rt] = 0;
             return true;
     }
+
+#ifdef ENABLE_VGIC_MODULE
+    //
+    // Catch-all for the ID register space (op0=3, op1=0, CRn=0, CRm=1..7). HCR_EL2.TID3
+    // traps every encoding in this space, including ones that are unallocated or that we
+    // do not model. The architecture defines those as RAZ, so return zero instead of
+    // letting the guest take an unhandled trap. Without this the guest dies on the first
+    // ID register that is not listed explicitly above.
+    //
+    if (FIELD_GET(ESR_ISS_MSR_OP0, iss) == 3 && FIELD_GET(ESR_ISS_MSR_OP1, iss) == 0 &&
+        FIELD_GET(ESR_ISS_MSR_CRn, iss) == 0) {
+        u64 crm = FIELD_GET(ESR_ISS_MSR_CRm, iss);
+        if (crm >= 1 && crm <= 7) {
+            if (is_read)
+                regs[rt] = 0;
+            return true;
+        }
+    }
+#endif
+
     return false;
 }
 
 static bool hv_handle_smc(struct exc_info *ctx) {
-    printf("PSCI SMC DEBUG: handling PSCI request 0x%lx\n", ctx->regs[0]);
+    // Per-SMC print removed: the guest polls PSCI in bursts, and the UART time spent
+    // printing is stolen from the guest's virtual counter (hv_add_time), which distorts
+    // CNTVCT-based delays like KeStallExecutionProcessor. Re-enable only when chasing PSCI.
+    //
+    // SYSTEM_RESET (0x84000009) kills the machine before BDS ever attempts a boot, and
+    // neither the watchdog nor a failed StartImage explains it. Print the guest's return
+    // address so the caller can be identified: subtract the FD base (PcdFdBaseAddress,
+    // 0x8510B4000) and look the offset up in Build/.../FV/FVMAIN.Fv.map.
+    //
+    if (ctx->regs[0] == 0x84000009 || ctx->regs[0] == 0x84000008) {
+        //
+        // ELR lands inside ResetSystemRuntimeDxe (it issues the SMC), which tells us
+        // nothing about who asked for the reset. Walk the guest stack and print any word
+        // that looks like a DXE code address, so the real caller can be matched against
+        // the "Loading driver at 0x..." lines in the firmware's own log.
+        //
+        printf("PSCI RESET FROM: ELR_EL2=0x%lx x30=0x%lx sp=0x%lx spsr=0x%lx\n", ctx->elr,
+               ctx->regs[30], ctx->sp[1], ctx->spsr);
+        printf("PSCI RESET REGS: x0-x3 = %016lx %016lx %016lx %016lx\n", ctx->regs[0],
+               ctx->regs[1], ctx->regs[2], ctx->regs[3]);
+        printf("PSCI RESET REGS: x4-x7 = %016lx %016lx %016lx %016lx\n", ctx->regs[4],
+               ctx->regs[5], ctx->regs[6], ctx->regs[7]);
+        //
+        // A reset now comes from the Windows kernel (bugcheck -> ResetSystem), not just
+        // DXE. Print any stack word that looks like kernel text (0xfffff8...) or a DXE
+        // image (0x9d...) so the call chain that led to the reset - and, we hope, the
+        // bugcheck path - can be reconstructed. Flush before the reset actually fires.
+        //
+        u64 sp = ctx->sp[1];
+        for (int i = 0; i < 96; i++) {
+            u64 va = sp + i * 8;
+            u64 pa = hv_translate(va, false, false, NULL);
+            if (!pa)
+                continue;
+            u64 val = read64(pa);
+            bool kern = (val >> 40) == 0xfffff8;
+            bool dxe = val >= 0x9d0000000UL && val < 0x9e2000000UL;
+            if (kern || dxe)
+                printf("PSCI RESET STACK: [sp+0x%x] = 0x%lx%s\n", i * 8, val, kern ? " (kern)" : "");
+        }
+        iodev_console_flush();
+    }
     bool handled_smc = hv_handle_psci_smc(ctx);
     return handled_smc;
 }
@@ -1292,6 +1609,15 @@ void hv_exc_fiq(struct exc_info *ctx)
         tick = true;
     }
 
+    //
+    // Heartbeat. Counting only - printing here is not safe, this runs before
+    // hv_get_context()/hv_exc_entry() and a printf at this point silences the whole FIQ
+    // path, which is how the previous attempt at this lost both instruments at once.
+    //
+    hv_fiq_count++;
+    if (tick)
+        hv_fiq_ticks++;
+
     int interruptible_cpu = hv_pinned_cpu;
     if (interruptible_cpu == -1)
         interruptible_cpu = boot_cpu_idx;
@@ -1307,6 +1633,18 @@ void hv_exc_fiq(struct exc_info *ctx)
     hv_wdt_breadcrumb('F');
     hv_get_context(ctx);
     hv_exc_entry();
+
+    //
+    // The PC samples stop the moment the Windows kernel is reached, and so does the
+    // hypervisor's servicing of USB and the vUART. Two candidates: EL2 stops taking FIQs
+    // at all, or FIQs keep arriving but hv_tick is no longer reached - it runs only when
+    // the EL2 physical timer fired and this is the interruptible CPU. The counts separate
+    // those, and the registers printed alongside decide between them.
+    //
+    if ((hv_fiq_count % 20000) == 0)
+        printf("HV FIQ: total=%lu ticks=%lu cpu=%d boot=%d pinned=%d vm_tmr=0x%lx\n",
+               hv_fiq_count, hv_fiq_ticks, smp_id(), boot_cpu_idx, hv_pinned_cpu,
+               mrs(SYS_IMP_APL_VM_TMR_FIQ_ENA_EL2));
 
     // Only poll for HV events in the interruptible CPU
     if (tick) {

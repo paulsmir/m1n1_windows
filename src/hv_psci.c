@@ -484,8 +484,13 @@ void hv_psci_init(void) {
     //
     psci_capabilities = PSCI_GENERIC_CAPABILITY;
     psci_capabilities |= define_psci_cap(PSCI_CPU_OFF_FUNCTION_ID);
-    psci_capabilities |= define_psci_cap(PSCI_CPU_ON_ARM64_FUNCTION_ID);
-    psci_capabilities |= define_psci_cap(PSCI_CPU_ON_ARM32_FUNCTION_ID);
+    //
+    // CPU_ON intentionally NOT advertised: SMP under the HV is unimplemented (see
+    // hv_psci_turn_on_cpu). PSCI_FEATURES(CPU_ON) therefore reports NOT_SUPPORTED, so a
+    // spec-compliant guest keeps to a single core instead of spamming CPU_ON.
+    //
+    // psci_capabilities |= define_psci_cap(PSCI_CPU_ON_ARM64_FUNCTION_ID);
+    // psci_capabilities |= define_psci_cap(PSCI_CPU_ON_ARM32_FUNCTION_ID);
     psci_capabilities |= define_psci_cap(PSCI_SUSPEND_CPU_ARM32_FUNCTION_ID);
     psci_capabilities |= define_psci_cap(PSCI_SUSPEND_CPU_ARM64_FUNCTION_ID);
     psci_capabilities |= define_psci_cap(PSCI_SYSTEM_POWEROFF_FUNCTION_ID);
@@ -1275,6 +1280,16 @@ int hv_psci_turn_on_cpu(uint64_t target_cpu, uint64_t entry_point, uint64_t cont
    unsigned int cpu_identifier = hv_psci_translate_mpidr_to_cpu(target_cpu);
    int retval = PSCI_STATUS_SUCCESS; //assume success
    printf("PSCI DEBUG: turning on CPU%d MPIDR: 0x%lx\n", cpu_identifier, target_cpu);
+   //
+   // SMP under the hypervisor is not implemented: releasing the secondary from the
+   // spintable straight into the guest bypasses hv_start_secondary, so the core comes up
+   // with no VTTBR/stage-2 and no vGIC redistributor - its first memory access faults
+   // into an L2 error and an unhandled SError that resets the whole machine. Until the
+   // secondary-entry path is wired through the HV, refuse CPU_ON with a clean PSCI error
+   // instead. Windows ARM64 tolerates a failed secondary bringup and boots on CPU0. The
+   // print above stays so any CPU_ON attempt is still visible in the log.
+   //
+   return PSCI_STATUS_INTERNAL_FAILURE;
 #ifdef PSCI_POWER_ON_CPUS_ENABLE
    entry_point_info_t entry_point_info;
    //

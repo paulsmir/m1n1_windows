@@ -623,6 +623,10 @@ class M1N1Proxy(Reloadable):
     P_HV_PSCI_FEATURES = 0xc17
     P_HV_PSCI_MEM_PROTECT = 0xc18
     P_HV_PSCI_MEM_PROTECT_CHECK_RANGE = 0xc19
+    # NOTE: this Python enum carries an extra P_HV_HANDLE_PSCI_SMC (0xc11) that the C enum in
+    # src/proxy.h lacks, so C values run 1 lower from P_HV_ADD_TIME on. The C P_HV_MAP_PCI is
+    # therefore 0xc19 (not 0xc1a); match it here so the opcode dispatches instead of S_BADCMD.
+    P_HV_MAP_PCI = 0xc19
 
     P_FB_INIT = 0xd00
     P_FB_SHUTDOWN = 0xd01
@@ -1078,6 +1082,8 @@ class M1N1Proxy(Reloadable):
         return self.request(self.P_HV_PT_WALK, addr)
     def hv_map_vuart(self, base, irq, iodev):
         return self.request(self.P_HV_MAP_VUART, base, irq, iodev)
+    def hv_pci_init(self, ecam, bar_window, irq):
+        return self.request(self.P_HV_MAP_PCI, ecam, bar_window, irq)
     def hv_trace_irq(self, evt_type, num, count, flags):
         return self.request(self.P_HV_TRACE_IRQ, evt_type, num, count, flags)
     def hv_wdt_start(self, cpu):
