@@ -274,6 +274,13 @@ class UartInterface(Reloadable):
                 checksum = struct.unpack("<I", reply[-4:])[0]
                 ccsum = self.data_checksum(reply[:-4])
                 checksum_valid = checksum == ccsum
+                # Async events can already be queued by m1n1 with checksums disabled
+                # while the host has just re-created UartInterface and has not restored
+                # its negotiated feature bits yet.  The sentinel is unambiguous and is
+                # exactly what the target emits in that mode, so accept it independent
+                # of the temporarily stale local flag.
+                if checksum == self.CHECKSUM_SENTINEL:
+                    checksum_valid = True
                 if (not checksum_valid and
                         self.enabled_features & Feature.DISABLE_DATA_CSUMS):
                     checksum_valid = checksum == self.checksum(reply[:-4])
