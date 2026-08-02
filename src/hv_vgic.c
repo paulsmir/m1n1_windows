@@ -20,6 +20,7 @@
 
 #include "hv.h"
 #include "hv_vgic.h"
+#include "hv_vgic_diag.h"
 #include "assert.h"
 #include "cpu_regs.h"
 #include "display.h"
@@ -1721,6 +1722,15 @@ u64 hv_vgic3_read_lr(u32 lr_num){
     // Out-of-range LR: return an invalid (State=0) entry rather than fall off the end
     // (which was undefined behaviour and returned garbage).
     return 0;
+}
+
+void hv_vgic3_get_diag_snapshot(struct hv_vgic_diag_snapshot *out)
+{
+    u64 lrs[HV_VGIC_DIAG_LR_COUNT];
+
+    for (u32 i = 0; i < HV_VGIC_DIAG_LR_COUNT; i++)
+        lrs[i] = hv_vgic3_read_lr(i);
+    hv_vgic_diag_classify_lrs(lrs, out);
 }
 
 void hv_vgic3_write_lr(u32 lr_num, u64 lr_val){

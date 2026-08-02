@@ -96,6 +96,15 @@ static uint16_t cqe_status(const uint8_t *cq, unsigned slot)
     return cqe->status;
 }
 
+static struct vnvme_snapshot snapshot(const struct vnvme_ctrl *ctrl)
+{
+    struct vnvme_snapshot value;
+
+    memset(&value, 0xa5, sizeof(value));
+    vnvme_get_snapshot(ctrl, &value);
+    return value;
+}
+
 int main(void)
 {
     static uint8_t admin_sq[VNVME_PAGE_SIZE] __attribute__((aligned(VNVME_PAGE_SIZE)));
@@ -129,6 +138,12 @@ int main(void)
     assert(vnvme_intx_can_inject(true, 0, false, true, 0));
 
     vnvme_init(&ctrl, BLOCKS, &ops, NULL);
+    struct vnvme_snapshot state = snapshot(&ctrl);
+    assert(state.stats.sq_doorbells == 0);
+    assert(state.stats.cq_doorbells == 0);
+    assert(state.stats.commands == 0);
+    assert(state.stats.completions == 0);
+    assert(!state.irq_asserted);
     assert(vnvme_set_admin_queue(&ctrl, (uint64_t)max_admin_sq, (uint64_t)max_admin_cq, 256, 256));
     assert(!vnvme_set_admin_queue(&ctrl, (uint64_t)max_admin_sq, (uint64_t)max_admin_cq, 257, 256));
 
@@ -139,6 +154,16 @@ int main(void)
     cmd->prp1 = (uint64_t)identify;
     cmd->cdw10 = VNVME_IDENTIFY_CONTROLLER;
     assert(vnvme_sq_doorbell(&ctrl, 0, 1));
+    state = snapshot(&ctrl);
+    assert(state.stats.sq_doorbells == 1);
+    assert(state.stats.cq_doorbells == 0);
+    assert(state.stats.commands == 1);
+    assert(state.stats.completions == 1);
+    assert(state.irq_asserted);
+    assert(state.queues[0].sq_head == 1);
+    assert(state.queues[0].sq_tail == 1);
+    assert(state.queues[0].cq_head == 0);
+    assert(state.queues[0].cq_tail == 1);
     assert(((const struct vnvme_completion *)admin_cq)->cid == 0x101);
     assert(cqe_status(admin_cq, 0) == 1);
     assert(identify[77] == 5); /* MDTS: 128 KiB with a 4 KiB MPS. */
@@ -158,6 +183,10 @@ int main(void)
     assert(trace_events[1].phase == 1);
     assert(trace_events[1].irq_asserted);
     assert(vnvme_cq_doorbell(&ctrl, 0, 1));
+    state = snapshot(&ctrl);
+    assert(state.stats.cq_doorbells == 1);
+    assert(state.queues[0].cq_head == 1);
+    assert(state.queues[0].cq_tail == 1);
     assert(irq_deasserts == 1);
 
     cmd = put_cmd(admin_sq, 1, VNVME_ADMIN_CREATE_CQ, 0x102);
@@ -224,6 +253,20 @@ int main(void)
     cmd->nsid = 1;
     assert(vnvme_sq_doorbell(&ctrl, 1, 1));
     assert((cqe_status(io_cq, 0) & 1) == 0); /* Phase toggles after CQ wrap. */
+
+    /* A valid tail write with an untranslatable SQE is seen but cannot consume a command. */
+    vnvme_init(&ctrl, BLOCKS, &ops, NULL);
+    assert(vnvme_set_admin_queue(&ctrl, (uint64_t)admin_sq, (uint64_t)admin_cq, 4, 4));
+    put_cmd(admin_sq, 0, VNVME_ADMIN_IDENTIFY, 0x301);
+    test_ipa_translation_fails = true;
+    assert(!vnvme_sq_doorbell(&ctrl, 0, 1));
+    test_ipa_translation_fails = false;
+    state = snapshot(&ctrl);
+    assert(state.stats.sq_doorbells == 1);
+    assert(state.stats.commands == 0);
+    assert(state.stats.completions == 0);
+    assert(state.queues[0].sq_head == 0);
+    assert(state.queues[0].sq_tail == 1);
 
     puts("hv_nvme_queue_test: ok");
     return 0;

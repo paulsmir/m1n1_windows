@@ -420,6 +420,7 @@ static bool post_completion(struct vnvme_ctrl *ctrl, u16 cqid, u16 sqid, u16 sq_
         .irq_asserted = ctrl->irq_asserted,
     };
     trace_event(ctrl, &event);
+    ctrl->stats.completions++;
     return true;
 }
 
@@ -430,6 +431,8 @@ bool vnvme_sq_doorbell(struct vnvme_ctrl *ctrl, u16 qid, u16 new_tail)
     struct vnvme_queue *sq = &ctrl->queues[qid];
     if (!sq->sq_valid || new_tail >= sq->sq_size)
         return false;
+    ctrl->stats.sq_doorbells++;
+    sq->sq_tail = new_tail;
 
     u16 walked = 0;
     while (sq->sq_head != new_tail) {
@@ -445,6 +448,7 @@ bool vnvme_sq_doorbell(struct vnvme_ctrl *ctrl, u16 qid, u16 new_tail)
             sq->sq_head = 0;
         if (++walked > sq->sq_size)
             return false;
+        ctrl->stats.commands++;
 
         u32 result = 0;
         bool complete = true;
@@ -480,8 +484,30 @@ bool vnvme_cq_doorbell(struct vnvme_ctrl *ctrl, u16 qid, u16 new_head)
         consumed = cq->cq_size;
     if (consumed > cq->cq_pending)
         return false;
+    ctrl->stats.cq_doorbells++;
     cq->cq_head = new_head;
     cq->cq_pending -= consumed;
     update_irq(ctrl);
     return true;
+}
+
+void vnvme_get_snapshot(const struct vnvme_ctrl *ctrl, struct vnvme_snapshot *out)
+{
+    if (!out)
+        return;
+
+    memset(out, 0, sizeof(*out));
+    if (!ctrl)
+        return;
+
+    out->stats = ctrl->stats;
+    out->irq_asserted = ctrl->irq_asserted;
+    for (u32 i = 0; i < VNVME_MAX_QUEUES; i++) {
+        out->queues[i] = (struct vnvme_queue_state){
+            .sq_head = ctrl->queues[i].sq_head,
+            .sq_tail = ctrl->queues[i].sq_tail,
+            .cq_head = ctrl->queues[i].cq_head,
+            .cq_tail = ctrl->queues[i].cq_tail,
+        };
+    }
 }

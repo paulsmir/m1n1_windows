@@ -124,10 +124,31 @@ struct vnvme_queue {
     u16 cq_tail;
     u16 cq_pending;
     u16 cq_id;
+    u16 sq_tail;
     u8 cq_phase;
     bool sq_valid;
     bool cq_valid;
     bool irq_enabled;
+};
+
+struct vnvme_stats {
+    u64 sq_doorbells;
+    u64 cq_doorbells;
+    u64 commands;
+    u64 completions;
+};
+
+struct vnvme_queue_state {
+    u16 sq_head;
+    u16 sq_tail;
+    u16 cq_head;
+    u16 cq_tail;
+};
+
+struct vnvme_snapshot {
+    struct vnvme_stats stats;
+    struct vnvme_queue_state queues[VNVME_MAX_QUEUES];
+    bool irq_asserted;
 };
 
 struct vnvme_ctrl {
@@ -135,6 +156,7 @@ struct vnvme_ctrl {
     const struct vnvme_backend_ops *ops;
     void *opaque;
     struct vnvme_queue queues[VNVME_MAX_QUEUES];
+    struct vnvme_stats stats;
     bool irq_asserted;
     u8 bounce[VNVME_LBA_SIZE] ALIGNED(VNVME_PAGE_SIZE);
 };
@@ -149,5 +171,6 @@ bool vnvme_set_admin_queue(struct vnvme_ctrl *ctrl, u64 sq_addr, u64 cq_addr, u1
 bool vnvme_sq_doorbell(struct vnvme_ctrl *ctrl, u16 qid, u16 new_tail);
 bool vnvme_cq_doorbell(struct vnvme_ctrl *ctrl, u16 qid, u16 new_head);
 bool vnvme_intx_can_inject(bool asserted, u32 intms, bool injected, bool gic_enabled, int free_lr);
+void vnvme_get_snapshot(const struct vnvme_ctrl *ctrl, struct vnvme_snapshot *out);
 
 #endif

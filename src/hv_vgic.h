@@ -4,6 +4,8 @@
 #define HV_VGIC_H
 #ifdef ENABLE_VGIC_MODULE
 
+#include "hv_vgic_diag.h"
+
 #define VIRQ_QUEUE_SIZE 32
 
 //========
@@ -601,6 +603,7 @@ bool hv_vgic3_irq_enabled(u32 intid);
 int hv_vgic3_get_free_lr(void);
 
 u64 hv_vgic3_read_lr(u32 lr_num);
+void hv_vgic3_get_diag_snapshot(struct hv_vgic_diag_snapshot *out);
 u8 hv_vgic3_running_priority(void);
 
 void hv_vgic3_write_lr(u32 lr_num, u64 lr_val);
