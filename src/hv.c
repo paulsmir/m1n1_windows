@@ -596,7 +596,14 @@ static struct {
     int frames;
     int printed;
     bool valid;
-} stuck;
+    //
+    // Per-CPU: the detector latches one guest stop at a time. With more than one core each
+    // would otherwise overwrite the others' capture mid-collection and the report would mix
+    // registers from different cores - worse than no report, because it looks plausible.
+    //
+} stuck_percpu[MAX_CPUS];
+
+#define stuck (stuck_percpu[smp_id()])
 
 static void __attribute__((noinline)) hv_collect_stuck(struct exc_info *ctx)
 {
