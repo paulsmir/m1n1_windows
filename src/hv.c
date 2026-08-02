@@ -268,6 +268,15 @@ void hv_start(void *entry, u64 regs[4])
     hv_secondary_info.sprr_config = mrs(SYS_IMP_APL_SPRR_CONFIG_EL1);
     hv_secondary_info.gxf_config = mrs(SYS_IMP_APL_GXF_CONFIG_EL1);
 
+    //
+    // Enable the guest timer FIQs on this core. This register is per-CPU and nothing else
+    // initialises it - the boot core gets it from m1n1's startup path, a secondary came up
+    // with the physical-timer FIQ masked (observed: vm_tmr=0x2 on CPU1 against 0x3 on CPU0).
+    // The guest's per-core timer then never fires there, which wrecks Windows' IRQL and
+    // scheduling bookkeeping on that core and shows up as IRQL_NOT_LESS_OR_EQUAL.
+    //
+    msr(SYS_IMP_APL_VM_TMR_FIQ_ENA_EL2, VM_TMR_FIQ_ENA_ENA_P | VM_TMR_FIQ_ENA_ENA_V);
+
 #ifdef ENABLE_VGIC_MODULE
     hv_vgicv3_enable_virtual_interrupts();
     hv_vgicv3_init_list_registers();
