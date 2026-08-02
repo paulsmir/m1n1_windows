@@ -121,6 +121,13 @@ void hv_nvme_poll_irq(void)
     try_raise_intx();
 }
 
+void hv_nvme_get_diag_snapshot(struct vnvme_snapshot *out, bool *ready)
+{
+    vnvme_get_snapshot(&queue_ctrl, out);
+    if (ready)
+        *ready = backend_ready && (regs.csts & CSTS_RDY);
+}
+
 static void backend_irq(void *opaque, bool asserted)
 {
     UNUSED(opaque);

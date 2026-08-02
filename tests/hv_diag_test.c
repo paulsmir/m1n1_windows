@@ -6,6 +6,37 @@
 
 #include "../src/hv_diag.h"
 
+struct exc_info {
+    uint64_t elr;
+    uint64_t spsr;
+};
+
+static unsigned collector_calls;
+
+static void fake_collector(void *opaque, const struct exc_info *ctx,
+                           struct hv_diag_sample_v1 *sample)
+{
+    const uint64_t bias = *(const uint64_t *)opaque;
+
+    collector_calls++;
+    sample->host_fiq_count = 100 + bias;
+    sample->host_tick_count = 90 + bias;
+    sample->guest_pc = ctx->elr;
+    sample->guest_spsr = ctx->spsr;
+    sample->nvme_sq_doorbells = 10 + bias;
+    sample->nvme_cq_doorbells = 9 + bias;
+    sample->nvme_commands = 8 + bias;
+    sample->nvme_completions = 7 + bias;
+    sample->fb_completed_frames = 6 + bias;
+    sample->fb_backpressure_skips = 5 + bias;
+    sample->vgic_pending_lrs = 4;
+    sample->vgic_active_lrs = 3;
+    sample->vgic_occupied_lrs = 2;
+    sample->flags = HV_DIAG_FLAG_NVME_READY | HV_DIAG_FLAG_FB_ENABLED;
+    sample->queues[0] = (struct hv_diag_queue_v1){1, 2, 3, 4};
+    sample->queues[1] = (struct hv_diag_queue_v1){5, 6, 7, 8};
+}
+
 static struct hv_diag_sample_v1 sample_with_pc(uint64_t pc)
 {
     struct hv_diag_sample_v1 sample = {0};
@@ -163,6 +194,69 @@ static void test_irq_sources_and_lifecycle_stages_map_to_distinct_counters(void)
         assert(counters[counter] == 1);
 }
 
+static void test_tick_publishes_one_composed_sample_every_five_seconds(void)
+{
+    const uint64_t bias = 1;
+    struct exc_info ctx = {.elr = 0xfffff80012345678ULL, .spsr = 0x60000085ULL};
+    struct hv_diag_status_v1 status;
+    struct hv_diag_sample_v1 sample;
+
+    hv_diag_reset();
+    collector_calls = 0;
+    hv_diag_set_collector(fake_collector, (void *)&bias);
+    hv_diag_count(HV_DIAG_NVME_IRQ_INJECT);
+    hv_diag_count(HV_DIAG_NVME_IRQ_IAR);
+    hv_diag_count(HV_DIAG_NVME_IRQ_EOI);
+    hv_diag_count(HV_DIAG_XHCI_HW_IRQ);
+    hv_diag_count(HV_DIAG_XHCI_IRQ_INJECT);
+    hv_diag_count(HV_DIAG_XHCI_IRQ_IAR);
+    hv_diag_count(HV_DIAG_XHCI_IRQ_EOI);
+
+    for (unsigned tick = 1; tick < HV_DIAG_SAMPLE_TICKS; tick++)
+        hv_diag_tick(&ctx);
+    assert(hv_diag_get_status(&status));
+    assert(status.count == 0);
+    assert(collector_calls == 0);
+
+    hv_diag_tick(&ctx);
+    assert(hv_diag_get_status(&status));
+    assert(status.count == 1);
+    assert(collector_calls == 1);
+    assert(hv_diag_get_sample(0, &sample));
+    assert(sample.host_fiq_count == 101);
+    assert(sample.host_tick_count == 91);
+    assert(sample.guest_pc == ctx.elr);
+    assert(sample.guest_spsr == ctx.spsr);
+    assert(sample.nvme_sq_doorbells == 11);
+    assert(sample.nvme_cq_doorbells == 10);
+    assert(sample.nvme_commands == 9);
+    assert(sample.nvme_completions == 8);
+    assert(sample.nvme_irq_injects == 1);
+    assert(sample.nvme_irq_iars == 1);
+    assert(sample.nvme_irq_eois == 1);
+    assert(sample.xhci_hw_irqs == 1);
+    assert(sample.xhci_irq_injects == 1);
+    assert(sample.xhci_irq_iars == 1);
+    assert(sample.xhci_irq_eois == 1);
+    assert(sample.fb_completed_frames == 7);
+    assert(sample.fb_backpressure_skips == 6);
+    assert(sample.vgic_pending_lrs == 4);
+    assert(sample.vgic_active_lrs == 3);
+    assert(sample.vgic_occupied_lrs == 2);
+    assert(sample.flags == (HV_DIAG_FLAG_NVME_READY | HV_DIAG_FLAG_FB_ENABLED));
+    assert(sample.queues[0].sq_head == 1 && sample.queues[0].cq_tail == 4);
+    assert(sample.queues[1].sq_head == 5 && sample.queues[1].cq_tail == 8);
+
+    ctx.elr += 4;
+    for (unsigned tick = 0; tick < HV_DIAG_SAMPLE_TICKS; tick++)
+        hv_diag_tick(&ctx);
+    assert(hv_diag_get_status(&status));
+    assert(status.count == 2);
+    assert(collector_calls == 2);
+    assert(hv_diag_get_sample(1, &sample));
+    assert(sample.guest_pc == ctx.elr);
+}
+
 int main(void)
 {
     _Static_assert((HV_DIAG_RING_CAPACITY & (HV_DIAG_RING_CAPACITY - 1)) == 0,
@@ -176,6 +270,7 @@ int main(void)
     test_invalid_queries_do_not_modify_state_or_output();
     test_lifecycle_counters_are_independent_and_reset_together();
     test_irq_sources_and_lifecycle_stages_map_to_distinct_counters();
+    test_tick_publishes_one_composed_sample_every_five_seconds();
     puts("hv_diag_test: ok");
     return 0;
 }

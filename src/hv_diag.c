@@ -13,7 +13,11 @@ static struct {
     u64 counters[HV_DIAG_COUNTER_COUNT];
     u64 next_sequence;
     u32 count;
+    u32 ticks;
 } ring;
+
+static hv_diag_collect_fn collector;
+static void *collector_opaque;
 
 void hv_diag_reset(void)
 {
@@ -101,4 +105,33 @@ void hv_diag_count_vgic_irq(enum hv_diag_irq_stage stage, u32 vintid, u32 nvme_v
         hv_diag_count((enum hv_diag_counter)(HV_DIAG_NVME_IRQ_INJECT + stage_index));
     else if (vintid == HV_DIAG_J313_XHCI_VINTID)
         hv_diag_count((enum hv_diag_counter)(HV_DIAG_XHCI_IRQ_INJECT + stage_index));
+}
+
+void hv_diag_set_collector(hv_diag_collect_fn collect, void *opaque)
+{
+    collector = collect;
+    collector_opaque = opaque;
+}
+
+void hv_diag_tick(const struct exc_info *ctx)
+{
+    if (++ring.ticks < HV_DIAG_SAMPLE_TICKS)
+        return;
+    ring.ticks = 0;
+    if (!collector)
+        return;
+
+    struct hv_diag_sample_v1 sample = {0};
+    u64 counters[HV_DIAG_COUNTER_COUNT];
+
+    collector(collector_opaque, ctx, &sample);
+    hv_diag_get_counters(counters);
+    sample.nvme_irq_injects = counters[HV_DIAG_NVME_IRQ_INJECT];
+    sample.nvme_irq_iars = counters[HV_DIAG_NVME_IRQ_IAR];
+    sample.nvme_irq_eois = counters[HV_DIAG_NVME_IRQ_EOI];
+    sample.xhci_hw_irqs = counters[HV_DIAG_XHCI_HW_IRQ];
+    sample.xhci_irq_injects = counters[HV_DIAG_XHCI_IRQ_INJECT];
+    sample.xhci_irq_iars = counters[HV_DIAG_XHCI_IRQ_IAR];
+    sample.xhci_irq_eois = counters[HV_DIAG_XHCI_IRQ_EOI];
+    hv_diag_publish(&sample);
 }

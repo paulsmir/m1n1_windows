@@ -18,6 +18,9 @@ typedef uint64_t u64;
 #define HV_DIAG_QUEUE_COUNT   2u
 #define HV_DIAG_J313_XHCI_HW_IRQ 857u
 #define HV_DIAG_J313_XHCI_VINTID 857u
+#define HV_DIAG_SAMPLE_TICKS 25000u
+
+struct exc_info;
 
 enum hv_diag_sample_flags {
     HV_DIAG_FLAG_NVME_READY = 1u << 0,
@@ -84,6 +87,9 @@ struct hv_diag_status_v1 {
     u64 next_sequence;
 };
 
+typedef void (*hv_diag_collect_fn)(void *opaque, const struct exc_info *ctx,
+                                   struct hv_diag_sample_v1 *sample);
+
 _Static_assert((HV_DIAG_RING_CAPACITY & (HV_DIAG_RING_CAPACITY - 1)) == 0,
                "diagnostic ring capacity must be a power of two");
 _Static_assert(sizeof(struct hv_diag_queue_v1) == 8, "diagnostic queue ABI size");
@@ -98,5 +104,7 @@ void hv_diag_count(enum hv_diag_counter counter);
 void hv_diag_get_counters(u64 out[HV_DIAG_COUNTER_COUNT]);
 void hv_diag_count_hw_irq(u32 hw_irq);
 void hv_diag_count_vgic_irq(enum hv_diag_irq_stage stage, u32 vintid, u32 nvme_vintid);
+void hv_diag_set_collector(hv_diag_collect_fn collect, void *opaque);
+void hv_diag_tick(const struct exc_info *ctx);
 
 #endif

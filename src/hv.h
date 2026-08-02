@@ -82,6 +82,8 @@ bool hv_nvme_init_backend(void);
 void hv_nvme_map_bar(u64 base);
 void hv_nvme_unmap_bar(void);
 void hv_nvme_poll_irq(void);
+struct vnvme_snapshot;
+void hv_nvme_get_diag_snapshot(struct vnvme_snapshot *out, bool *ready);
 struct virtio_conf;
 void hv_map_virtio(u64 base, struct virtio_conf *conf);
 void virtio_put_buffer(u64 base, int qu, u32 id, u32 len);
@@ -130,6 +132,8 @@ void hv_arm_tick(bool secondary);
 void hv_rearm(void);
 void hv_maybe_exit(void);
 void hv_tick(struct exc_info *ctx);
+extern u64 hv_fiq_count;
+extern u64 hv_fiq_ticks;
 
 //
 // PSCI init

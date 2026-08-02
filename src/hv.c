@@ -5,7 +5,10 @@
 #include "cpu_regs.h"
 #include "display.h"
 #include "gxf.h"
+#include "hv_diag.h"
 #include "hv_fb_stream.h"
+#include "hv_nvme_queue.h"
+#include "hv_vgic.h"
 #include "memory.h"
 #include "pcie.h"
 #include "smp.h"
@@ -38,6 +41,53 @@ bool hv_started_cpus[MAX_CPUS];
 u64 hv_cpus_in_guest;
 u64 hv_saved_sp[MAX_CPUS];
 static struct hv_fb_stream hv_framebuffer_stream;
+
+static void hv_collect_diag(void *opaque, const struct exc_info *ctx,
+                            struct hv_diag_sample_v1 *sample)
+{
+    UNUSED(opaque);
+    struct vnvme_snapshot nvme;
+    bool nvme_ready;
+    struct hv_fb_stream_stats fb = hv_fb_stream_get_stats(&hv_framebuffer_stream);
+
+    hv_nvme_get_diag_snapshot(&nvme, &nvme_ready);
+    sample->host_fiq_count = hv_fiq_count;
+    sample->host_tick_count = hv_fiq_ticks;
+    if (ctx) {
+        sample->guest_pc = ctx->elr;
+        sample->guest_spsr = ctx->spsr;
+    }
+    sample->nvme_sq_doorbells = nvme.stats.sq_doorbells;
+    sample->nvme_cq_doorbells = nvme.stats.cq_doorbells;
+    sample->nvme_commands = nvme.stats.commands;
+    sample->nvme_completions = nvme.stats.completions;
+    sample->fb_completed_frames = fb.completed_frames;
+    sample->fb_backpressure_skips = fb.backpressure_skips;
+    if (nvme_ready)
+        sample->flags |= HV_DIAG_FLAG_NVME_READY;
+    if (nvme.irq_asserted)
+        sample->flags |= HV_DIAG_FLAG_NVME_IRQ_ASSERTED;
+    if (hv_framebuffer_stream.enabled)
+        sample->flags |= HV_DIAG_FLAG_FB_ENABLED;
+
+    _Static_assert(HV_DIAG_QUEUE_COUNT == VNVME_MAX_QUEUES, "diagnostic NVMe queue count");
+    for (u32 i = 0; i < HV_DIAG_QUEUE_COUNT; i++) {
+        sample->queues[i] = (struct hv_diag_queue_v1){
+            .sq_head = nvme.queues[i].sq_head,
+            .sq_tail = nvme.queues[i].sq_tail,
+            .cq_head = nvme.queues[i].cq_head,
+            .cq_tail = nvme.queues[i].cq_tail,
+        };
+    }
+
+#ifdef ENABLE_VGIC_MODULE
+    struct hv_vgic_diag_snapshot vgic;
+    hv_vgic3_get_diag_snapshot(&vgic);
+    sample->vgic_pending_lrs = vgic.pending_lrs;
+    sample->vgic_active_lrs = vgic.active_lrs;
+    sample->vgic_occupied_lrs = vgic.occupied_lrs;
+#endif
+}
 
 static bool hv_send_fb_chunk(void *opaque, const struct hv_fb_chunk_header *header,
                              const void *payload)
@@ -79,6 +129,8 @@ static struct hv_secondary_info_t hv_secondary_info;
 
 void hv_init(void)
 {
+    hv_diag_reset();
+    hv_diag_set_collector(hv_collect_diag, NULL);
     hv_fb_stream_disable(&hv_framebuffer_stream);
     pcie_shutdown();
     // Make sure we wake up DCP if we put it to sleep, just quiesce it to match ADT
@@ -933,6 +985,7 @@ static void hv_sample_pc(struct exc_info *ctx)
 void hv_tick(struct exc_info *ctx)
 {
     hv_wdt_pet();
+    hv_diag_tick(ctx);
     hv_sample_pc(ctx);
     iodev_handle_events(uartproxy_iodev);
     if (iodev_can_read(uartproxy_iodev)) {
