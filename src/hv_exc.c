@@ -1652,8 +1652,35 @@ void hv_exc_fiq(struct exc_info *ctx)
     // TODO: inject the FIQ to the guest as an IRQ if vGIC is enabled.
     //
 
-    if (mrs(CNTP_CTL_EL0) == (CNTx_CTL_ISTATUS | CNTx_CTL_ENABLE)) {
-        msr(CNTP_CTL_EL0, CNTx_CTL_ISTATUS | CNTx_CTL_IMASK | CNTx_CTL_ENABLE);
+    //
+    // Detect our own expired tick by testing the bits, NOT by comparing the whole register.
+    //
+    // The tick is masked here and only re-armed later, and only when `tick` is true. If the
+    // handler ever leaves without reaching hv_arm_tick() - the budget note below is explicit
+    // that extra work in this path does exactly that - the register is left as
+    // ISTATUS|IMASK|ENABLE. An exact-equality test never matches that value again, so `tick`
+    // stays false forever, the EL2 timer is never re-armed, and every EL2 tick stops: the
+    // heartbeat and PC samples freeze while the hardware is still fine. Matching on the bits
+    // lets the very next FIQ from any other source (the guest timer keeps running) re-arm it
+    // and recover instead of wedging permanently.
+    //
+    u64 cntp_ctl = mrs(CNTP_CTL_EL0);
+    if ((cntp_ctl & (CNTx_CTL_ISTATUS | CNTx_CTL_ENABLE)) ==
+        (CNTx_CTL_ISTATUS | CNTx_CTL_ENABLE)) {
+        //
+        // Re-arm immediately instead of masking and deferring the re-arm to the end of the
+        // handler. Masking first was the deadlock: any path that leaves before hv_arm_tick()
+        // strands the timer as ISTATUS|IMASK|ENABLE, and once EL2's own tick is gone the only
+        // remaining wake-up is the guest timer - so if the guest also stops rearming, every
+        // FIQ source is silent and the hypervisor goes quiet with the hardware still healthy
+        // (heartbeat, PC samples, USB and vUART service all stop together). Re-arming here
+        // costs nothing: the next tick is still a full interval away, the same budget the
+        // handler already had.
+        //
+        int tick_cpu = hv_pinned_cpu;
+        if (tick_cpu == -1)
+            tick_cpu = boot_cpu_idx;
+        hv_arm_tick(smp_id() != tick_cpu);
         tick = true;
     }
 
