@@ -20,13 +20,23 @@ static void update_irq(void)
     // Pump USB events for …43 so the emulated PL011 (kd) still sees incoming host bytes.
     iodev_handle_events(IODEV_USB_VUART);
 
-    // The S5L UART is console-out only now: its firmware DEBUG text is echoed to the m1n1
-    // console (…41 / hv.log), while IODEV_USB_VUART (…43) belongs exclusively to the kd
-    // PL011 port (hv_pl011.c). So it must NEVER report RX from …43 - doing so would steal
-    // kd input bytes and raise phantom RX interrupts (a spurious-IRQ source).
+    // Firmware DEBUG text always goes to the m1n1 console (…41 / hv.log). Host INPUT on …43 is
+    // shared: the S5L UART consumes it only until kdcom first touches the emulated PL011, after
+    // which the channel belongs to the debugger alone. Reporting RX after that would steal kd
+    // bytes and raise phantom RX interrupts.
     utrstat |= UTRSTAT_TXBE | UTRSTAT_TXE;
     utrstat &= ~UTRSTAT_RXD;
     ufstat = 0;
+
+    // Advertise received data while the debugger has not taken the channel over.
+    ssize_t rx_queued;
+    if (!pl011_kd_live() && (rx_queued = iodev_can_read(IODEV_USB_VUART))) {
+        utrstat |= UTRSTAT_RXD;
+        ufstat = rx_queued > 15 ? (FIELD_PREP(UFSTAT_RXCNT, 15) | UFSTAT_RXFULL)
+                                : FIELD_PREP(UFSTAT_RXCNT, rx_queued);
+        if (FIELD_GET(UCON_RXMODE, ucon) == UCON_MODE_IRQ && ucon & UCON_RXTO_ENA)
+            utrstat |= UTRSTAT_RXTO;
+    }
 
     if (FIELD_GET(UCON_TXMODE, ucon) == UCON_MODE_IRQ && ucon & UCON_TXTHRESH_ENA) {
         utrstat |= UTRSTAT_TXTHRESH;
@@ -34,7 +44,7 @@ static void update_irq(void)
 
     if (vuart_irq) {
         uart_clear_irqs();
-        if (utrstat & UTRSTAT_TXTHRESH) {
+        if (utrstat & (UTRSTAT_TXTHRESH | UTRSTAT_RXTHRESH | UTRSTAT_RXTO)) {
             aic_set_sw(vuart_irq, true);
         } else {
             aic_set_sw(vuart_irq, false);
@@ -98,8 +108,15 @@ static bool handle_vuart(struct exc_info *ctx, u64 addr, u64 *val, bool write, i
                 *val = ucon;
                 break;
             case URXH:
-                // No host input to the firmware UART; …43 input belongs to kd (PL011).
-                *val = 0;
+                // Host input reaches the firmware UART only until kdcom claims the channel.
+                // Without this the UEFI Shell has no ConIn at all and cannot be typed into.
+                if (!pl011_kd_live() && iodev_can_read(IODEV_USB_VUART)) {
+                    uint8_t c;
+                    iodev_read(IODEV_USB_VUART, &c, 1);
+                    *val = c;
+                } else {
+                    *val = 0;
+                }
                 break;
             case UTRSTAT:
                 *val = utrstat;

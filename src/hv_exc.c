@@ -254,7 +254,36 @@ static void hv_update_fiq(void)
         //TODO: proper injection
 #ifdef ENABLE_VGIC_MODULE
         if(timer_p_injected[tcpu]){
-            // Already delivered for this expiry; wait for the guest to rearm.
+            //
+            // Already delivered for this expiry; normally we wait for the guest to rearm.
+            //
+            // But the delivery is a SINGLE injection into a list register, and that register can
+            // be reused for another interrupt before the guest ever takes it. When that happens
+            // the guest never runs its timer ISR, so it never rearms CNTP_CVAL_EL02, so the
+            // branch below that re-enables VM_TMR_FIQ_ENA_ENA_P never runs - the guest-timer FIQ
+            // stays masked forever and everything stops (guest and the EL2 periodic FIQ alike).
+            // That is the freeze seen identically under UEFI, Windows Setup and installed
+            // Windows, with the last log line showing an expired, never-rearmed timer
+            // (CNTP_CVAL - now going negative).
+            //
+            // If our injected INTID is no longer present in any list register, the delivery was
+            // lost rather than consumed: clear the latch and unmask so the expiry is injected
+            // again. This cannot storm - the next pass injects once and masks again.
+            //
+            bool still_queued = false;
+            for (int lr = 0; lr < 8; lr++) {
+                u64 lr_val = hv_vgic3_read_lr(lr);
+                if (((lr_val >> ICH_LR_STATE_SHIFT) & ICH_LR_STATE_MASK) == 0)
+                    continue;
+                if (((lr_val >> ICH_LR_VIRTUAL_SHIFT) & ICH_LR_VIRTUAL_MASK) == 17) {
+                    still_queued = true;
+                    break;
+                }
+            }
+            if (!still_queued) {
+                timer_p_injected[tcpu] = false;
+                reg_set(SYS_IMP_APL_VM_TMR_FIQ_ENA_EL2, VM_TMR_FIQ_ENA_ENA_P);
+            }
         }
         else if(hv_vgic3_get_free_lr() != -1){
             timer_p_injected[tcpu] = true;

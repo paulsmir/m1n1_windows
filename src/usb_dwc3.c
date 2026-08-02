@@ -1226,10 +1226,19 @@ dwc3_dev_t *usb_dwc3_init(uintptr_t regs, dart_dev_t *dart)
     dev->pipe[CDC_ACM_PIPE_1].ep_out = USB_LEP_CDC_BULK_OUT_2;
 
     for (int i = 0; i < CDC_ACM_PIPE_MAX; i++) {
-        dev->pipe[i].host2device = ringbuffer_alloc(CDC_BUFFER_SIZE);
+        //
+        // Allocate one byte more than the usable capacity. ringbuffer_get_free() now reserves a
+        // byte so a full ring stays distinguishable from an empty one (read == write), which is
+        // correct - but it made the usable size CDC_BUFFER_SIZE - 1. The bulk-OUT path only
+        // re-arms a transfer while `free >= XFER_SIZE`, and CDC_BUFFER_SIZE is an exact multiple
+        // of XFER_SIZE, so the ring landed one byte short at the boundary and receive stalled
+        // forever (a large firmware upload deadlocked mid-transfer). With the extra byte the
+        // usable capacity is again an exact multiple of XFER_SIZE.
+        //
+        dev->pipe[i].host2device = ringbuffer_alloc(CDC_BUFFER_SIZE + 1);
         if (!dev->pipe[i].host2device)
             goto error;
-        dev->pipe[i].device2host = ringbuffer_alloc(CDC_BUFFER_SIZE);
+        dev->pipe[i].device2host = ringbuffer_alloc(CDC_BUFFER_SIZE + 1);
         if (!dev->pipe[i].device2host)
             goto error;
 

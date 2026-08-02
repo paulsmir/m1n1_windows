@@ -28,12 +28,20 @@ static const u8 pl011_id[8] = {0x11, 0x10, 0x14, 0x00, 0x0d, 0xf0, 0x05, 0xb1};
 
 // Register access at page offset `off` (0..0xfff). Called from handle_vuart for the
 // second page of the UART block. Returns true (always handled).
+// True once kdcom has touched this port. While it is false the firmware's S5L UART may still
+// take host input (UEFI Shell typing); afterwards the channel belongs to the debugger alone.
+static bool kd_live = false;
+
+bool pl011_kd_live(void)
+{
+    return kd_live;
+}
+
 bool pl011_reg(u64 off, u64 *val, bool write)
 {
     // One-shot: proves the DBG2 -> BCD -> PL011 chain is live (kdcom touched us).
-    static bool announced = false;
-    if (!announced) {
-        announced = true;
+    if (!kd_live) {
+        kd_live = true;
         printf("HV: PL011 first access (kd debug port live) off=0x%lx write=%d\n", off, write);
     }
 
