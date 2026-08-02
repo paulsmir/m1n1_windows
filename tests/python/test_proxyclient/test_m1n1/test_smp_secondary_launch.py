@@ -44,6 +44,17 @@ class SecondaryLaunchContractTest(unittest.TestCase):
         self.assertIn("HV_DIAG_X18_REPORT_LIMIT", source)
         self.assertIn("d->x18_reports < HV_DIAG_X18_REPORT_LIMIT", diag)
 
+    def test_guest_wfi_keeps_architectural_register_context(self):
+        source = HV_C.read_text()
+        configure = function_body(source, "static void hv_configure_guest_wfi(void)")
+        primary = function_body(source, "void hv_init(void)")
+        secondary = function_body(source, "static void hv_init_secondary(")
+
+        self.assertIn("CYC_OVRD_WFI_MODE(2)", configure)
+        self.assertIn("hv_configure_guest_wfi()", primary)
+        self.assertIn("hv_configure_guest_wfi()", secondary)
+        self.assertNotIn("CYC_OVRD_WFI_MODE(0)", source)
+
 
 if __name__ == "__main__":
     unittest.main()

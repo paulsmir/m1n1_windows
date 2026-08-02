@@ -134,6 +134,25 @@ struct hv_secondary_launch_context {
 
 static struct hv_secondary_launch_context secondary_launch[MAX_CPUS];
 
+static void hv_configure_guest_wfi(void)
+{
+    if (!cpu_features->cyc_ovrd)
+        return;
+
+    /*
+     * Keep guest WFI in the architectural, context-retaining "core up" mode.
+     * The generic CPU bring-up code selects mode 2, but the hypervisor used to
+     * reset it to mode 0 immediately before entering the guest.  On an idle M1
+     * Icestorm secondary that transition loses x18 (Windows' KPCR pointer)
+     * across HalProcessorIdle's WFI, and the first KfRaiseIrql dereference then
+     * bugchecks at address 0x38.  Mode 2 still waits for an interrupt; it only
+     * prevents the undocumented deep power transition from discarding guest
+     * architectural state.
+     */
+    reg_mask(SYS_IMP_APL_CYC_OVRD, CYC_OVRD_WFI_MODE_MASK, CYC_OVRD_WFI_MODE(2));
+    sysop("isb");
+}
+
 void hv_init(void)
 {
     hv_diag_reset();
@@ -224,9 +243,7 @@ void hv_init(void)
         hv_secondary_tick_interval = hv_tick_interval;
     }
 
-    // Set deep WFI back to defaults
-    if (cpu_features->cyc_ovrd)
-        reg_mask(SYS_IMP_APL_CYC_OVRD, CYC_OVRD_WFI_MODE_MASK, CYC_OVRD_WFI_MODE(0));
+    hv_configure_guest_wfi();
 
     sysop("dsb ishst");
     sysop("tlbi alle1is");
@@ -367,8 +384,7 @@ static void hv_init_secondary(struct hv_secondary_info_t *info)
     hv_vgicv3_init_list_registers();
 #endif
 
-    if (cpu_features->cyc_ovrd)
-        reg_mask(SYS_IMP_APL_CYC_OVRD, CYC_OVRD_WFI_MODE_MASK, CYC_OVRD_WFI_MODE(0));
+    hv_configure_guest_wfi();
 
     if (gxf_enabled())
         gl2_call(hv_set_gxf_vbar, 0, 0, 0, 0);
