@@ -135,3 +135,17 @@ void hv_diag_tick(const struct exc_info *ctx)
     sample.xhci_irq_eois = counters[HV_DIAG_XHCI_IRQ_EOI];
     hv_diag_publish(&sample);
 }
+
+bool hv_diag_copy_status(void *destination, u64 size)
+{
+    if (size != sizeof(struct hv_diag_status_v1))
+        return false;
+    return hv_diag_get_status(destination);
+}
+
+bool hv_diag_copy_sample(u64 sequence, void *destination, u64 size)
+{
+    if (size != sizeof(struct hv_diag_sample_v1))
+        return false;
+    return hv_diag_get_sample(sequence, destination);
+}

@@ -629,6 +629,8 @@ class M1N1Proxy(Reloadable):
     # therefore 0xc19 (not 0xc1a); match it here so the opcode dispatches instead of S_BADCMD.
     P_HV_MAP_PCI = 0xc19
     P_HV_FB_STREAM_CONFIG = 0xc1a
+    P_HV_DIAG_STATUS = 0xc1b
+    P_HV_DIAG_SAMPLE = 0xc1c
 
     P_FB_INIT = 0xd00
     P_FB_SHUTDOWN = 0xd01
@@ -1088,6 +1090,24 @@ class M1N1Proxy(Reloadable):
         return self.request(self.P_HV_MAP_PCI, ecam, bar_window, irq)
     def hv_fb_stream_config(self, ipa, size, width, height, stride):
         return self.request(self.P_HV_FB_STREAM_CONFIG, ipa, size, width, height, stride)
+    def hv_diag_status(self):
+        size = 32
+        address = self.heap.malloc(size)
+        try:
+            if not self.request(self.P_HV_DIAG_STATUS, address, size):
+                return None
+            return self.iface.readmem(address, size)
+        finally:
+            self.heap.free(address)
+    def hv_diag_sample(self, sequence):
+        size = 176
+        address = self.heap.malloc(size)
+        try:
+            if not self.request(self.P_HV_DIAG_SAMPLE, sequence, address, size):
+                return None
+            return self.iface.readmem(address, size)
+        finally:
+            self.heap.free(address)
     def hv_trace_irq(self, evt_type, num, count, flags):
         return self.request(self.P_HV_TRACE_IRQ, evt_type, num, count, flags)
     def hv_wdt_start(self, cpu):

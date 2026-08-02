@@ -257,6 +257,39 @@ static void test_tick_publishes_one_composed_sample_every_five_seconds(void)
     assert(sample.guest_pc == ctx.elr);
 }
 
+static void test_proxy_copyout_requires_exact_sizes_and_retained_sequence(void)
+{
+    struct hv_diag_status_v1 status;
+    struct hv_diag_sample_v1 sample;
+    struct hv_diag_sample_v1 published = sample_with_pc(0x8899);
+    unsigned char sentinel[sizeof(sample)];
+
+    hv_diag_reset();
+    hv_diag_publish(&published);
+    memset(&status, 0xa5, sizeof(status));
+    assert(hv_diag_copy_status(&status, sizeof(status)));
+    assert(status.abi_version == 1 && status.count == 1);
+    memset(&status, 0xa5, sizeof(status));
+    assert(!hv_diag_copy_status(NULL, sizeof(status)));
+    assert(!hv_diag_copy_status(&status, sizeof(status) - 1));
+    assert(((unsigned char *)&status)[0] == 0xa5);
+    assert(!hv_diag_copy_status(&status, sizeof(status) + 1));
+    assert(((unsigned char *)&status)[0] == 0xa5);
+
+    memset(&sample, 0, sizeof(sample));
+    assert(hv_diag_copy_sample(0, &sample, sizeof(sample)));
+    assert(sample.sequence == 0 && sample.guest_pc == 0x8899);
+    memset(sentinel, 0xa5, sizeof(sentinel));
+    memcpy(&sample, sentinel, sizeof(sample));
+    assert(!hv_diag_copy_sample(1, &sample, sizeof(sample)));
+    assert(memcmp(&sample, sentinel, sizeof(sample)) == 0);
+    assert(!hv_diag_copy_sample(0, NULL, sizeof(sample)));
+    assert(!hv_diag_copy_sample(0, &sample, sizeof(sample) - 1));
+    assert(memcmp(&sample, sentinel, sizeof(sample)) == 0);
+    assert(!hv_diag_copy_sample(0, &sample, sizeof(sample) + 1));
+    assert(memcmp(&sample, sentinel, sizeof(sample)) == 0);
+}
+
 int main(void)
 {
     _Static_assert((HV_DIAG_RING_CAPACITY & (HV_DIAG_RING_CAPACITY - 1)) == 0,
@@ -271,6 +304,7 @@ int main(void)
     test_lifecycle_counters_are_independent_and_reset_together();
     test_irq_sources_and_lifecycle_stages_map_to_distinct_counters();
     test_tick_publishes_one_composed_sample_every_five_seconds();
+    test_proxy_copyout_requires_exact_sizes_and_retained_sequence();
     puts("hv_diag_test: ok");
     return 0;
 }

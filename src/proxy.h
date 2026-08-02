@@ -153,6 +153,8 @@ typedef enum {
     P_HV_PSCI_MEM_PROTECT_CHECK_RANGE,
     P_HV_MAP_PCI,
     P_HV_FB_STREAM_CONFIG = 0xc1a,
+    P_HV_DIAG_STATUS = 0xc1b,
+    P_HV_DIAG_SAMPLE = 0xc1c,
 
     P_FB_INIT = 0xd00,
     P_FB_SHUTDOWN,

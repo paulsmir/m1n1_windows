@@ -10,6 +10,7 @@
 #include "gxf.h"
 #include "heapblock.h"
 #include "hv.h"
+#include "hv_diag.h"
 #include "iodev.h"
 #include "kboot.h"
 #include "malloc.h"
@@ -501,6 +502,13 @@ int proxy_process(ProxyRequest *request, ProxyReply *reply)
             reply->retval = hv_configure_fb_stream(
                 request->args[0], request->args[1], request->args[2], request->args[3],
                 request->args[4]);
+            break;
+        case P_HV_DIAG_STATUS:
+            reply->retval = hv_diag_copy_status((void *)request->args[0], request->args[1]);
+            break;
+        case P_HV_DIAG_SAMPLE:
+            reply->retval = hv_diag_copy_sample(request->args[0], (void *)request->args[1],
+                                                request->args[2]);
             break;
         case P_HV_MAP_VIRTIO:
             hv_map_virtio(request->args[0], (void *)request->args[1]);
