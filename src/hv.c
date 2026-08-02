@@ -127,6 +127,13 @@ struct hv_secondary_info_t {
 
 static struct hv_secondary_info_t hv_secondary_info;
 
+struct hv_secondary_launch_context {
+    void *entry;
+    u64 regs[4];
+};
+
+static struct hv_secondary_launch_context secondary_launch[MAX_CPUS];
+
 void hv_init(void)
 {
     hv_diag_reset();
@@ -369,8 +376,14 @@ static void hv_init_secondary(struct hv_secondary_info_t *info)
     hv_arm_tick(true);
 }
 
-static void hv_enter_secondary(void *entry, u64 regs[4])
+static void hv_enter_secondary(struct hv_secondary_launch_context *launch)
 {
+    sysop("dmb ish");
+    void *entry = launch->entry;
+    u64 regs[4];
+    memcpy(regs, launch->regs, sizeof(regs));
+
+    printf("HV: Secondary %d consumed entry=%p x0=0x%lx\n", smp_id(), entry, regs[0]);
     hv_enter_guest(regs[0], regs[1], regs[2], regs[3], entry);
 
     spin_lock(&bhl);
@@ -385,7 +398,16 @@ static void hv_enter_secondary(void *entry, u64 regs[4])
 
 void hv_start_secondary(int cpu, void *entry, u64 regs[4])
 {
+    if (cpu < 0 || cpu >= MAX_CPUS)
+        return;
+
+    struct hv_secondary_launch_context *launch = &secondary_launch[cpu];
+    launch->entry = entry;
+    memcpy(launch->regs, regs, sizeof(launch->regs));
+    sysop("dsb ishst");
+
     printf("HV: Initializing secondary %d\n", cpu);
+    printf("HV: Secondary %d published entry=%p x0=0x%lx\n", cpu, entry, launch->regs[0]);
     iodev_console_flush();
 
     mmu_init_secondary(cpu);
@@ -396,10 +418,10 @@ void hv_start_secondary(int cpu, void *entry, u64 regs[4])
 
     printf("HV: Entering guest secondary %d at %p\n", cpu, entry);
     hv_started_cpus[cpu] = true;
-    __atomic_or_fetch(&hv_cpus_in_guest, BIT(smp_id()), __ATOMIC_ACQUIRE);
+    __atomic_or_fetch(&hv_cpus_in_guest, BIT(cpu), __ATOMIC_ACQ_REL);
 
     iodev_console_flush();
-    smp_call4(cpu, hv_enter_secondary, (u64)entry, (u64)regs, 0, 0);
+    smp_call1(cpu, hv_enter_secondary, (u64)launch);
 }
 
 void hv_exit_cpu(int cpu)
