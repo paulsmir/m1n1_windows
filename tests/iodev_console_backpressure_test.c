@@ -65,7 +65,7 @@ struct iodev {
 
 static bool mmu_active(void)
 {
-    return false;
+    return true;
 }
 
 static bool is_boot_cpu(void)
@@ -75,18 +75,23 @@ static bool is_boot_cpu(void)
 
 static void spin_lock(spinlock_t *lock)
 {
-    (void)lock;
+    /* Host-side deadlock detector: these tests execute on one thread. */
+    assert(lock->count == 0);
+    lock->count = 1;
 }
 
 static bool spin_try_lock(spinlock_t *lock)
 {
-    (void)lock;
+    if (lock->count)
+        return false;
+    lock->count = 1;
     return true;
 }
 
 static void spin_unlock(spinlock_t *lock)
 {
-    (void)lock;
+    assert(lock->count == 1);
+    lock->count = 0;
 }
 
 #include "../src/iodev.c"
@@ -101,6 +106,7 @@ struct fake_device {
     unsigned data_write_calls;
     unsigned queue_calls;
     size_t bytes_written;
+    unsigned event_calls;
 };
 
 static bool fake_can_write(void *opaque)
@@ -139,6 +145,11 @@ static ssize_t fake_queue(void *opaque, const void *buf, size_t length)
     return (ssize_t)length;
 }
 
+static void fake_handle_events(void *opaque)
+{
+    ((struct fake_device *)opaque)->event_calls++;
+}
+
 int main(void)
 {
     static const struct iodev_ops ops = {
@@ -146,6 +157,7 @@ int main(void)
         .write_space = fake_write_space,
         .write = fake_write,
         .queue = fake_queue,
+        .handle_events = fake_handle_events,
     };
     struct fake_device fake = {.free = 0};
     struct iodev device = {
@@ -166,6 +178,10 @@ int main(void)
     assert(fake.data_write_calls == 0);
     assert(fake.queue_calls == 1);
     assert(fake.bytes_written == 7);
+
+    /* Event polling may kick buffered console output, but must not relock console_lock. */
+    iodev_handle_events(IODEV_USB0);
+    assert(fake.event_calls == 1);
 
     puts("iodev_console_backpressure_test: ok");
     return 0;

@@ -285,8 +285,12 @@ class UartInterface(Reloadable):
                         self.enabled_features & Feature.DISABLE_DATA_CSUMS):
                     checksum_valid = checksum == self.checksum(reply[:-4])
                 if not checksum_valid:
-                    print("Event checksum error: Expected 0x%08x, got 0x%08x"%(checksum, ccsum))
-                    raise UartChecksumError()
+                    computed = self.checksum(reply[:-4])
+                    print("Event checksum error: dropping type=%d length=%d "
+                          "wire=0x%08x expected=0x%08x computed=0x%08x" %
+                          (event_type, data_len, checksum, ccsum, computed))
+                    reply = b''
+                    continue
                 self.handle_event(EVENT(event_type), reply[self.EVENT_HDR_LEN:-4])
                 reply = b''
                 continue
