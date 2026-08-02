@@ -317,11 +317,19 @@ void iodev_handle_events(iodev_id_t id)
 
     in_iodev--;
 
-    if (iodev_can_write(id))
-        iodev_console_write(NULL, 0);
-
+    /*
+     * iodev_console_write() acquires console_lock itself.  Calling it while this
+     * function still owns console_lock recursively spins forever.  In the HV
+     * timer path that also leaves bhl held: CPU0 stops polling USB and CPU1 then
+     * blocks behind bhl, making framebuffer, vUART and both FIQ heartbeats vanish
+     * at once.  Finish the protected event-handler section before kicking the
+     * buffered console output.
+     */
     if (do_lock)
         spin_unlock(&console_lock);
+
+    if (iodev_can_write(id))
+        iodev_console_write(NULL, 0);
 }
 
 void iodev_console_kick(void)
