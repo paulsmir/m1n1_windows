@@ -594,6 +594,7 @@ void hv_vgicv3_init_redist_registers(void);
 
 void hv_vgicv3_init_list_registers(void);
 int hv_vgic3_num_lrs(void);
+u8 hv_vgic3_get_priority_cpu(u64 intd, int cpu);
 
 int hv_vgicv3_enable_virtual_interrupts(void);
 

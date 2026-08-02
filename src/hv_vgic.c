@@ -1935,20 +1935,29 @@ int hv_vgicv3_enable_virtual_interrupts(void)
     return 0;
 }
 
-u8 hv_vgic3_get_priority(u64 intd){
+//
+// SGI and PPI priorities live in each core's own redistributor, so a cross-core SGI has to be
+// injected with the priority the TARGET core programmed, not the sender's. Windows maps GIC
+// priority onto IRQL; delivering an IPI at the wrong priority makes the kernel take it at an
+// IRQL it did not expect, which is exactly how IRQL_NOT_LESS_OR_EQUAL appears.
+//
+u8 hv_vgic3_get_priority_cpu(u64 intd, int cpu){
     u64 reg_num = 0;
     u64 reg_offset = 0;
     u8 *reg_val = NULL;
-    
+
+    if(cpu < 0 || cpu >= (int)num_cpus)
+        cpu = smp_id();
+
     if(intd <= 15){
         reg_num = intd / 4;
         reg_offset = intd % 4;
-        reg_val = (u8 *)&redistributors[smp_id()].sgi_region.gicr_sgi_ipriority_reg[reg_num];
+        reg_val = (u8 *)&redistributors[cpu].sgi_region.gicr_sgi_ipriority_reg[reg_num];
     }
     else if(intd >= 16 && intd <= 31){
         reg_num = (intd - 16) / 4;
         reg_offset = (intd - 16) % 4;
-        reg_val = (u8 *)&redistributors[smp_id()].sgi_region.gicr_ppi_ipriority_reg[reg_num];
+        reg_val = (u8 *)&redistributors[cpu].sgi_region.gicr_ppi_ipriority_reg[reg_num];
     }
     else{
         reg_num = (intd - 32) / 4;
@@ -1958,6 +1967,10 @@ u8 hv_vgic3_get_priority(u64 intd){
     reg_val += reg_offset;
 
     return *reg_val;
+}
+
+u8 hv_vgic3_get_priority(u64 intd){
+    return hv_vgic3_get_priority_cpu(intd, smp_id());
 }
 
 bool hv_vgic3_irq_enabled(u32 intid)

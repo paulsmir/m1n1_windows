@@ -306,9 +306,10 @@ static void hv_update_fiq(void)
         }
         else{
             timer_p_injected[tcpu] = true;
-            virq_t pending = { 
-                .vintid = 17, 
-                .priority = 0x20, 
+            virq_t pending = {
+                .vintid = 17,
+                // Same reason as the SGI path: use the programmed priority, not a constant.
+                .priority = hv_vgic3_get_priority(17), 
                 .active = false, 
                 .pending = true,
                 .hw_status = false,
@@ -344,9 +345,9 @@ static void hv_update_fiq(void)
         }
         else{
             timer_v_injected[tcpu] = true;
-            virq_t pending = { 
-                .vintid = 18, 
-                .priority = 0x20, 
+            virq_t pending = {
+                .vintid = 18,
+                .priority = hv_vgic3_get_priority(18), 
                 .active = false, 
                 .pending = true,
                 .hw_status = false,
@@ -633,10 +634,16 @@ static bool hv_handle_msr_unlocked(struct exc_info *ctx, u64 iss)
                     } else{
                         return false;
                     }
-                    virq_t pending = { 
-                        .vintid = virq, 
-                        .priority = 0x20, 
-                        .active = false, 
+                    //
+                    // Use the priority the TARGET core programmed for this SGI. It was
+                    // hardcoded to 0x20, but SGI priorities are per-redistributor and Windows
+                    // derives IRQL from them, so an IPI delivered at a made-up priority is
+                    // taken at the wrong IRQL - the shape of IRQL_NOT_LESS_OR_EQUAL.
+                    //
+                    virq_t pending = {
+                        .vintid = virq,
+                        .priority = hv_vgic3_get_priority_cpu(virq, cpu),
+                        .active = false,
                         .pending = true,
                         .hw_status = false,
                         .hw_irq = 0,
