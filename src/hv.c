@@ -551,6 +551,7 @@ void hv_set_elr(u64 val)
 // bugcheck dump is the one exception: KiBugCheckData is global, so it is latched once.
 //
 #define HV_DIAG_STUCK_TICKS 40000u  // ~8 s at the 5 kHz tick
+#define HV_DIAG_X18_REPORT_LIMIT 16u
 
 struct hv_diag_cpu {
     u64 fiq_count;
@@ -558,6 +559,9 @@ struct hv_diag_cpu {
     u64 last_pc;
     u64 same_pc_ticks;
     u64 bcd_va;                 // cached once recovered
+    u64 last_x18;
+    u32 x18_reports;
+    bool x18_seen;
     bool online_reported;
 } __attribute__((aligned(64)));
 
@@ -597,6 +601,18 @@ void hv_percpu_diag_tick(struct exc_info *ctx)
     struct hv_diag_cpu *d = &hv_diag[cpu];
     d->fiq_count++;
     d->sample_count++;
+
+    u64 x18 = ctx->regs[18];
+    if ((!d->x18_seen || x18 != d->last_x18) &&
+        d->x18_reports < HV_DIAG_X18_REPORT_LIMIT) {
+        printf("HV DIAG X18: cpu=%d sample=%lu pc=0x%lx x18=0x%lx x0=0x%lx sp0=0x%lx "
+               "sp1=0x%lx spsr=0x%lx\n",
+               cpu, d->sample_count, ctx->elr, x18, ctx->regs[0], ctx->sp[0], ctx->sp[1],
+               ctx->spsr);
+        d->x18_reports++;
+    }
+    d->last_x18 = x18;
+    d->x18_seen = true;
 
     if (!d->online_reported) {
         d->online_reported = true;
