@@ -20,11 +20,14 @@
 
 #include "hv.h"
 #include "hv_diag.h"
+#include "hv_irq_routes.h"
+#include "hv_xhci_handoff.h"
 #include "hv_vgic.h"
 #include "hv_vgic_diag.h"
 #include "assert.h"
 #include "cpu_regs.h"
 #include "display.h"
+#include "dart.h"
 #include "memory.h"
 #include "pcie.h"
 #include "smp.h"
@@ -38,6 +41,251 @@
 #include "string.h"
 #include "types.h"
 #include "uartproxy.h"
+
+#define J313_XHCI1_BASE 0x502280000ULL
+#define J313_XHCI_LOW_DMA_END 0x40000000ULL
+#define J313_XHCI_DART_IOVA_END 0x100000000ULL
+#define J313_DART_USB1_0_BASE 0x502f00000ULL
+#define J313_DART_USB1_1_BASE 0x502f80000ULL
+
+static u32 j313_xhci_tick_trace_budget;
+static struct hv_xhci_dma_trace j313_xhci_dma_trace;
+static u32 j313_xhci_caplen;
+static u32 j313_xhci_rtsoff;
+static u32 j313_xhci_erdp_trace_budget = 16;
+static u32 j313_xhci_erdp_last_upper = 0xffffffff;
+
+struct hv_xhci_stage2_view {
+    u64 direct_end;
+    u64 high_window_base;
+};
+
+static u64 hv_xhci_stage2_translate(u64 ipa, void *opaque)
+{
+    struct hv_xhci_stage2_view *view = opaque;
+    u64 guest_ipa = hv_xhci_dma_guest_ipa(ipa, view->direct_end, view->high_window_base);
+
+    return hv_ipa_to_pa(guest_ipa);
+}
+
+static bool hv_xhci_map_stage2_span(dart_dev_t *dart, u64 start, u64 end, u64 *pages,
+                                    u32 *runs, struct hv_xhci_stage2_view *view)
+{
+    struct hv_xhci_dma_run run;
+    u64 cursor = start;
+
+    while (hv_xhci_dma_next_run(cursor, end, hv_xhci_stage2_translate, view, &run)) {
+        if (dart_map(dart, run.iova, (void *)(uintptr_t)run.paddr, run.size)) {
+            printf("HV: xHCI DART map failed IOVA=0x%lx PA=0x%lx size=0x%lx\n", run.iova,
+                   run.paddr, run.size);
+            return false;
+        }
+        *pages += run.size / HV_XHCI_DMA_PAGE_SIZE;
+        (*runs)++;
+        cursor = run.next_iova;
+    }
+
+    return true;
+}
+
+static bool hv_prepare_j313_xhci_darts(void)
+{
+    static int state;
+    dart_dev_t *darts[2];
+    struct hv_xhci_stage2_view view = {
+        .direct_end = J313_XHCI_LOW_DMA_END,
+        .high_window_base = ram_base & ~0xffffffffULL,
+    };
+    u64 pages = 0;
+    u32 runs = 0;
+
+    if (state)
+        return state > 0;
+    state = -1;
+
+    /*
+     * Windows sees the LOW_MEM stage-2 alias as ordinary physical RAM.  A bypassed DART
+     * cannot see that translation: it would send e.g. IOVA 0x01000000 to physical
+     * 0x01000000 instead of its 0x8a... backing.  Program both DWC3 DMA paths with the
+     * same IPA -> PA view as stage-2 before USBXHCI starts the controller. T8103
+     * DART has a 32-bit input address space, so high guest addresses are exposed
+     * through their low-32-bit aliases (e.g. 0x8f392f000 at IOVA 0xf392f000).
+     */
+    darts[0] = dart_init_adt("/arm-io/dart-usb1", 0, 0, false);
+    darts[1] = dart_init_adt("/arm-io/dart-usb1", 1, 1, false);
+    if (!darts[0] || !darts[1]) {
+        printf("HV: xHCI DART init failed dart0=%p dart1=%p\n", darts[0], darts[1]);
+        return false;
+    }
+
+    for (u32 i = 0; i < ARRAY_SIZE(darts); i++) {
+        if (!hv_xhci_map_stage2_span(darts[i], 0, J313_XHCI_DART_IOVA_END, &pages, &runs,
+                                     &view))
+            return false;
+    }
+
+    state = 1;
+    printf("HV: xHCI DART 32-bit stage-2 view ready pages=%lu runs=%u high_base=0x%lx\n",
+           pages, runs, view.high_window_base);
+    return true;
+}
+
+static bool handle_j313_xhci_mmio(struct exc_info *ctx, u64 addr, u64 *val, bool write,
+                                  int width)
+{
+    enum hv_xhci_dma_reg reg = HV_XHCI_DMA_REG_NONE;
+    u64 offset = addr - J313_XHCI1_BASE;
+
+    if (write)
+        reg = hv_xhci_dma_trace_write(&j313_xhci_dma_trace, j313_xhci_caplen,
+                                      j313_xhci_rtsoff, offset, *val, width);
+
+    /* Install the guest IPA -> PA DART view before the first DMA pointer reaches xHCI. */
+    if (write && reg != HV_XHCI_DMA_REG_NONE && !hv_prepare_j313_xhci_darts())
+        return false;
+
+    if (!hv_pa_rw(ctx, addr, val, write, width))
+        return false;
+
+    if (!write) {
+        u64 hardware_value = *val;
+        *val = hv_xhci_cap_read_for_guest(offset, *val, width);
+        if (*val != hardware_value) {
+            static bool logged;
+            if (!logged) {
+                printf("HV: xHCI guest capability AC64 masked hardware=0x%lx guest=0x%lx "
+                       "offset=0x%lx width=%u\n",
+                       hardware_value, *val, offset, 1U << width);
+                logged = true;
+            }
+        }
+        return true;
+    }
+
+    if (reg != HV_XHCI_DMA_REG_NONE) {
+        u64 guest_value;
+        u64 reg_offset;
+        bool log = true;
+
+        switch (reg) {
+            case HV_XHCI_DMA_REG_CRCR:
+                guest_value = j313_xhci_dma_trace.crcr;
+                reg_offset = j313_xhci_caplen + 0x18;
+                break;
+            case HV_XHCI_DMA_REG_DCBAAP:
+                guest_value = j313_xhci_dma_trace.dcbaap;
+                reg_offset = j313_xhci_caplen + 0x30;
+                break;
+            case HV_XHCI_DMA_REG_ERSTBA:
+                guest_value = j313_xhci_dma_trace.erstba;
+                reg_offset = j313_xhci_rtsoff + 0x30;
+                break;
+            case HV_XHCI_DMA_REG_ERDP: {
+                guest_value = j313_xhci_dma_trace.erdp;
+                reg_offset = j313_xhci_rtsoff + 0x38;
+                u32 upper = guest_value >> 32;
+                log = upper != j313_xhci_erdp_last_upper || j313_xhci_erdp_trace_budget;
+                j313_xhci_erdp_last_upper = upper;
+                if (j313_xhci_erdp_trace_budget)
+                    j313_xhci_erdp_trace_budget--;
+                break;
+            }
+            default:
+                return true;
+        }
+
+        if (log)
+            printf("HV: xHCI guest W %s+0x%lx width=%u fragment=0x%lx guest=0x%lx "
+                   "hw=0x%lx\n",
+                   hv_xhci_dma_reg_name(reg), (u64)(offset - reg_offset), 1U << width, *val,
+                   guest_value, read64(J313_XHCI1_BASE + reg_offset));
+    }
+
+    return true;
+}
+
+static void hv_map_j313_xhci_trace(void)
+{
+    u32 hccparams1 = read32(J313_XHCI1_BASE + 0x10);
+
+    j313_xhci_caplen = read32(J313_XHCI1_BASE) & 0xff;
+    j313_xhci_rtsoff = read32(J313_XHCI1_BASE + 0x18) & ~0x1fU;
+    j313_xhci_dma_trace.crcr = read64(J313_XHCI1_BASE + j313_xhci_caplen + 0x18);
+    j313_xhci_dma_trace.dcbaap = read64(J313_XHCI1_BASE + j313_xhci_caplen + 0x30);
+    j313_xhci_dma_trace.erstba = read64(J313_XHCI1_BASE + j313_xhci_rtsoff + 0x30);
+    j313_xhci_dma_trace.erdp = read64(J313_XHCI1_BASE + j313_xhci_rtsoff + 0x38);
+
+    int ret = hv_map_hook(J313_XHCI1_BASE, handle_j313_xhci_mmio, HV_XHCI_DMA_PAGE_SIZE);
+    printf("HV: xHCI MMIO trace %s base=0x%lx size=0x%lx caplen=0x%x rtsoff=0x%x "
+           "HCCPARAMS1=0x%x AC64=%u\n",
+           ret ? "FAILED" : "armed", (u64)J313_XHCI1_BASE, (u64)HV_XHCI_DMA_PAGE_SIZE,
+           j313_xhci_caplen, j313_xhci_rtsoff, hccparams1, hccparams1 & 1);
+}
+
+static void hv_trace_j313_xhci(const char *where)
+{
+    u32 cap = read32(J313_XHCI1_BASE);
+    u32 caplen = cap & 0xff;
+    u32 dboff = read32(J313_XHCI1_BASE + 0x14) & ~3U;
+    u32 rtsoff = read32(J313_XHCI1_BASE + 0x18) & ~0x1fU;
+    u64 op = J313_XHCI1_BASE + caplen;
+    u64 ir0 = J313_XHCI1_BASE + rtsoff + 0x20;
+
+    printf("HV: xHCI %s cap=0x%x caplen=0x%x dboff=0x%x rtsoff=0x%x "
+           "USBCMD=0x%x USBSTS=0x%x CRCR=0x%lx DCBAAP=0x%lx CONFIG=0x%x "
+           "IMAN0=0x%x IMOD0=0x%x ERSTSZ0=0x%x ERSTBA=0x%lx ERDP=0x%lx "
+           "DART0_ERR=0x%x@0x%x%08x/TCR0=0x%x DART1_ERR=0x%x@0x%x%08x/TCR1=0x%x\n",
+           where, cap, caplen, dboff, rtsoff, read32(op), read32(op + 4),
+           read64(op + 0x18), read64(op + 0x30), read32(op + 0x38), read32(ir0),
+           read32(ir0 + 4), read32(ir0 + 8), read64(ir0 + 0x10), read64(ir0 + 0x18),
+           read32(J313_DART_USB1_0_BASE + 0x40), read32(J313_DART_USB1_0_BASE + 0x54),
+           read32(J313_DART_USB1_0_BASE + 0x50), read32(J313_DART_USB1_0_BASE + 0x100),
+           read32(J313_DART_USB1_1_BASE + 0x40), read32(J313_DART_USB1_1_BASE + 0x54),
+           read32(J313_DART_USB1_1_BASE + 0x50), read32(J313_DART_USB1_1_BASE + 0x104));
+}
+
+void hv_trace_j313_xhci_tick(void)
+{
+    if (!j313_xhci_tick_trace_budget)
+        return;
+    j313_xhci_tick_trace_budget--;
+    hv_trace_j313_xhci("tick");
+}
+
+static void hv_prepare_j313_xhci_handoff(void)
+{
+    u32 caplen = read32(J313_XHCI1_BASE) & 0xff;
+    u32 rtsoff = read32(J313_XHCI1_BASE + 0x18) & ~0x1fU;
+    u64 op = J313_XHCI1_BASE + caplen;
+    u64 ir0 = J313_XHCI1_BASE + rtsoff + 0x20;
+    u32 usbcmd = read32(op);
+    u32 usbsts = read32(op + 4);
+    u32 iman = read32(ir0);
+    struct hv_xhci_handoff_clear clear;
+
+    bool dma_programmed = j313_xhci_dma_trace.crcr || j313_xhci_dma_trace.dcbaap ||
+                          j313_xhci_dma_trace.erstba || j313_xhci_dma_trace.erdp;
+    if (!hv_xhci_handoff_clear_plan(usbcmd, usbsts, iman, dma_programmed, &clear))
+        return;
+
+    if (clear.reset) {
+        write32(op, usbcmd | BIT(1));
+        sysop("dsb sy");
+        if (poll32(op, BIT(1), 0, 1000000))
+            printf("HV: xHCI handoff reset timed out USBCMD=0x%x USBSTS=0x%x\n", read32(op),
+                   read32(op + 4));
+        else
+            printf("HV: xHCI handoff reset complete USBCMD=0x%x USBSTS=0x%x\n", read32(op),
+                   read32(op + 4));
+    }
+    if (clear.usbsts_w1c)
+        write32(op + 4, clear.usbsts_w1c);
+    if (clear.iman_w1c)
+        write32(ir0, clear.iman_w1c);
+    sysop("dsb sy");
+    printf("HV: xHCI handoff cleared USBSTS=0x%x IMAN0=0x%x\n", clear.usbsts_w1c,
+           clear.iman_w1c);
+}
 
 /**
  * General idea of how this should work:
@@ -348,7 +596,9 @@ static bool handle_vgic_dist_access(struct exc_info *ctx, u64 addr, u64 *val, bo
                 mpidr |= (u64)MPIDR_AFF3(*val) << 32;
                 cpu_num = smp_get_id(mpidr);
 
-                aic_set_affinity(reg_num + 32, cpu_num);
+                const struct hv_irq_route *route = hv_irq_route_from_vintid(reg_num + 32);
+                if (route)
+                    aic_set_affinity(route->hw_irq, cpu_num);
                 vgic_log("HV vGIC DEBUG [INFO] [Distributor]: interrupt routing register %d = %d\n", reg_num, cpu_num);
                 register_handled = true;
                 break;
@@ -403,8 +653,20 @@ static bool handle_vgic_dist_access(struct exc_info *ctx, u64 addr, u64 *val, bo
                     value_ic_enabler |= BIT(i);      
                     irq_num = (32 * reg_num) + i;
 
-                    aic_set_mask(irq_num, false);
-                    vgic_log("HV vGIC DEBUG [Info] [AIC]: unmasking irq %d\n", irq_num);
+                    const struct hv_irq_route *route = hv_irq_route_from_vintid(irq_num);
+                    if (route) {
+                        if (route->hw_irq == 857) {
+                            hv_prepare_j313_xhci_handoff();
+                            hv_prepare_j313_xhci_darts();
+                            j313_xhci_tick_trace_budget = 24;
+                        }
+                        aic_set_mask(route->hw_irq, false);
+                        printf("HV: IRQ route enabled vINTID=%u AIC=%u\n", route->vintid,
+                               route->hw_irq);
+                        hv_vgic3_trace_intid(route->vintid, 48);
+                        if (route->hw_irq == 857)
+                            hv_trace_j313_xhci("route-enable");
+                    }
                 }
             }
             if(reg_num == 0) {
@@ -442,8 +704,12 @@ static bool handle_vgic_dist_access(struct exc_info *ctx, u64 addr, u64 *val, bo
                     value_ic_enabler &= ~BIT(i);      
                     irq_num = (32 * reg_num) + i;
 
-                    aic_set_mask(irq_num, false);
-                    vgic_log("HV vGIC DEBUG [Info] [AIC]: masking irq %d\n", irq_num);
+                    const struct hv_irq_route *route = hv_irq_route_from_vintid(irq_num);
+                    if (route) {
+                        aic_set_mask(route->hw_irq, true);
+                        printf("HV: IRQ route disabled vINTID=%u AIC=%u\n", route->vintid,
+                               route->hw_irq);
+                    }
                 }
             }
             if(reg_num == 0) {
@@ -1951,7 +2217,18 @@ void hv_vgic3_do_eoir1(u64 reg){
         }
     }
 
+    /*
+     * LR state is emulated in software, so clearing an LR here does not produce
+     * the hardware maintenance interrupt that used to be the queue's only
+     * drain point. Without this, a level IRQ queued while all LRs were busy
+     * remained physically masked forever (observed as xHCI IMAN.IP stuck at 1).
+     */
+    hv_vgic3_drain_irq_queue();
     hv_vgic3_update_vi();
+    u32 hw_irq;
+    bool enabled = distributor->gicd_interrupt_set_enable_regs[intd / 32] & BIT(intd % 32);
+    if (hv_irq_route_level_eoi_target(intd, enabled, &hw_irq))
+        aic_set_mask(hw_irq, false);
     if (trace_lr >= 0)
         hv_diag_count_vgic_irq(HV_DIAG_IRQ_EOI, intd, hv_pci_intx_irq());
     if (trace_lr >= 0 && trace_take(intd))
@@ -2084,6 +2361,8 @@ void hv_vgicv3_init(void)
     hv_map_hook(its_base, handle_vgic_its_access, 0x10000);
 
     //vGIC setup is complete.
+    if (chip_id == T8103)
+        hv_map_j313_xhci_trace();
     vgic_inited = true;
     return;
 #else

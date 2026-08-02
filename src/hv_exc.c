@@ -2,6 +2,7 @@
 
 #include "hv.h"
 #include "hv_diag.h"
+#include "hv_irq_routes.h"
 #include "assert.h"
 #include "cpu_regs.h"
 #include "exception.h"
@@ -77,6 +78,19 @@ void init_vgic_irq_queues(void) {
     }
 #endif
 }
+
+#ifdef ENABLE_VGIC_MODULE
+void hv_vgic3_drain_irq_queue(void)
+{
+    while (hv_vgic3_get_free_lr() != -1) {
+        virq_t pending;
+        if (!virq_queue_pop(&PERCPU(irq_queue), &pending))
+            break;
+        hv_vgic3_inject_irq(pending.vintid, pending.priority, pending.active,
+                            pending.pending, pending.hw_status, pending.hw_irq);
+    }
+}
+#endif
 
 static void _hv_exc_proxy(struct exc_info *ctx, uartproxy_boot_reason_t reason, u32 type,
                           void *extra)
@@ -546,7 +560,6 @@ static bool hv_handle_msr_unlocked(struct exc_info *ctx, u64 iss)
             }
             else{
                 hv_vgic3_do_eoir1(regs[rt]);
-                aic_set_mask(regs[rt], false);
             }
             return true;
 
@@ -1519,8 +1532,9 @@ void hv_exc_irq(struct exc_info *ctx)
                     u64 lr_val = hv_vgic3_read_lr(lr);
                     u64 intd = (lr_val >> ICH_LR_VIRTUAL_SHIFT) & ICH_LR_VIRTUAL_MASK;
                     hv_vgic3_write_lr(lr, 0);
-                    if(intd > 31)
-                        aic_set_mask(intd, false);//TODO: check distributor
+                    const struct hv_irq_route *route = hv_irq_route_from_vintid(intd);
+                    if (route)
+                        aic_set_mask(route->hw_irq, false);
                 }
             }
         }
@@ -1551,26 +1565,26 @@ void hv_exc_irq(struct exc_info *ctx)
                 pending.hw_irq
             );
         }
-        while(hv_vgic3_get_free_lr() != -1){
-            virq_t pending;
-            if (!virq_queue_pop(&PERCPU(irq_queue), &pending))
-                break;
-            hv_vgic3_inject_irq(
-                pending.vintid,
-                pending.priority,
-                pending.active,
-                pending.pending,
-                pending.hw_status,
-                pending.hw_irq
-            );
-        }
+        hv_vgic3_drain_irq_queue();
         return;
     }
 
+    const struct hv_irq_route *route = hv_irq_route_from_hw(irq);
+    u32 vintid = route ? route->vintid : irq;
+    if (route) {
+        static u32 routed_irq_trace_count;
+        if (routed_irq_trace_count < 16)
+            printf("HV: HW IRQ route AIC=%u vINTID=%u type=%u reason=0x%x count=%u\n",
+                   route->hw_irq, route->vintid, type, reason, routed_irq_trace_count + 1);
+        routed_irq_trace_count++;
+    }
+    if (route && route->level)
+        aic_set_mask(route->hw_irq, true);
+
     if(hv_vgic3_get_free_lr() != -1){
         hv_vgic3_inject_irq(
-            irq,                         //vintid
-            hv_vgic3_get_priority(irq),  //priority
+            vintid,                         //vintid
+            hv_vgic3_get_priority(vintid),  //priority
             false,                       //active
             true,                        //pending
             false,                       //hw_status
@@ -1579,14 +1593,15 @@ void hv_exc_irq(struct exc_info *ctx)
     }
     else{
         virq_t pending = { 
-            .vintid = irq, 
+            .vintid = vintid,
             .priority = 0x40, 
             .active = false, 
             .pending = true,
             .hw_status = false,
             .hw_irq = 0,
         };
-        virq_queue_push(&PERCPU(irq_queue), &pending);
+        if (!virq_queue_push(&PERCPU(irq_queue), &pending) && route && route->level)
+            aic_set_mask(route->hw_irq, false);
     }
 #else
     hv_wdt_breadcrumb('I');
@@ -1645,10 +1660,12 @@ void hv_exc_fiq(struct exc_info *ctx)
     // the EL2 physical timer fired and this is the interruptible CPU. The counts separate
     // those, and the registers printed alongside decide between them.
     //
-    if ((hv_fiq_count % 20000) == 0)
+    if ((hv_fiq_count % 20000) == 0) {
         printf("HV FIQ: total=%lu ticks=%lu cpu=%d boot=%d pinned=%d vm_tmr=0x%lx\n",
                hv_fiq_count, hv_fiq_ticks, smp_id(), boot_cpu_idx, hv_pinned_cpu,
                mrs(SYS_IMP_APL_VM_TMR_FIQ_ENA_EL2));
+        hv_trace_j313_xhci_tick();
+    }
 
     // Only poll for HV events in the interruptible CPU
     if (tick) {

@@ -132,7 +132,7 @@ OBJECTS := \
 	firmware.o \
 	gxf.o gxf_asm.o \
 	heapblock.o \
-	hv.o hv_vm.o hv_exc.o hv_vuart.o hv_pl011.o hv_pci.o hv_nvme.o hv_nvme_queue.o hv_fb_stream.o hv_diag.o hv_wdt.o hv_asm.o hv_aic.o hv_virtio.o hv_psci.o hv_vgic.o hv_vgic_diag.o \
+	hv.o hv_vm.o hv_exc.o hv_vuart.o hv_pl011.o hv_pci.o hv_nvme.o hv_nvme_queue.o hv_fb_stream.o hv_diag.o hv_irq_routes.o hv_xhci_handoff.o hv_wdt.o hv_asm.o hv_aic.o hv_virtio.o hv_psci.o hv_vgic.o hv_vgic_diag.o \
 	i2c.o \
 	iodev.o \
 	iova.o \
@@ -161,7 +161,7 @@ OBJECTS := \
 	tps6598x.o \
 	uart.o \
 	uartproxy.o uartproxy_event.o \
-	usb.o usb_dwc3.o \
+	usb.o usb_dwc3.o usb_dwc3_bulk_state.o \
 	utils.o utils_asm.o \
 	vsprintf.o \
 	wdt.o \

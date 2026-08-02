@@ -185,6 +185,20 @@ int in_iodev = 0;
 
 static DECLARE_SPINLOCK(console_lock);
 
+static ssize_t iodev_console_try_write(iodev_id_t id, const void *buf, size_t length)
+{
+    if (iodevs[id]->ops->queue && iodevs[id]->ops->write_space) {
+        const struct iodev_iovec iov = {
+            .data = buf,
+            .length = length,
+        };
+
+        return iodev_try_writev(id, &iov, 1, length) ? (ssize_t)length : 0;
+    }
+
+    return iodev_write(id, buf, length);
+}
+
 void iodev_console_write(const void *buf, size_t length)
 {
     bool do_lock = mmu_active();
@@ -235,7 +249,7 @@ void iodev_console_write(const void *buf, size_t length)
             size_t block = min(con_wp - con_rp[id], CONSOLE_BUFFER_SIZE - buf_rp);
 
             dprintf("  write buf %d\n", block);
-            ssize_t ret = iodev_write(id, &con_buf[buf_rp], block);
+            ssize_t ret = iodev_console_try_write(id, &con_buf[buf_rp], block);
 
             if (ret <= 0)
                 goto next_dev;
@@ -248,7 +262,7 @@ void iodev_console_write(const void *buf, size_t length)
 
         // Write the current buffer
         while (wrote < length) {
-            ssize_t ret = iodev_write(id, p, length - wrote);
+            ssize_t ret = iodev_console_try_write(id, p, length - wrote);
 
             if (ret <= 0)
                 goto next_dev;

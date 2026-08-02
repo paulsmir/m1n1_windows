@@ -273,7 +273,11 @@ class UartInterface(Reloadable):
                     print(">>", hexdump(reply))
                 checksum = struct.unpack("<I", reply[-4:])[0]
                 ccsum = self.data_checksum(reply[:-4])
-                if checksum != ccsum:
+                checksum_valid = checksum == ccsum
+                if (not checksum_valid and
+                        self.enabled_features & Feature.DISABLE_DATA_CSUMS):
+                    checksum_valid = checksum == self.checksum(reply[:-4])
+                if not checksum_valid:
                     print("Event checksum error: Expected 0x%08x, got 0x%08x"%(checksum, ccsum))
                     raise UartChecksumError()
                 self.handle_event(EVENT(event_type), reply[self.EVENT_HDR_LEN:-4])

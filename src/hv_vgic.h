@@ -609,6 +609,7 @@ u8 hv_vgic3_running_priority(void);
 void hv_vgic3_write_lr(u32 lr_num, u64 lr_val);
 
 void hv_vgic3_trace_intid(u32 intid, u32 budget);
+void hv_trace_j313_xhci_tick(void);
 void hv_vgic3_inject_irq(u32 vintid, u8 priority, bool active, bool pending, bool hw_status, u64 hw_irq);
 void hv_vgic3_update_vi(void);
 
@@ -673,6 +674,9 @@ static inline bool virq_queue_pop(virq_queue_t *q, virq_t *out)
     sysop("dsb ishst");
     return true;
 }
+
+/* Drain hardware IRQs queued because every virtual List Register was busy. */
+void hv_vgic3_drain_irq_queue(void);
 
 #endif //ENABLE_VGIC_MODULE
 #endif //HV_VGIC_H

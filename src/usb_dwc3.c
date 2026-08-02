@@ -17,6 +17,7 @@
 #include "ringbuffer.h"
 #include "string.h"
 #include "types.h"
+#include "usb_dwc3_bulk_state.h"
 #include "usb_dwc3_regs.h"
 #include "usb_types.h"
 #include "utils.h"
@@ -948,7 +949,7 @@ static void usb_dwc3_cdc_start_bulk_in_xfer(dwc3_dev_t *dev, u8 endpoint_number)
 
     usb_dwc3_ep_start_transfer(dev, endpoint_number, trb_iova);
     dev->endpoints[endpoint_number].xfer_in_progress = true;
-    dev->endpoints[endpoint_number].zlp_pending = (len % 512) == 0;
+    dev->endpoints[endpoint_number].zlp_pending = usb_dwc3_bulk_zlp_pending_after_submit(len);
 }
 
 static void usb_dwc3_cdc_handle_bulk_out_xfer_done(dwc3_dev_t *dev,
