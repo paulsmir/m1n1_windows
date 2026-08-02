@@ -36,6 +36,14 @@ class SecondaryLaunchContractTest(unittest.TestCase):
         self.assertIn("BIT(cpu)", start)
         self.assertNotIn("BIT(smp_id())", start)
 
+    def test_percpu_diagnostics_capture_bounded_x18_transitions(self):
+        source = HV_C.read_text()
+        diag = function_body(source, "void hv_percpu_diag_tick(struct exc_info *ctx)")
+        self.assertIn("ctx->regs[18]", diag)
+        self.assertIn("HV DIAG X18:", diag)
+        self.assertIn("HV_DIAG_X18_REPORT_LIMIT", source)
+        self.assertIn("d->x18_reports < HV_DIAG_X18_REPORT_LIMIT", diag)
+
 
 if __name__ == "__main__":
     unittest.main()
