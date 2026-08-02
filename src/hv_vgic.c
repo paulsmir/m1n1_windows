@@ -1858,8 +1858,26 @@ void hv_vgicv3_init_redist_registers(void) {
  * Enables the platform's list registers for use by the guest OS.
  * 
  */
+//
+// How many list registers this core actually has, read from ICH_VTR_EL2.ListRegs (bits 4:0,
+// encoded as count-1). Per-CPU on purpose: the M1 is heterogeneous (4 E cores in cluster 0,
+// 4 P cores in cluster 1) and nothing guarantees both clusters expose the same number. The
+// code used to loop to a hardcoded 8, which silently reads and writes registers a core may
+// not implement - the kind of assumption that breaks on exactly one cluster and is then very
+// hard to attribute.
+//
+static u8 vgic_num_lrs[MAX_CPUS];
+
+int hv_vgic3_num_lrs(void)
+{
+    int n = vgic_num_lrs[smp_id()];
+    return n ? n : 8; // before per-CPU init has run, keep the historical assumption
+}
+
 void hv_vgicv3_init_list_registers(void)
 {
+    vgic_num_lrs[smp_id()] = (mrs(ICH_VTR_EL2) & 0x1f) + 1;
+
     msr(ICH_LR0_EL2, 0);
     msr(ICH_LR1_EL2, 0);
     msr(ICH_LR2_EL2, 0);
@@ -2104,7 +2122,7 @@ void hv_vgic3_inject_irq(u32 vintid, u8 priority, bool active, bool pending, boo
 //
 u8 hv_vgic3_running_priority(void){
     u8 rp = 0xff;
-    for(int lr = 0; lr < 8; lr++){
+    for(int lr = 0; lr < hv_vgic3_num_lrs(); lr++){
         u64 v = hv_vgic3_read_lr(lr);
         if(v & ICH_LR_STATE_ACTIVE){
             u8 prio = (v >> ICH_LR_PRIORITY_SHIFT) & ICH_LR_PRIORITY_MASK;
@@ -2122,7 +2140,7 @@ void hv_vgic3_update_vi(void){
     bool signal = false;
 
     if(veng1){
-        for(int lr = 0; lr < 8; lr++){
+        for(int lr = 0; lr < hv_vgic3_num_lrs(); lr++){
             u64 lr_val = hv_vgic3_read_lr(lr);
             // Exact State == Pending (0b01), not merely the pending bit: a
             // pending+active LR (0b11) must not re-signal while it is active.
@@ -2154,7 +2172,7 @@ int hv_vgic3_do_iar1(void){
     //
     int found_lr = -1;
     u8 found_priority = 0xff;
-    for(int lr = 0; lr < 8; lr++){
+    for(int lr = 0; lr < hv_vgic3_num_lrs(); lr++){
         u64 lr_val = hv_vgic3_read_lr(lr);
         // Only a purely Pending (0b01) group-1 LR may be acknowledged; an
         // Active+Pending (0b11) one must not be re-acknowledged while it is active.
@@ -2208,7 +2226,7 @@ void hv_vgic3_do_eoir1(u64 reg){
     u32 intd = reg & ICH_LR_VIRTUAL_MASK;
     int trace_lr = -1;
     u64 trace_before = 0;
-    for(int lr = 0; lr < 8; lr++){
+    for(int lr = 0; lr < hv_vgic3_num_lrs(); lr++){
         u64 lr_val = hv_vgic3_read_lr(lr);
         //vgic_log("CHECKING LR: 0x%lx %d %d %d\n", lr_val, intd, (lr_val >> ICH_LR_VIRTUAL_SHIFT) & ICH_LR_VIRTUAL_MASK, lr_val & ICH_LR_STATE_ACTIVE);
         if( ((lr_val >> ICH_LR_VIRTUAL_SHIFT) & ICH_LR_VIRTUAL_MASK) == intd && (lr_val & ICH_LR_STATE_ACTIVE)){
@@ -2241,7 +2259,7 @@ void hv_vgic3_do_eoir1(u64 reg){
 void hv_vgic3_set_igrpen1(u64 reg){
     igrpen1 = reg;
     if(reg == 0){
-        for(int lr = 0; lr < 8; lr++)
+        for(int lr = 0; lr < hv_vgic3_num_lrs(); lr++)
             hv_vgic3_write_lr(lr, 0);
     }
     hv_vgic3_update_vi();

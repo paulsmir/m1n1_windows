@@ -593,6 +593,7 @@ void hv_vgicv3_init_dist_registers(void);
 void hv_vgicv3_init_redist_registers(void);
 
 void hv_vgicv3_init_list_registers(void);
+int hv_vgic3_num_lrs(void);
 
 int hv_vgicv3_enable_virtual_interrupts(void);
 
