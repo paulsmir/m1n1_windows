@@ -597,9 +597,14 @@ void hv_percpu_diag_tick(struct exc_info *ctx)
     if (hv_bugcheck_dumped || (ctx->elr >> 40) != 0xfffff8)
         return;
 
-    // Poll once the address is known; before that, only a long spin is worth probing.
-    bool probe = d->bcd_va ? ((d->sample_count & 0x3ff) == 0)
-                           : (d->same_pc_ticks == HV_DIAG_STUCK_TICKS);
+    //
+    // Probe regularly rather than waiting for a long run at one PC. The stop-screen loop
+    // alternates between two adjacent instructions, so same_pc_ticks kept resetting and the
+    // long-spin trigger never fired even though the guest sat on the blue screen for seconds.
+    // The opcode check inside the reader is what rejects false matches, so probing often is
+    // safe; it is still only every 64th local tick.
+    //
+    bool probe = (d->sample_count & 0x3f) == 0;
     if (!probe)
         return;
 
