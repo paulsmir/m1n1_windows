@@ -515,6 +515,112 @@ void hv_set_elr(u64 val)
         return msr(ELR_EL2, val);
 }
 
+//
+// Diagnostics only, run on EVERY core.
+//
+// hv_tick() runs solely on the interruptible CPU, so with a secondary online the PC sampler
+// and the stuck/bugcheck detector simply never executed there - a two-core run produced zero
+// HV SAMPLE lines and no bugcheck data, which is why IRQL_NOT_LESS_OR_EQUAL could not be
+// attributed. This is deliberately NOT hv_tick(): that function also carries functional work
+// tied to one core, and calling it everywhere would invent a new SMP bug instead of restoring
+// observability.
+//
+// All state is per-CPU and only ever written by its owner, so no atomics are needed. The
+// bugcheck dump is the one exception: KiBugCheckData is global, so it is latched once.
+//
+#define HV_DIAG_STUCK_TICKS 40000u  // ~8 s at the 5 kHz tick
+
+struct hv_diag_cpu {
+    u64 fiq_count;
+    u64 sample_count;
+    u64 last_pc;
+    u64 same_pc_ticks;
+    u64 bcd_va;                 // cached once recovered
+    bool online_reported;
+} __attribute__((aligned(64)));
+
+static struct hv_diag_cpu hv_diag[MAX_CPUS];
+static bool hv_bugcheck_dumped;
+
+//
+// Windows draws its stop screen spinning in HalpGitQueryCounter (mrs x0, CNTPCT_EL0 =
+// 0xd53be040 in this build). That PC identifies the kernel base, and KiBugCheckData sits at a
+// known offset from it - the same recovery the existing stuck reporter uses.
+//
+static bool hv_diag_read_bugcheck(struct hv_diag_cpu *d, u64 pc, u64 out[5])
+{
+    if (!d->bcd_va) {
+        u64 pc_pa = hv_translate(pc & ~3UL, false, false, NULL);
+        if (!pc_pa || read32(pc_pa) != 0xd53be040)
+            return false;
+        d->bcd_va = pc - 0x213a98UL + 0xdbb9a0UL;
+    }
+
+    u64 pa = hv_translate(d->bcd_va, false, false, NULL);
+    if (!pa)
+        return false;
+
+    for (int i = 0; i < 5; i++)
+        out[i] = read64(pa + 8 * i);
+
+    return out[0] != 0 && out[0] < 0x1000;
+}
+
+void hv_percpu_diag_tick(struct exc_info *ctx)
+{
+    int cpu = smp_id();
+    if (cpu < 0 || cpu >= MAX_CPUS)
+        return;
+
+    struct hv_diag_cpu *d = &hv_diag[cpu];
+    d->fiq_count++;
+    d->sample_count++;
+
+    if (!d->online_reported) {
+        d->online_reported = true;
+        printf("HV DIAG ONLINE: cpu=%d mpidr=0x%lx pc=0x%lx spsr=0x%lx\n", cpu, mrs(MPIDR_EL1),
+               ctx->elr, ctx->spsr);
+    }
+
+    if (ctx->elr == d->last_pc) {
+        d->same_pc_ticks++;
+    } else {
+        d->last_pc = ctx->elr;
+        d->same_pc_ticks = 0;
+    }
+
+    // Sparse on purpose: flooding the UART from here would itself change SMP timing.
+    if ((d->sample_count & 0x3fff) == 0)
+        printf("HV DIAG: cpu=%d pc=0x%lx same=%lu spsr=0x%lx\n", cpu, ctx->elr,
+               d->same_pc_ticks, ctx->spsr);
+
+    if (hv_bugcheck_dumped || (ctx->elr >> 40) != 0xfffff8)
+        return;
+
+    // Poll once the address is known; before that, only a long spin is worth probing.
+    bool probe = d->bcd_va ? ((d->sample_count & 0x3ff) == 0)
+                           : (d->same_pc_ticks == HV_DIAG_STUCK_TICKS);
+    if (!probe)
+        return;
+
+    u64 a[5], b[5];
+    if (!hv_diag_read_bugcheck(d, ctx->elr, a))
+        return;
+    sysop("dsb sy");
+    if (!hv_diag_read_bugcheck(d, ctx->elr, b))
+        return;
+    for (int i = 0; i < 5; i++)
+        if (a[i] != b[i])
+            return; // caught mid-write by another core; try again next tick
+
+    hv_bugcheck_dumped = true;
+    printf("HV BUGCHECK: seen_by_cpu=%d code=0x%lx P1=0x%lx P2=0x%lx P3=0x%lx P4=0x%lx\n", cpu,
+           a[0], a[1], a[2], a[3], a[4]);
+    if (a[0] == 0xA)
+        printf("HV BUGCHECK 0A: va=0x%lx irql=%lu access=%s fault_pc=0x%lx\n", a[1], a[2],
+               (a[3] & 8) ? "EXECUTE" : (a[3] & 1) ? "WRITE" : "READ", a[4]);
+}
+
 void hv_arm_tick(bool secondary)
 {
     if (secondary)
@@ -979,7 +1085,17 @@ static void hv_sample_pc(struct exc_info *ctx)
             printf("HV SAMPLE: held pc=0x%lx insn=%08x\n", ctx->elr,
                    held_pa ? read32(held_pa) : 0);
         }
-        if (++repeats >= need && (ctx->spsr & BIT(7))) {
+        //
+        // Second path, for the blue screen. Once KeBugCheckEx has run, Windows draws the
+        // stop screen spinning in HalpGitQueryCounter with interrupts ENABLED, so the
+        // masked-interrupt gate above never fires and the bugcheck parameters are never
+        // read - which is exactly what happened chasing IRQL_NOT_LESS_OR_EQUAL on a second
+        // core. A kernel PC that repeats for a very long time is worth capturing even with
+        // interrupts enabled: the collector below can recover KiBugCheckData from that PC.
+        // The fuse is long (a few seconds) so ordinary delay/poll loops still do not trip it.
+        //
+        bool blue_screen_spin = repeats >= need * 32 && (ctx->elr >> 40) == 0xfffff8;
+        if (++repeats >= need && ((ctx->spsr & BIT(7)) || blue_screen_spin)) {
             //
             // Skip the CPU idle loop. A repeating PC with interrupts masked, sitting one
             // instruction past a WFI, is HalProcessorIdle (dsb; isb; wfi; ...), not a

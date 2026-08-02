@@ -1732,6 +1732,13 @@ void hv_exc_fiq(struct exc_info *ctx)
 
     // Only poll for HV events in the interruptible CPU
     if (tick) {
+        //
+        // Diagnostics first, on EVERY core. hv_tick() below stays bound to the interruptible
+        // CPU because it also does functional work; running that everywhere would create a new
+        // SMP bug rather than restore visibility. hv_diag_tick() only reads and prints.
+        //
+        hv_percpu_diag_tick(ctx);
+
         if (smp_id() == interruptible_cpu) {
             hv_tick(ctx);
             hv_arm_tick(false);

@@ -130,6 +130,7 @@ void hv_rendezvous(void);
 bool hv_switch_cpu(int cpu);
 void hv_pin_cpu(int cpu);
 void hv_arm_tick(bool secondary);
+void hv_percpu_diag_tick(struct exc_info *ctx);
 void hv_rearm(void);
 void hv_maybe_exit(void);
 void hv_tick(struct exc_info *ctx);
