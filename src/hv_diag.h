@@ -16,11 +16,30 @@ typedef uint64_t u64;
 #define HV_DIAG_ABI_VERSION   1u
 #define HV_DIAG_RING_CAPACITY 256u
 #define HV_DIAG_QUEUE_COUNT   2u
+#define HV_DIAG_J313_XHCI_HW_IRQ 857u
+#define HV_DIAG_J313_XHCI_VINTID 857u
 
 enum hv_diag_sample_flags {
     HV_DIAG_FLAG_NVME_READY = 1u << 0,
     HV_DIAG_FLAG_NVME_IRQ_ASSERTED = 1u << 1,
     HV_DIAG_FLAG_FB_ENABLED = 1u << 2,
+};
+
+enum hv_diag_counter {
+    HV_DIAG_NVME_IRQ_INJECT,
+    HV_DIAG_NVME_IRQ_IAR,
+    HV_DIAG_NVME_IRQ_EOI,
+    HV_DIAG_XHCI_HW_IRQ,
+    HV_DIAG_XHCI_IRQ_INJECT,
+    HV_DIAG_XHCI_IRQ_IAR,
+    HV_DIAG_XHCI_IRQ_EOI,
+    HV_DIAG_COUNTER_COUNT,
+};
+
+enum hv_diag_irq_stage {
+    HV_DIAG_IRQ_INJECT,
+    HV_DIAG_IRQ_IAR,
+    HV_DIAG_IRQ_EOI,
 };
 
 struct hv_diag_queue_v1 {
@@ -75,5 +94,9 @@ void hv_diag_reset(void);
 void hv_diag_publish(const struct hv_diag_sample_v1 *sample);
 bool hv_diag_get_status(struct hv_diag_status_v1 *out);
 bool hv_diag_get_sample(u64 sequence, struct hv_diag_sample_v1 *out);
+void hv_diag_count(enum hv_diag_counter counter);
+void hv_diag_get_counters(u64 out[HV_DIAG_COUNTER_COUNT]);
+void hv_diag_count_hw_irq(u32 hw_irq);
+void hv_diag_count_vgic_irq(enum hv_diag_irq_stage stage, u32 vintid, u32 nvme_vintid);
 
 #endif

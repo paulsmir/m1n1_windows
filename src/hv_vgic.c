@@ -19,6 +19,7 @@
 */
 
 #include "hv.h"
+#include "hv_diag.h"
 #include "hv_vgic.h"
 #include "hv_vgic_diag.h"
 #include "assert.h"
@@ -1803,6 +1804,7 @@ void hv_vgic3_inject_irq(u32 vintid, u8 priority, bool active, bool pending, boo
     u64 elrsr = mrs(ICH_ELRSR_EL2);
     int free_lr = hv_vgic3_get_free_lr();
     hv_vgic3_write_lr(free_lr, val);
+    hv_diag_count_vgic_irq(HV_DIAG_IRQ_INJECT, vintid, hv_pci_intx_irq());
 
     hv_vgic3_update_vi();
     sysop("isb");
@@ -1918,6 +1920,7 @@ int hv_vgic3_do_iar1(void){
     lr_val &= ~ICH_LR_STATE_PENDING;
     lr_val |= ICH_LR_STATE_ACTIVE;
     hv_vgic3_write_lr(found_lr, lr_val);
+    hv_diag_count_vgic_irq(HV_DIAG_IRQ_IAR, intid, hv_pci_intx_irq());
 
     //
     // Acknowledging the only Pending LR must deassert VI immediately - not wait until
@@ -1949,6 +1952,8 @@ void hv_vgic3_do_eoir1(u64 reg){
     }
 
     hv_vgic3_update_vi();
+    if (trace_lr >= 0)
+        hv_diag_count_vgic_irq(HV_DIAG_IRQ_EOI, intd, hv_pci_intx_irq());
     if (trace_lr >= 0 && trace_take(intd))
         printf("HV: NVMe IRQ EOI intid=%u lr=%d before=0x%lx after=0 HCR=0x%lx\n", intd,
                trace_lr, trace_before, mrs(HCR_EL2));

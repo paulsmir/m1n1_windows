@@ -106,6 +106,63 @@ static void test_invalid_queries_do_not_modify_state_or_output(void)
     assert(memcmp(&before, &after, sizeof(before)) == 0);
 }
 
+static void test_lifecycle_counters_are_independent_and_reset_together(void)
+{
+    uint64_t counters[HV_DIAG_COUNTER_COUNT];
+    uint64_t before_invalid[HV_DIAG_COUNTER_COUNT];
+
+    hv_diag_reset();
+    for (unsigned counter = 0; counter < HV_DIAG_COUNTER_COUNT; counter++) {
+        for (unsigned increment = 0; increment <= counter; increment++)
+            hv_diag_count((enum hv_diag_counter)counter);
+    }
+
+    memset(counters, 0, sizeof(counters));
+    hv_diag_get_counters(counters);
+    for (unsigned counter = 0; counter < HV_DIAG_COUNTER_COUNT; counter++)
+        assert(counters[counter] == counter + 1);
+
+    memcpy(before_invalid, counters, sizeof(counters));
+    hv_diag_count((enum hv_diag_counter)HV_DIAG_COUNTER_COUNT);
+    hv_diag_count((enum hv_diag_counter)0xffffffffu);
+    hv_diag_get_counters(counters);
+    assert(memcmp(counters, before_invalid, sizeof(counters)) == 0);
+
+    struct hv_diag_sample_v1 sample = sample_with_pc(0x4567);
+    hv_diag_publish(&sample);
+    hv_diag_reset();
+    memset(counters, 0xa5, sizeof(counters));
+    hv_diag_get_counters(counters);
+    for (unsigned counter = 0; counter < HV_DIAG_COUNTER_COUNT; counter++)
+        assert(counters[counter] == 0);
+    struct hv_diag_status_v1 status;
+    assert(hv_diag_get_status(&status));
+    assert(status.count == 0);
+}
+
+static void test_irq_sources_and_lifecycle_stages_map_to_distinct_counters(void)
+{
+    uint64_t counters[HV_DIAG_COUNTER_COUNT];
+    const uint32_t nvme_vintid = 64;
+
+    hv_diag_reset();
+    hv_diag_count_hw_irq(HV_DIAG_J313_XHCI_HW_IRQ);
+    hv_diag_count_hw_irq(HV_DIAG_J313_XHCI_HW_IRQ + 1);
+
+    hv_diag_count_vgic_irq(HV_DIAG_IRQ_INJECT, nvme_vintid, nvme_vintid);
+    hv_diag_count_vgic_irq(HV_DIAG_IRQ_IAR, nvme_vintid, nvme_vintid);
+    hv_diag_count_vgic_irq(HV_DIAG_IRQ_EOI, nvme_vintid, nvme_vintid);
+    hv_diag_count_vgic_irq(HV_DIAG_IRQ_INJECT, HV_DIAG_J313_XHCI_VINTID, nvme_vintid);
+    hv_diag_count_vgic_irq(HV_DIAG_IRQ_IAR, HV_DIAG_J313_XHCI_VINTID, nvme_vintid);
+    hv_diag_count_vgic_irq(HV_DIAG_IRQ_EOI, HV_DIAG_J313_XHCI_VINTID, nvme_vintid);
+    hv_diag_count_vgic_irq(HV_DIAG_IRQ_INJECT, 999, nvme_vintid);
+    hv_diag_count_vgic_irq((enum hv_diag_irq_stage)99, nvme_vintid, nvme_vintid);
+
+    hv_diag_get_counters(counters);
+    for (unsigned counter = 0; counter < HV_DIAG_COUNTER_COUNT; counter++)
+        assert(counters[counter] == 1);
+}
+
 int main(void)
 {
     _Static_assert((HV_DIAG_RING_CAPACITY & (HV_DIAG_RING_CAPACITY - 1)) == 0,
@@ -117,6 +174,8 @@ int main(void)
     test_publish_assigns_sequences_and_returns_value_copies();
     test_wrap_retains_only_newest_capacity();
     test_invalid_queries_do_not_modify_state_or_output();
+    test_lifecycle_counters_are_independent_and_reset_together();
+    test_irq_sources_and_lifecycle_stages_map_to_distinct_counters();
     puts("hv_diag_test: ok");
     return 0;
 }

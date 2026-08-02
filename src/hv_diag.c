@@ -10,6 +10,7 @@
 
 static struct {
     struct hv_diag_sample_v1 samples[HV_DIAG_RING_CAPACITY];
+    u64 counters[HV_DIAG_COUNTER_COUNT];
     u64 next_sequence;
     u32 count;
 } ring;
@@ -64,4 +65,40 @@ bool hv_diag_get_sample(u64 sequence, struct hv_diag_sample_v1 *out)
 
     *out = *sample;
     return true;
+}
+
+void hv_diag_count(enum hv_diag_counter counter)
+{
+    u32 index = (u32)counter;
+
+    if (index >= HV_DIAG_COUNTER_COUNT)
+        return;
+    __atomic_add_fetch(&ring.counters[index], 1, __ATOMIC_RELAXED);
+}
+
+void hv_diag_get_counters(u64 out[HV_DIAG_COUNTER_COUNT])
+{
+    if (!out)
+        return;
+
+    for (u32 i = 0; i < HV_DIAG_COUNTER_COUNT; i++)
+        out[i] = __atomic_load_n(&ring.counters[i], __ATOMIC_RELAXED);
+}
+
+void hv_diag_count_hw_irq(u32 hw_irq)
+{
+    if (hw_irq == HV_DIAG_J313_XHCI_HW_IRQ)
+        hv_diag_count(HV_DIAG_XHCI_HW_IRQ);
+}
+
+void hv_diag_count_vgic_irq(enum hv_diag_irq_stage stage, u32 vintid, u32 nvme_vintid)
+{
+    u32 stage_index = (u32)stage;
+
+    if (stage_index > HV_DIAG_IRQ_EOI)
+        return;
+    if (vintid == nvme_vintid)
+        hv_diag_count((enum hv_diag_counter)(HV_DIAG_NVME_IRQ_INJECT + stage_index));
+    else if (vintid == HV_DIAG_J313_XHCI_VINTID)
+        hv_diag_count((enum hv_diag_counter)(HV_DIAG_XHCI_IRQ_INJECT + stage_index));
 }

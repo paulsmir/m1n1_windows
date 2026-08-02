@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: MIT */
 
 #include "hv.h"
+#include "hv_diag.h"
 #include "assert.h"
 #include "cpu_regs.h"
 #include "exception.h"
@@ -1505,6 +1506,8 @@ void hv_exc_irq(struct exc_info *ctx)
     u32 reason = aic_ack();
     int irq = FIELD_GET(AIC_EVENT_NUM, reason);
     int type = FIELD_GET(AIC_EVENT_TYPE, reason);
+
+    hv_diag_count_hw_irq(irq);
 
     u64 misr = mrs(ICH_MISR_EL2);
     u64 eisr = mrs(ICH_EISR_EL2);
