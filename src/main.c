@@ -14,6 +14,7 @@
 #include "firmware.h"
 #include "gxf.h"
 #include "heapblock.h"
+#include "hv_autonomous_boot_runtime.h"
 #include "mcc.h"
 #include "memory.h"
 #include "nvme.h"
@@ -118,6 +119,12 @@ void run_actions(void)
 
     printf("Checking for payloads...\n");
 
+    enum hv_autonomous_boot_attempt autonomous = hv_autonomous_boot_if_present(&usb_up);
+    if (autonomous == HV_AUTONOMOUS_BOOT_HANDLED)
+        return;
+    if (autonomous == HV_AUTONOMOUS_BOOT_ATTEMPT_FAILED)
+        goto proxy_fallback;
+
     if (payload_run() == 0) {
         printf("Valid payload found\n");
         return;
@@ -125,6 +132,8 @@ void run_actions(void)
     fb_set_active(true);
 
     printf("No valid payload found\n");
+
+proxy_fallback:
 
 #ifndef BRINGUP
     if (!usb_up) {
