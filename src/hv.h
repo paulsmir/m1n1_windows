@@ -72,10 +72,10 @@ bool hv_trace_irq(u32 type, u32 num, u32 count, u32 flags);
 
 /* Virtual peripherals */
 void hv_vuart_poll(void);
-void hv_map_vuart(u64 base, int irq, iodev_id_t iodev);
+bool hv_map_vuart(u64 base, int irq, iodev_id_t iodev);
 bool pl011_reg(u64 off, u64 *val, bool write);
 bool pl011_kd_live(void);
-void hv_pci_init(u64 ecam, u64 bar_window, int irq);
+bool hv_pci_init(u64 ecam, u64 bar_window, int irq);
 int hv_pci_intx_irq(void);
 u64 hv_pci_bar_window(void);
 u64 hv_ipa_to_pa(u64 ipa);

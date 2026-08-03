@@ -178,7 +178,7 @@ static bool handle_pci_cfg(struct exc_info *ctx, u64 addr, u64 *val, bool write,
     return true;
 }
 
-void hv_pci_init(u64 ecam, u64 bar_window, int irq)
+bool hv_pci_init(u64 ecam, u64 bar_window, int irq)
 {
     ecam_base = ecam;
     bar_window_base = bar_window;
@@ -199,6 +199,7 @@ void hv_pci_init(u64 ecam, u64 bar_window, int irq)
     printf("HV: emulated PCIe ECAM at 0x%lx (map_hook=%d pte=0x%lx), NVMe 00:00.0 "
            "(INTx SPI %d backend=%d)\n",
            ecam_base, r, pte, intx_irq, backend);
+    return r == 0 && backend;
 }
 
 // Exposed so hv_nvme.c can raise/lower the wired INTx line and know the window base.

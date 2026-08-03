@@ -149,10 +149,14 @@ void hv_vuart_poll(void)
     update_irq();
 }
 
-void hv_map_vuart(u64 base, int irq, iodev_id_t iodev)
+bool hv_map_vuart(u64 base, int irq, iodev_id_t iodev)
 {
-    hv_map_hook(base, handle_vuart, 0x2000); // page 1: S5L UART; page 2: emulated PL011 (kd)
-    usb_iodev_vuart_setup(iodev);
+    int ret = hv_map_hook(base, handle_vuart, 0x2000);
+    // A standalone boot may use the physical UART. Only USB iodevs need the
+    // companion USB-vUART transport configured by the assisted proxy path.
+    if (iodev >= IODEV_USB0 && iodev < IODEV_MAX)
+        usb_iodev_vuart_setup(iodev);
     vuart_irq = irq;
     active = true;
+    return ret == 0;
 }

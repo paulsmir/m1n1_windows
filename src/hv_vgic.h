@@ -679,6 +679,7 @@ static inline bool virq_queue_pop(virq_queue_t *q, virq_t *out)
 
 /* Drain hardware IRQs queued because every virtual List Register was busy. */
 void hv_vgic3_drain_irq_queue(void);
+bool hv_vgic_rearm_j313_xhci_trace(void);
 
 #endif //ENABLE_VGIC_MODULE
 #endif //HV_VGIC_H
