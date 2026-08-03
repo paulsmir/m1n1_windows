@@ -3,6 +3,8 @@
 #ifndef HV_AUTONOMOUS_MANIFEST_H
 #define HV_AUTONOMOUS_MANIFEST_H
 
+#include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 
 #define HV_AUTONOMOUS_MAGIC "ASIWINGU"
@@ -32,5 +34,33 @@ struct hv_autonomous_manifest {
 
 _Static_assert(sizeof(struct hv_autonomous_manifest) == HV_AUTONOMOUS_MANIFEST_SIZE,
                "autonomous manifest ABI size changed");
+
+enum hv_autonomous_error {
+    HV_AUTONOMOUS_ERROR_NONE = 0,
+    HV_AUTONOMOUS_ERROR_NULL,
+    HV_AUTONOMOUS_ERROR_TRUNCATED,
+    HV_AUTONOMOUS_ERROR_MAGIC,
+    HV_AUTONOMOUS_ERROR_HEADER_SIZE,
+    HV_AUTONOMOUS_ERROR_VERSION,
+    HV_AUTONOMOUS_ERROR_FLAGS,
+    HV_AUTONOMOUS_ERROR_LAYOUT_VERSION,
+    HV_AUTONOMOUS_ERROR_PAYLOAD_ALIGNMENT,
+    HV_AUTONOMOUS_ERROR_PAYLOAD_SIZE,
+    HV_AUTONOMOUS_ERROR_INTEGER_OVERFLOW,
+    HV_AUTONOMOUS_ERROR_PAYLOAD_BOUNDS,
+};
+
+struct hv_autonomous_payload {
+    const void *compressed;
+    size_t compressed_size;
+    size_t uncompressed_size;
+    uint32_t crc32;
+    uint32_t layout_version;
+    uint32_t flags;
+};
+
+bool hv_autonomous_manifest_parse(const void *image_end, size_t available,
+                                  struct hv_autonomous_payload *out,
+                                  enum hv_autonomous_error *error);
 
 #endif

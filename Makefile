@@ -132,7 +132,7 @@ OBJECTS := \
 	firmware.o \
 	gxf.o gxf_asm.o \
 	heapblock.o \
-	hv.o hv_vm.o hv_exc.o hv_vuart.o hv_pl011.o hv_pci.o hv_nvme.o hv_nvme_queue.o hv_fb_stream.o hv_diag.o hv_irq_routes.o hv_sgi_diag.o hv_xhci_handoff.o hv_wdt.o hv_asm.o hv_aic.o hv_virtio.o hv_psci.o hv_vgic.o hv_vgic_diag.o hv_vgic_redist.o \
+	hv.o hv_vm.o hv_exc.o hv_vuart.o hv_pl011.o hv_pci.o hv_nvme.o hv_nvme_queue.o hv_fb_stream.o hv_diag.o hv_irq_routes.o hv_sgi_diag.o hv_xhci_handoff.o hv_autonomous_manifest.o hv_wdt.o hv_asm.o hv_aic.o hv_virtio.o hv_psci.o hv_vgic.o hv_vgic_diag.o hv_vgic_redist.o \
 	i2c.o \
 	iodev.o \
 	iova.o \
@@ -184,8 +184,10 @@ TARGET_RAW := m1n1.bin
 
 DEPDIR := build/.deps
 
-.PHONY: all clean format invoke_cc always_rebuild
+.PHONY: all clean format host-tests invoke_cc always_rebuild
 all: build/$(TARGET) build/$(TARGET_RAW)
+host-tests:
+	./tests/run_host_tests.sh
 clean:
 	rm -rf build/* build/.deps
 format:
