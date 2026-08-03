@@ -205,7 +205,7 @@ static bool handle_j313_xhci_mmio(struct exc_info *ctx, u64 addr, u64 *val, bool
     return true;
 }
 
-static void hv_map_j313_xhci_trace(void)
+bool hv_vgic_rearm_j313_xhci_trace(void)
 {
     u32 hccparams1 = read32(J313_XHCI1_BASE + 0x10);
 
@@ -221,6 +221,7 @@ static void hv_map_j313_xhci_trace(void)
            "HCCPARAMS1=0x%x AC64=%u\n",
            ret ? "FAILED" : "armed", (u64)J313_XHCI1_BASE, (u64)HV_XHCI_DMA_PAGE_SIZE,
            j313_xhci_caplen, j313_xhci_rtsoff, hccparams1, hccparams1 & 1);
+    return ret == 0;
 }
 
 static void hv_trace_j313_xhci(const char *where)
@@ -2456,7 +2457,7 @@ void hv_vgicv3_init(void)
 
     //vGIC setup is complete.
     if (chip_id == T8103)
-        hv_map_j313_xhci_trace();
+        hv_vgic_rearm_j313_xhci_trace();
     vgic_inited = true;
     return;
 #else
