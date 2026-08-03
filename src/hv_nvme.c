@@ -8,6 +8,7 @@
 #include "hv_nvme_queue.h"
 #include "hv_vgic.h"
 #include "nvme.h"
+#include "smp.h"
 #include "string.h"
 #include "types.h"
 #include "utils.h"
@@ -48,7 +49,7 @@ extern int hv_pci_intx_irq(void);
 static u64 bar_base;
 static bool backend_ready;
 static u64 backend_blocks;
-static bool irq_injected;
+static struct vnvme_intx_delivery irq_delivery;
 static u32 nvme_trace_budget;
 static struct vnvme_ctrl queue_ctrl;
 
@@ -95,16 +96,21 @@ static void backend_publish(void *opaque)
 
 static void try_raise_intx(void)
 {
+    /* Until vGIC affinity routing is implemented, keep this INTx and its LR on CPU0. */
+    if (smp_id() != boot_cpu_idx)
+        return;
+
     int irq = hv_pci_intx_irq();
     bool enabled = hv_vgic3_irq_enabled(irq);
     int free_lr = hv_vgic3_get_free_lr();
-    if (!vnvme_intx_can_inject(queue_ctrl.irq_asserted, regs.intms, irq_injected, enabled,
-                               free_lr)) {
-        if (queue_ctrl.irq_asserted && !regs.intms && !irq_injected && !enabled) {
+    if (!vnvme_intx_delivery_can_inject(&irq_delivery, queue_ctrl.irq_asserted, regs.intms,
+                                        enabled, free_lr)) {
+        if (queue_ctrl.irq_asserted && !regs.intms && !irq_delivery.outstanding && !enabled) {
             static u32 disabled_logs;
             if (disabled_logs++ < 8)
                 printf("HV: NVMe INTx %d pending: GICD disabled\n", irq);
-        } else if (queue_ctrl.irq_asserted && !regs.intms && !irq_injected && free_lr < 0) {
+        } else if (queue_ctrl.irq_asserted && !regs.intms && !irq_delivery.outstanding &&
+                   free_lr < 0) {
             static u32 no_lr_logs;
             if (no_lr_logs++ < 8)
                 printf("HV: NVMe INTx %d delayed: no free vGIC LR\n", irq);
@@ -113,11 +119,19 @@ static void try_raise_intx(void)
     }
 
     hv_vgic3_inject_irq(irq, hv_vgic3_get_priority(irq), false, true, false, 0);
-    irq_injected = true;
+    vnvme_intx_delivery_mark_injected(&irq_delivery);
 }
 
 void hv_nvme_poll_irq(void)
 {
+    try_raise_intx();
+}
+
+void hv_nvme_irq_eoi(u32 intid)
+{
+    if (intid != (u32)hv_pci_intx_irq())
+        return;
+    vnvme_intx_delivery_eoi(&irq_delivery);
     try_raise_intx();
 }
 
@@ -133,11 +147,7 @@ static void backend_irq(void *opaque, bool asserted)
     UNUSED(opaque);
     if (nvme_trace_take())
         printf("HV: NVMe INTx logical=%d masked=0x%x injected=%d\n", asserted, regs.intms,
-               irq_injected);
-    if (!asserted) {
-        irq_injected = false;
-        return;
-    }
+               irq_delivery.outstanding);
     try_raise_intx();
 }
 
@@ -198,7 +208,7 @@ bool hv_nvme_init_backend(void)
 static void reset_frontend(void)
 {
     memset(&regs, 0, sizeof(regs));
-    irq_injected = false;
+    irq_delivery = (struct vnvme_intx_delivery){0};
     nvme_trace_budget = NVME_TRACE_BUDGET;
     vnvme_init(&queue_ctrl, backend_blocks, &backend_ops, NULL);
     hv_vgic3_trace_intid(hv_pci_intx_irq(), NVME_TRACE_BUDGET);
@@ -232,7 +242,7 @@ static void cc_write(u32 value)
         printf("HV: NVMe ready: AQA=0x%x ASQ=0x%lx ACQ=0x%lx\n", regs.aqa, regs.asq, regs.acq);
     } else if (!(value & CC_EN) && (old & CC_EN)) {
         vnvme_init(&queue_ctrl, backend_blocks, &backend_ops, NULL);
-        irq_injected = false;
+        irq_delivery = (struct vnvme_intx_delivery){0};
         regs.csts = 0;
     }
 
@@ -336,7 +346,8 @@ static bool doorbell_write(u32 index, u32 value)
     u16 qid = index / 2;
     if (nvme_trace_take())
         printf("HV: NVMe doorbell q=%u %s=%u irq=%d injected=%d masked=0x%x\n", qid,
-               (index & 1) ? "CQH" : "SQT", value, queue_ctrl.irq_asserted, irq_injected,
+               (index & 1) ? "CQH" : "SQT", value, queue_ctrl.irq_asserted,
+               irq_delivery.outstanding,
                regs.intms);
     bool ok;
     if (index & 1) {

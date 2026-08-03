@@ -312,9 +312,20 @@ void iodev_handle_events(iodev_id_t id)
 
     in_iodev++;
 
+    /*
+     * Device event handlers may report a link or transfer error through printf().  Keep
+     * in_iodev set so that nested console output takes the emergency UART path, but do not
+     * hold console_lock across the callback: iodev_console_write() acquires that lock before
+     * inspecting in_iodev and would otherwise deadlock recursively.
+     */
+    if (do_lock)
+        spin_unlock(&console_lock);
+
     if (iodevs[id]->ops->handle_events)
         iodevs[id]->ops->handle_events(iodevs[id]->opaque);
 
+    if (do_lock)
+        spin_lock(&console_lock);
     in_iodev--;
 
     /*

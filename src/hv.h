@@ -4,6 +4,7 @@
 #define HV_H
 
 #include "exception.h"
+#include "hv_sgi_diag.h"
 #include "iodev.h"
 #include "types.h"
 #include "uartproxy.h"
@@ -83,6 +84,7 @@ bool hv_nvme_init_backend(void);
 void hv_nvme_map_bar(u64 base);
 void hv_nvme_unmap_bar(void);
 void hv_nvme_poll_irq(void);
+void hv_nvme_irq_eoi(u32 intid);
 struct vnvme_snapshot;
 void hv_nvme_get_diag_snapshot(struct vnvme_snapshot *out, bool *ready);
 struct virtio_conf;
@@ -147,6 +149,9 @@ void hv_vgicv3_init(void);
 void init_vgic_irq_queues(void);
 void hv_vgicv3_init_list_registers(void);
 int hv_vgicv3_enable_virtual_interrupts(void);
+void hv_sgi_diag_vgic_event(enum hv_sgi_diag_event event);
+void hv_irq_diag_vgic_iar(u32 intid);
+void hv_irq_diag_vgic_eoi(u32 intid);
 #endif
 bool hv_handle_psci_smc(struct exc_info *ctx);
 int hv_handle_psci_smc_python_entry(uint64_t regs[4]);

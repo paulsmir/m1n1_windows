@@ -33,6 +33,18 @@ const struct hv_irq_route *hv_irq_route_from_vintid(u32 vintid)
     return NULL;
 }
 
+bool hv_irq_route_resolve_incoming(u32 hw_irq, u32 reserved_vintid, u32 *vintid)
+{
+    const struct hv_irq_route *route = hv_irq_route_from_hw(hw_irq);
+    u32 candidate = route ? route->vintid : hw_irq;
+
+    if (!vintid || candidate == reserved_vintid)
+        return false;
+
+    *vintid = candidate;
+    return true;
+}
+
 bool hv_irq_route_level_eoi_target(u32 vintid, bool enabled, u32 *hw_irq)
 {
     const struct hv_irq_route *route = hv_irq_route_from_vintid(vintid);
