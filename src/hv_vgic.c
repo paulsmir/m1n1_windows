@@ -24,6 +24,7 @@
 #include "hv_xhci_handoff.h"
 #include "hv_vgic.h"
 #include "hv_vgic_diag.h"
+#include "hv_vgic_redist.h"
 #include "assert.h"
 #include "cpu_regs.h"
 #include "display.h"
@@ -1110,10 +1111,24 @@ static bool handle_vgic_redist_access(struct exc_info *ctx, u64 addr, u64 *val, 
     u64 relative_addr;
     bool register_handled;
     bool unimplemented_reg_accessed;
-    relative_addr = addr - redist_base;
+    struct hv_vgic_redist_addr decoded;
+    if (!hv_vgic_redist_decode(addr, redist_base, num_cpus, &decoded))
+        return false;
+
+    // A GICv3 redistributor is one 128-KiB frame per vCPU (64-KiB RD + 64-KiB
+    // SGI/PPI).  The frame encoded in the MMIO address selects the target CPU;
+    // it is not necessarily the CPU executing the access.  Keeping the full
+    // offset here made every frame after CPU0 look like an unknown register, so
+    // Windows could not enable or prioritize the timer PPIs on secondary CPUs.
+    relative_addr = decoded.reg;
+    static u32 traced_redist_frames;
+    u32 frame_bit = BIT(decoded.cpu);
+    if (!(__atomic_fetch_or(&traced_redist_frames, frame_bit, __ATOMIC_RELAXED) & frame_bit))
+        printf("HV vGIC: first redistributor access frame=%u reg=0x%lx from_cpu=%lu\n",
+               decoded.cpu, relative_addr, ctx->cpu_id);
     register_handled = false;
     unimplemented_reg_accessed = false;
-    u8 cpu_num;
+    u32 cpu_num;
     u32 value_is_enabler, value_ic_enabler, current_val;
     u32 irq_num;
     u32 reg_num;
@@ -1125,7 +1140,7 @@ static bool handle_vgic_redist_access(struct exc_info *ctx, u64 addr, u64 *val, 
     reg_num = 0;
     reg_offset = 0;
 
-    cpu_num = ctx->cpu_id;
+    cpu_num = decoded.cpu;
     if(write) {
         //
         // The guest attempted to write a register.
@@ -2079,6 +2094,21 @@ static bool trace_take(u32 intid)
     return true;
 }
 
+static u32 timer_inject_count[MAX_CPUS][2];
+static u32 timer_iar_count[MAX_CPUS][2];
+static u32 timer_eoi_count[MAX_CPUS][2];
+
+static bool timer_trace_count(u32 intid, u32 counts[MAX_CPUS][2], u32 *count)
+{
+    if (intid != 17 && intid != 18)
+        return false;
+    int cpu = smp_id();
+    if (cpu < 0 || cpu >= MAX_CPUS)
+        cpu = 0;
+    *count = ++counts[cpu][intid - 17];
+    return *count <= 8 || ((*count & 1023) == 0);
+}
+
 void hv_vgic3_inject_irq(u32 vintid, u8 priority, bool active, bool pending, bool hw_status, u64 hw_irq){
     u64 val = 0;
     val |= (u64)(vintid & ICH_LR_VIRTUAL_MASK) << ICH_LR_VIRTUAL_SHIFT;
@@ -2105,6 +2135,12 @@ void hv_vgic3_inject_irq(u32 vintid, u8 priority, bool active, bool pending, boo
 
     hv_vgic3_update_vi();
     sysop("isb");
+    u32 timer_count;
+    if (timer_trace_count(vintid, timer_inject_count, &timer_count))
+        printf("HV TIMER INJECT: cpu=%d intid=%u count=%u lr=%d prio=0x%x "
+               "VMCR=0x%lx HCR=0x%lx\n",
+               smp_id(), vintid, timer_count, free_lr, priority,
+               mrs(ICH_VMCR_EL2), mrs(HCR_EL2));
     if (trace_take(vintid))
         printf("HV: NVMe IRQ inject intid=%u prio=0x%x lr=%d value=0x%lx "
                "ELRSR=0x%lx VMCR=0x%lx HCR=0x%lx\n",
@@ -2149,6 +2185,7 @@ u8 hv_vgic3_running_priority(void){
 void hv_vgic3_update_vi(void){
     u64 vmcr = mrs(ICH_VMCR_EL2);
     u8 vpmr = (vmcr >> 24) & 0xff;
+    u8 running_priority = hv_vgic3_running_priority();
     bool veng1 = vmcr & BIT(1);
     bool signal = false;
 
@@ -2160,7 +2197,7 @@ void hv_vgic3_update_vi(void){
             if(((lr_val >> ICH_LR_STATE_SHIFT) & ICH_LR_STATE_MASK) != 1)
                 continue;
             u8 priority = (lr_val >> ICH_LR_PRIORITY_SHIFT) & ICH_LR_PRIORITY_MASK;
-            if(priority < vpmr){
+            if(hv_vgic_diag_priority_deliverable(priority, vpmr, running_priority)){
                 signal = true;
                 break;
             }
@@ -2185,6 +2222,8 @@ int hv_vgic3_do_iar1(void){
     //
     int found_lr = -1;
     u8 found_priority = 0xff;
+    u8 vpmr = (mrs(ICH_VMCR_EL2) >> 24) & 0xff;
+    u8 running_priority = hv_vgic3_running_priority();
     for(int lr = 0; lr < hv_vgic3_num_lrs(); lr++){
         u64 lr_val = hv_vgic3_read_lr(lr);
         // Only a purely Pending (0b01) group-1 LR may be acknowledged; an
@@ -2194,6 +2233,8 @@ int hv_vgic3_do_iar1(void){
         if(!(lr_val & ICH_LR_GRP1))
             continue;
         u8 priority = (lr_val >> ICH_LR_PRIORITY_SHIFT) & ICH_LR_PRIORITY_MASK;
+        if(!hv_vgic_diag_priority_deliverable(priority, vpmr, running_priority))
+            continue;
         if(found_lr < 0 || priority < found_priority){
             found_lr = lr;
             found_priority = priority;
@@ -2220,6 +2261,9 @@ int hv_vgic3_do_iar1(void){
     lr_val |= ICH_LR_STATE_ACTIVE;
     hv_vgic3_write_lr(found_lr, lr_val);
     hv_diag_count_vgic_irq(HV_DIAG_IRQ_IAR, intid, hv_pci_intx_irq());
+    hv_irq_diag_vgic_iar(intid);
+    if (intid < 16)
+        hv_sgi_diag_vgic_event(HV_SGI_DIAG_IAR);
 
     //
     // Acknowledging the only Pending LR must deassert VI immediately - not wait until
@@ -2228,6 +2272,11 @@ int hv_vgic3_do_iar1(void){
     //
     hv_vgic3_update_vi();
     sysop("isb");
+    u32 timer_count;
+    if (timer_trace_count(intid, timer_iar_count, &timer_count))
+        printf("HV TIMER IAR: cpu=%d intid=%u count=%u lr=%d before=0x%lx "
+               "after=0x%lx\n",
+               smp_id(), intid, timer_count, found_lr, before, lr_val);
     if (trace_take(intid))
         printf("HV: NVMe IRQ IAR intid=%u lr=%d before=0x%lx after=0x%lx HCR=0x%lx\n",
                intid, found_lr, before, lr_val, mrs(HCR_EL2));
@@ -2246,7 +2295,9 @@ void hv_vgic3_do_eoir1(u64 reg){
             //vgic_log("DOING EOIR 0x%lx, found LR%d: 0x%lx, setting to 0\n", reg, lr, lr_val);
             trace_lr = lr;
             trace_before = lr_val;
-            hv_vgic3_write_lr(lr, 0);
+            if (intd < 16 && (lr_val & ICH_LR_STATE_PENDING))
+                hv_sgi_diag_vgic_event(HV_SGI_DIAG_EOI_ACTIVE_PENDING);
+            hv_vgic3_write_lr(lr, hv_vgic_diag_eoi_lr(lr_val));
         }
     }
 
@@ -2258,12 +2309,21 @@ void hv_vgic3_do_eoir1(u64 reg){
      */
     hv_vgic3_drain_irq_queue();
     hv_vgic3_update_vi();
+    hv_nvme_irq_eoi(intd);
     u32 hw_irq;
     bool enabled = distributor->gicd_interrupt_set_enable_regs[intd / 32] & BIT(intd % 32);
     if (hv_irq_route_level_eoi_target(intd, enabled, &hw_irq))
         aic_set_mask(hw_irq, false);
     if (trace_lr >= 0)
         hv_diag_count_vgic_irq(HV_DIAG_IRQ_EOI, intd, hv_pci_intx_irq());
+    if (trace_lr >= 0)
+        hv_irq_diag_vgic_eoi(intd);
+    if (trace_lr >= 0 && intd < 16)
+        hv_sgi_diag_vgic_event(HV_SGI_DIAG_EOI);
+    u32 timer_count;
+    if (trace_lr >= 0 && timer_trace_count(intd, timer_eoi_count, &timer_count))
+        printf("HV TIMER EOI: cpu=%d intid=%u count=%u lr=%d before=0x%lx\n",
+               smp_id(), intd, timer_count, trace_lr, trace_before);
     if (trace_lr >= 0 && trace_take(intd))
         printf("HV: NVMe IRQ EOI intid=%u lr=%d before=0x%lx after=0 HCR=0x%lx\n", intd,
                trace_lr, trace_before, mrs(HCR_EL2));
@@ -2384,7 +2444,8 @@ void hv_vgicv3_init(void)
     redistributors = heapblock_alloc(sizeof(vgicv3_vcpu_redist) * num_cpus);
     hv_vgicv3_init_redist_registers();
     printf("HV vGIC DEBUG: mapping redistributors into guest space\n");
-    hv_map_hook(redist_base, handle_vgic_redist_access, ((0x20000) * num_cpus));
+    hv_map_hook(redist_base, handle_vgic_redist_access,
+                HV_VGIC_REDIST_STRIDE * num_cpus);
 
     //
     // ITS setup (for MSIs - PCIe devices usually signal via these.)

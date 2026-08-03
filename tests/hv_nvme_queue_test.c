@@ -129,6 +129,7 @@ int main(void)
         .trace = backend_trace,
     };
     struct vnvme_ctrl ctrl;
+    struct vnvme_intx_delivery delivery = {0};
 
     assert(!vnvme_intx_can_inject(false, 0, false, true, 0));
     assert(!vnvme_intx_can_inject(true, 1, false, true, 0));
@@ -136,6 +137,17 @@ int main(void)
     assert(!vnvme_intx_can_inject(true, 0, false, false, 0));
     assert(!vnvme_intx_can_inject(true, 0, false, true, -1));
     assert(vnvme_intx_can_inject(true, 0, false, true, 0));
+
+    /*
+     * A level line may deassert and reassert while its old LR is still Active on another
+     * vCPU.  Delivery ownership lasts until EOI, not until the temporary deassert.
+     */
+    assert(vnvme_intx_delivery_can_inject(&delivery, true, 0, true, 0));
+    vnvme_intx_delivery_mark_injected(&delivery);
+    assert(!vnvme_intx_delivery_can_inject(&delivery, false, 0, true, 0));
+    assert(!vnvme_intx_delivery_can_inject(&delivery, true, 0, true, 0));
+    vnvme_intx_delivery_eoi(&delivery);
+    assert(vnvme_intx_delivery_can_inject(&delivery, true, 0, true, 0));
 
     vnvme_init(&ctrl, BLOCKS, &ops, NULL);
     struct vnvme_snapshot state = snapshot(&ctrl);

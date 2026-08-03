@@ -107,6 +107,7 @@ struct fake_device {
     unsigned queue_calls;
     size_t bytes_written;
     unsigned event_calls;
+    bool print_from_event;
 };
 
 static bool fake_can_write(void *opaque)
@@ -147,7 +148,10 @@ static ssize_t fake_queue(void *opaque, const void *buf, size_t length)
 
 static void fake_handle_events(void *opaque)
 {
-    ((struct fake_device *)opaque)->event_calls++;
+    struct fake_device *fake = opaque;
+    fake->event_calls++;
+    if (fake->print_from_event)
+        iodev_console_write("event", 5);
 }
 
 int main(void)
@@ -179,7 +183,8 @@ int main(void)
     assert(fake.queue_calls == 1);
     assert(fake.bytes_written == 7);
 
-    /* Event polling may kick buffered console output, but must not relock console_lock. */
+    /* A DWC3 event may diagnose an error through printf while event polling is active. */
+    fake.print_from_event = true;
     iodev_handle_events(IODEV_USB0);
     assert(fake.event_calls == 1);
 

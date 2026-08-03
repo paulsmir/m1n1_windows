@@ -3,6 +3,7 @@
 #include "hv.h"
 #include "hv_diag.h"
 #include "hv_irq_routes.h"
+#include "hv_sgi_diag.h"
 #include "assert.h"
 #include "cpu_regs.h"
 #include "exception.h"
@@ -11,6 +12,7 @@
 #include "uart.h"
 #include "uartproxy.h"
 #include "hv_vgic.h"
+#include "hv_vgic_diag.h"
 #include "aic.h"
 #include "aic_regs.h"
 #include "adt.h"
@@ -48,8 +50,15 @@ struct hv_pcpu_data {
     u64 exc_entry_pmcr0_cnt;
 #ifdef ENABLE_VGIC_MODULE
     virq_queue_t irq_queue;
-    virq_queue_t sgi_queue;
     virq_queue_t timer_queue;
+    u32 sgi_pending_mask;
+    struct hv_sgi_diag_state sgi_diag;
+    u32 last_sgi_from;
+    u32 last_sgi_intid;
+    u32 last_iar_intid;
+    u32 last_eoi_intid;
+    u64 last_iar_tick;
+    u64 last_eoi_tick;
 #endif
 } ALIGNED(64);
 
@@ -73,13 +82,110 @@ void init_vgic_irq_queues(void) {
     num_cpus = adt_get_child_count(adt, node);
     for (int i = 0; i < MAX_CPUS; i++) {
         virq_queue_init(&PERCPU_N(i, irq_queue));
-        virq_queue_init(&PERCPU_N(i, sgi_queue));
         virq_queue_init(&PERCPU_N(i, timer_queue));
+        __atomic_store_n(&PERCPU_N(i, sgi_pending_mask), 0, __ATOMIC_RELAXED);
+        PERCPU_N(i, sgi_diag) = (struct hv_sgi_diag_state){0};
+        PERCPU_N(i, last_sgi_from) = ~0U;
+        PERCPU_N(i, last_sgi_intid) = ~0U;
+        PERCPU_N(i, last_iar_intid) = ~0U;
+        PERCPU_N(i, last_eoi_intid) = ~0U;
+        PERCPU_N(i, last_iar_tick) = 0;
+        PERCPU_N(i, last_eoi_tick) = 0;
     }
 #endif
 }
 
 #ifdef ENABLE_VGIC_MODULE
+/*
+ * GICv3 SGIs are pending bits, not FIFO messages.  A second send while the same SGI is
+ * pending coalesces; a send while it is active changes the LR to active+pending.  Modelling
+ * SGIs with a bounded FIFO created duplicate LRs for one INTID and could silently drop the
+ * IPI that Windows was waiting for when the FIFO filled under SMP load.
+ */
+static void hv_vgic3_queue_sgi(int cpu, u32 intid)
+{
+    u32 bit = BIT(intid);
+    u32 old = __atomic_fetch_or(&PERCPU_N(cpu, sgi_pending_mask), bit, __ATOMIC_RELEASE);
+    __atomic_store_n(&PERCPU_N(cpu, last_sgi_from), smp_id(), __ATOMIC_RELAXED);
+    __atomic_store_n(&PERCPU_N(cpu, last_sgi_intid), intid, __ATOMIC_RELAXED);
+    hv_sgi_diag_note(&PERCPU_N(cpu, sgi_diag), HV_SGI_DIAG_QUEUE);
+    static u32 trace_budget = 32;
+
+    if (trace_budget) {
+        trace_budget--;
+        printf("HV SGI QUEUE: from=%d to=%d intid=%u old=0x%x%s\n", smp_id(), cpu,
+               intid, old, old & bit ? " coalesced" : "");
+    }
+    smp_send_ipi(cpu);
+}
+
+static bool hv_vgic3_repend_live_sgi(u32 intid)
+{
+    u64 lrs[HV_VGIC_DIAG_LR_COUNT] = {0};
+    int lr_count = hv_vgic3_num_lrs();
+    if (lr_count > HV_VGIC_DIAG_LR_COUNT)
+        lr_count = HV_VGIC_DIAG_LR_COUNT;
+    for (int lr = 0; lr < lr_count; lr++)
+        lrs[lr] = hv_vgic3_read_lr(lr);
+
+    int lr = hv_vgic_diag_find_live_intid(lrs, intid);
+    if (lr < 0)
+        return false;
+
+    if (!(lrs[lr] & ICH_LR_STATE_PENDING)) {
+        hv_vgic3_write_lr(lr, lrs[lr] | ICH_LR_STATE_PENDING);
+        hv_vgic3_update_vi();
+        sysop("isb");
+    }
+    return true;
+}
+
+static void hv_vgic3_drain_sgis(void)
+{
+    u32 pending = __atomic_exchange_n(&PERCPU(sgi_pending_mask), 0, __ATOMIC_ACQ_REL);
+
+    if (pending)
+        hv_sgi_diag_note(&PERCPU(sgi_diag), HV_SGI_DIAG_DRAIN);
+
+    while (pending) {
+        u32 intid = __builtin_ctz(pending);
+        u32 bit = BIT(intid);
+        pending &= ~bit;
+
+        if (hv_vgic3_repend_live_sgi(intid)) {
+            hv_sgi_diag_note(&PERCPU(sgi_diag), HV_SGI_DIAG_REPEND);
+            continue;
+        }
+        if (hv_vgic3_get_free_lr() != -1) {
+            hv_vgic3_inject_irq(intid, hv_vgic3_get_priority(intid), false, true, false, 0);
+            hv_sgi_diag_note(&PERCPU(sgi_diag), HV_SGI_DIAG_INJECT);
+            continue;
+        }
+
+        /* A maintenance interrupt will retry after an LR becomes free. */
+        __atomic_fetch_or(&PERCPU(sgi_pending_mask), pending | bit, __ATOMIC_RELEASE);
+        hv_sgi_diag_note(&PERCPU(sgi_diag), HV_SGI_DIAG_NO_LR);
+        break;
+    }
+}
+
+void hv_sgi_diag_vgic_event(enum hv_sgi_diag_event event)
+{
+    hv_sgi_diag_note(&PERCPU(sgi_diag), event);
+}
+
+void hv_irq_diag_vgic_iar(u32 intid)
+{
+    PERCPU(last_iar_intid) = intid;
+    PERCPU(last_iar_tick) = mrs(CNTPCT_EL0);
+}
+
+void hv_irq_diag_vgic_eoi(u32 intid)
+{
+    PERCPU(last_eoi_intid) = intid;
+    PERCPU(last_eoi_tick) = mrs(CNTPCT_EL0);
+}
+
 void hv_vgic3_drain_irq_queue(void)
 {
     while (hv_vgic3_get_free_lr() != -1) {
@@ -229,6 +335,48 @@ u64 hv_fiq_ticks = 0;
 static bool timer_p_injected[MAX_CPUS];
 static bool timer_v_injected[MAX_CPUS];
 
+static bool timer_irq_outstanding(u32 intid)
+{
+    u64 lrs[HV_VGIC_DIAG_LR_COUNT] = {0};
+    int lr_count = hv_vgic3_num_lrs();
+    if (lr_count > HV_VGIC_DIAG_LR_COUNT)
+        lr_count = HV_VGIC_DIAG_LR_COUNT;
+    for (int lr = 0; lr < lr_count; lr++)
+        lrs[lr] = hv_vgic3_read_lr(lr);
+    if (hv_vgic_diag_has_live_intid(lrs, intid))
+        return true;
+
+    // A timer can be deferred when every LR is occupied.  Do not mistake that queued
+    // delivery for a lost one and inject a duplicate on the next exception boundary.
+    virq_queue_t *queue = &PERCPU(timer_queue);
+    u32 tail = __atomic_load_n(&queue->tail, __ATOMIC_ACQUIRE);
+    u32 head = __atomic_load_n(&queue->head, __ATOMIC_ACQUIRE);
+    for (u32 pos = tail; pos != head; pos++) {
+        if (queue->buf[pos & (VIRQ_QUEUE_SIZE - 1)].vintid == intid)
+            return true;
+    }
+    return false;
+}
+
+static bool timer_repend_live_irq(u32 intid)
+{
+    u64 lrs[HV_VGIC_DIAG_LR_COUNT] = {0};
+    int lr_count = hv_vgic3_num_lrs();
+    if (lr_count > HV_VGIC_DIAG_LR_COUNT)
+        lr_count = HV_VGIC_DIAG_LR_COUNT;
+    for (int lr = 0; lr < lr_count; lr++)
+        lrs[lr] = hv_vgic3_read_lr(lr);
+
+    int lr = hv_vgic_diag_repend_live_intid(lrs, intid);
+    if (lr < 0)
+        return false;
+
+    hv_vgic3_write_lr(lr, lrs[lr]);
+    hv_vgic3_update_vi();
+    sysop("isb");
+    return true;
+}
+
 //
 // Measure the actual delivery rate. One line per 1024 injections, so the volume is
 // negligible. CNTFRQ on M1 is 24 MHz, so ticks/CNTFRQ gives seconds: comparing the
@@ -270,20 +418,13 @@ static void hv_update_fiq(void)
             // lost rather than consumed: clear the latch and unmask so the expiry is injected
             // again. This cannot storm - the next pass injects once and masks again.
             //
-            bool still_queued = false;
-            for (int lr = 0; lr < hv_vgic3_num_lrs(); lr++) {
-                u64 lr_val = hv_vgic3_read_lr(lr);
-                if (((lr_val >> ICH_LR_STATE_SHIFT) & ICH_LR_STATE_MASK) == 0)
-                    continue;
-                if (((lr_val >> ICH_LR_VIRTUAL_SHIFT) & ICH_LR_VIRTUAL_MASK) == 17) {
-                    still_queued = true;
-                    break;
-                }
-            }
-            if (!still_queued) {
+            if (!timer_irq_outstanding(17)) {
                 timer_p_injected[tcpu] = false;
                 reg_set(SYS_IMP_APL_VM_TMR_FIQ_ENA_EL2, VM_TMR_FIQ_ENA_ENA_P);
             }
+        }
+        else if(timer_repend_live_irq(17)){
+            timer_p_injected[tcpu] = true;
         }
         else if(hv_vgic3_get_free_lr() != -1){
             timer_p_injected[tcpu] = true;
@@ -330,7 +471,18 @@ static void hv_update_fiq(void)
         //TODO: proper injection
 #ifdef ENABLE_VGIC_MODULE
         if(timer_v_injected[tcpu]){
-            // Already delivered for this expiry; wait for the guest to rearm.
+            // Same lost-delivery recovery as the physical timer above.  Under xHCI/RDP
+            // interrupt pressure an LR carrying INTID 18 can be reused before Windows
+            // acknowledges it.  The old code left vinj=true forever even though neither
+            // an LR nor timer_queue contained the IRQ (measured freeze: vctl=0x5,
+            // vinj=1, vlr=-1, tq=0), permanently masking the guest timer FIQ.
+            if (!timer_irq_outstanding(18)) {
+                timer_v_injected[tcpu] = false;
+                reg_set(SYS_IMP_APL_VM_TMR_FIQ_ENA_EL2, VM_TMR_FIQ_ENA_ENA_V);
+            }
+        }
+        else if(timer_repend_live_irq(18)){
+            timer_v_injected[tcpu] = true;
         }
         else if(hv_vgic3_get_free_lr() != -1){
             timer_v_injected[tcpu] = true;
@@ -640,16 +792,7 @@ static bool hv_handle_msr_unlocked(struct exc_info *ctx, u64 iss)
                     // derives IRQL from them, so an IPI delivered at a made-up priority is
                     // taken at the wrong IRQL - the shape of IRQL_NOT_LESS_OR_EQUAL.
                     //
-                    virq_t pending = {
-                        .vintid = virq,
-                        .priority = hv_vgic3_get_priority_cpu(virq, cpu),
-                        .active = false,
-                        .pending = true,
-                        .hw_status = false,
-                        .hw_irq = 0,
-                    };
-                    virq_queue_push(&PERCPU_N(cpu, sgi_queue), &pending);
-                    smp_send_ipi(cpu);
+                    hv_vgic3_queue_sgi(cpu, virq);
                 }
             }
             return true;
@@ -1588,25 +1731,21 @@ void hv_exc_irq(struct exc_info *ctx)
                 pending.hw_irq
             );
         }
-        while(hv_vgic3_get_free_lr() != -1){
-            virq_t pending;
-            if (!virq_queue_pop(&PERCPU(sgi_queue), &pending))
-                break;
-            hv_vgic3_inject_irq(
-                pending.vintid,
-                pending.priority,
-                pending.active,
-                pending.pending,
-                pending.hw_status,
-                pending.hw_irq
-            );
-        }
+        hv_vgic3_drain_sgis();
         hv_vgic3_drain_irq_queue();
         return;
     }
 
     const struct hv_irq_route *route = hv_irq_route_from_hw(irq);
-    u32 vintid = route ? route->vintid : irq;
+    u32 vintid;
+    if (!hv_irq_route_resolve_incoming(irq, hv_pci_intx_irq(), &vintid)) {
+        static u32 synthetic_collision_logs;
+        if (synthetic_collision_logs++ < 16)
+            printf("HV: dropping AIC IRQ %u: collides with synthetic NVMe vINTID %u\n",
+                   irq, hv_pci_intx_irq());
+        aic_set_mask(irq, true);
+        return;
+    }
     if (route) {
         static u32 routed_irq_trace_count;
         if (routed_irq_trace_count < 16)
@@ -1727,6 +1866,70 @@ void hv_exc_fiq(struct exc_info *ctx)
         printf("HV FIQ: total=%lu ticks=%lu cpu=%d boot=%d pinned=%d vm_tmr=0x%lx\n",
                hv_fiq_count, hv_fiq_ticks, smp_id(), boot_cpu_idx, hv_pinned_cpu,
                mrs(SYS_IMP_APL_VM_TMR_FIQ_ENA_EL2));
+
+#ifdef ENABLE_VGIC_MODULE
+        // A frozen Windows desktop with every vCPU in its idle loop can still leave EL2's
+        // own tick alive.  Capture the complete per-CPU guest-timer delivery state here:
+        // comparator, one-shot latch, LR state, PPI enable and deferred queue depth.  This
+        // is deliberately tied to the existing rate-limited heartbeat; printing on every
+        // timer FIQ perturbs the exact path being measured.
+        int diag_cpu = smp_id();
+        int p_lr = -1;
+        int v_lr = -1;
+        u64 p_lr_val = 0;
+        u64 v_lr_val = 0;
+        for (int lr = 0; lr < hv_vgic3_num_lrs(); lr++) {
+            u64 lr_val = hv_vgic3_read_lr(lr);
+            u32 intid = (lr_val >> ICH_LR_VIRTUAL_SHIFT) & ICH_LR_VIRTUAL_MASK;
+            if (intid == 17 &&
+                ((lr_val >> ICH_LR_STATE_SHIFT) & ICH_LR_STATE_MASK)) {
+                p_lr = lr;
+                p_lr_val = lr_val;
+            }
+            if (intid == 18 &&
+                ((lr_val >> ICH_LR_STATE_SHIFT) & ICH_LR_STATE_MASK)) {
+                v_lr = lr;
+                v_lr_val = lr_val;
+            }
+        }
+        u32 tq_head = __atomic_load_n(&PERCPU(timer_queue).head, __ATOMIC_ACQUIRE);
+        u32 tq_tail = __atomic_load_n(&PERCPU(timer_queue).tail, __ATOMIC_ACQUIRE);
+        u64 p_now = mrs(CNTPCT_EL0);
+        u64 v_now = mrs(CNTVCT_EL0);
+        printf("HV TIMER: cpu=%d pctl=0x%lx pdelta=%ld pinj=%d pen=%d plr=%d "
+               "pstate=%lu vctl=0x%lx vdelta=%ld vinj=%d ven=%d vlr=%d "
+               "vstate=%lu tq=%u\n",
+               diag_cpu, mrs(CNTP_CTL_EL02), (s64)(mrs(CNTP_CVAL_EL02) - p_now),
+               timer_p_injected[diag_cpu], hv_vgic3_irq_enabled(17), p_lr,
+               (p_lr_val >> ICH_LR_STATE_SHIFT) & ICH_LR_STATE_MASK,
+               mrs(CNTV_CTL_EL02), (s64)(mrs(CNTV_CVAL_EL02) - v_now),
+               timer_v_injected[diag_cpu], hv_vgic3_irq_enabled(18), v_lr,
+               (v_lr_val >> ICH_LR_STATE_SHIFT) & ICH_LR_STATE_MASK,
+               tq_head - tq_tail);
+
+        struct hv_sgi_diag_snapshot sgi = {0};
+        u64 sgi_lrs[HV_VGIC_DIAG_LR_COUNT] = {0};
+        for (int lr = 0; lr < hv_vgic3_num_lrs() && lr < HV_VGIC_DIAG_LR_COUNT; lr++)
+            sgi_lrs[lr] = hv_vgic3_read_lr(lr);
+        int sgi_lr = hv_vgic_diag_find_live_intid(sgi_lrs, 0);
+        u64 sgi_lr_value = sgi_lr < 0 ? 0 : sgi_lrs[sgi_lr];
+        hv_sgi_diag_snapshot(&PERCPU(sgi_diag), &sgi);
+        u64 diag_vmcr = mrs(ICH_VMCR_EL2);
+        printf("HV SGI DIAG: cpu=%d pend=0x%x lr=%d state=%lu q=%lu ipi=%lu "
+               "drain=%lu inject=%lu repend=%lu no_lr=%lu iar=%lu eoi=%lu ap_eoi=%lu "
+               "sgi_prio=0x%x timer_prio=0x%x pmr=0x%lx rpr=0x%x vmcr=0x%lx "
+               "last_sgi=%u<-%u last_iar=%u/%ld last_eoi=%u/%ld\n",
+               diag_cpu, __atomic_load_n(&PERCPU(sgi_pending_mask), __ATOMIC_ACQUIRE),
+               sgi_lr, (sgi_lr_value >> ICH_LR_STATE_SHIFT) & ICH_LR_STATE_MASK,
+               sgi.queued, sgi.ipi_received, sgi.drained, sgi.injected, sgi.repended,
+               sgi.no_lr, sgi.iars, sgi.eois, sgi.eoi_active_pending,
+               hv_vgic3_get_priority(0), hv_vgic3_get_priority(18),
+               (diag_vmcr >> 24) & 0xff, hv_vgic3_running_priority(), diag_vmcr,
+               PERCPU(last_sgi_intid), PERCPU(last_sgi_from), PERCPU(last_iar_intid),
+               PERCPU(last_iar_tick) ? (s64)(p_now - PERCPU(last_iar_tick)) : -1,
+               PERCPU(last_eoi_intid),
+               PERCPU(last_eoi_tick) ? (s64)(p_now - PERCPU(last_eoi_tick)) : -1);
+#endif
         hv_trace_j313_xhci_tick();
     }
 
@@ -1771,19 +1974,8 @@ void hv_exc_fiq(struct exc_info *ctx)
 
     if (mrs(SYS_IMP_APL_IPI_SR_EL1) & IPI_SR_PENDING) {
 #ifdef ENABLE_VGIC_MODULE
-        while(hv_vgic3_get_free_lr() != -1){//another CPU sent an IPI, check the sgi_queue
-            virq_t pending;
-            if (!virq_queue_pop(&PERCPU(sgi_queue), &pending))
-                break;
-            hv_vgic3_inject_irq(
-                pending.vintid,
-                pending.priority,
-                pending.active,
-                pending.pending,
-                pending.hw_status,
-                pending.hw_irq
-            );
-        }
+        hv_sgi_diag_note(&PERCPU(sgi_diag), HV_SGI_DIAG_IPI_RX);
+        hv_vgic3_drain_sgis();
 #endif
         if (PERCPU(ipi_queued)) {
             PERCPU(ipi_pending) = true;

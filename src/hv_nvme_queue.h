@@ -151,6 +151,10 @@ struct vnvme_snapshot {
     bool irq_asserted;
 };
 
+struct vnvme_intx_delivery {
+    bool outstanding;
+};
+
 struct vnvme_ctrl {
     u64 namespace_blocks;
     const struct vnvme_backend_ops *ops;
@@ -171,6 +175,10 @@ bool vnvme_set_admin_queue(struct vnvme_ctrl *ctrl, u64 sq_addr, u64 cq_addr, u1
 bool vnvme_sq_doorbell(struct vnvme_ctrl *ctrl, u16 qid, u16 new_tail);
 bool vnvme_cq_doorbell(struct vnvme_ctrl *ctrl, u16 qid, u16 new_head);
 bool vnvme_intx_can_inject(bool asserted, u32 intms, bool injected, bool gic_enabled, int free_lr);
+bool vnvme_intx_delivery_can_inject(const struct vnvme_intx_delivery *delivery, bool asserted,
+                                    u32 intms, bool gic_enabled, int free_lr);
+void vnvme_intx_delivery_mark_injected(struct vnvme_intx_delivery *delivery);
+void vnvme_intx_delivery_eoi(struct vnvme_intx_delivery *delivery);
 void vnvme_get_snapshot(const struct vnvme_ctrl *ctrl, struct vnvme_snapshot *out);
 
 #endif
