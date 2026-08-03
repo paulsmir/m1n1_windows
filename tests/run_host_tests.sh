@@ -9,6 +9,7 @@ cc=${CC:-cc}
 all_tests="
 hv_autonomous_manifest_test
 hv_autonomous_stage_test
+hv_autonomous_boot_test
 hv_diag_test
 hv_fb_stream_test
 hv_fb_stream_usb_limit_test
@@ -38,6 +39,9 @@ for name in "$@"; do
             ;;
         hv_autonomous_stage_test)
             sources="$sources src/hv_autonomous.c"
+            ;;
+        hv_autonomous_boot_test)
+            sources="$sources src/hv_autonomous_boot.c"
             ;;
         hv_diag_test)
             definitions="-DHV_DIAG_HOST_TEST"
