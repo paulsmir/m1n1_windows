@@ -646,6 +646,11 @@ int proxy_process(ProxyRequest *request, ProxyReply *reply)
         case P_DISPLAY_IS_EXTERNAL:
             reply->retval = display_is_external;
             break;
+        case P_DISPLAY_PREPARE_GUEST_SURFACE:
+            reply->retval = display_prepare_guest_surface(
+                request->args[0], request->args[1], request->args[2], request->args[3],
+                request->args[4], request->args[5]);
+            break;
 
         case P_DAPF_INIT_ALL:
             reply->retval = dapf_init_all();

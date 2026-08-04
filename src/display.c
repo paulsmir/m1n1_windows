@@ -3,6 +3,7 @@
 #include "../build/build_cfg.h"
 
 #include "display.h"
+#include "display_guest.h"
 #include "adt.h"
 #include "assert.h"
 #include "dcp.h"
@@ -30,6 +31,8 @@ static dcp_dev_t *dcp;
 static dcp_iboot_if_t *iboot;
 static u64 fb_dva;
 static u64 fb_size;
+static u64 guest_fb_dva;
+static u64 guest_fb_size;
 bool has_dcp;
 bool display_is_external;
 bool display_is_dptx;
@@ -390,6 +393,65 @@ static int display_swap(u64 iova, u32 stride, u32 width, u32 height)
     }
 
     return 0;
+}
+
+static u64 display_guest_map(void *opaque, u64 base, u64 size)
+{
+    (void)opaque;
+    u64 iova = display_map_fb(0, base, size);
+    return DART_IS_ERR(iova) ? 0 : iova;
+}
+
+static bool display_guest_present(void *opaque, u64 iova, u32 width, u32 height, u32 stride)
+{
+    (void)opaque;
+    if (display_swap(iova, stride, width, height) < 0)
+        return false;
+
+    /* DCP consumes the surface asynchronously. Keep the old mapping alive until
+     * the swap has crossed at least one display interval. */
+    mdelay(150);
+    return true;
+}
+
+static void display_guest_unmap(void *opaque, u64 iova, u64 size)
+{
+    (void)opaque;
+    dart_unmap(dcp->dart_disp, iova, size);
+    dart_unmap(dcp->dart_dcp, iova, size);
+}
+
+int display_prepare_guest_surface(u64 base, u64 size, u32 width, u32 height, u32 stride,
+                                  u32 depth)
+{
+    if (display_start_dcp() < 0)
+        return 0;
+    if (display_is_external) {
+        printf("display: guest surface handoff only supports the internal panel\n");
+        return 0;
+    }
+
+    const struct display_guest_ops ops = {
+        .map = display_guest_map,
+        .present = display_guest_present,
+        .unmap = display_guest_unmap,
+    };
+    u64 new_dva = 0;
+    if (!display_guest_prepare(base, size, width, height, stride, depth, &ops, NULL,
+                               &new_dva)) {
+        printf("display: rejected guest surface PA=%#lx size=%#lx %ux%u stride=%u depth=%u\n",
+               base, size, width, height, stride, depth);
+        return 0;
+    }
+
+    if (guest_fb_dva)
+        display_guest_unmap(NULL, guest_fb_dva, guest_fb_size);
+    guest_fb_dva = new_dva;
+    guest_fb_size = size;
+
+    printf("display: guest surface active PA=%#lx DVA=%#lx size=%#lx %ux%u stride=%u\n",
+           base, new_dva, size, width, height, stride);
+    return 1;
 }
 
 int display_configure(const char *config)
