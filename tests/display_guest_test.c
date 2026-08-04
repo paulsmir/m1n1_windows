@@ -58,6 +58,17 @@ int main(void)
     assert(!display_guest_validate(UINT64_MAX - 0x3fff, size, 1280, 800, 5120, 32));
     assert(!display_guest_validate(base, UINT64_MAX, UINT32_MAX, UINT32_MAX, UINT32_MAX, 32));
 
+    struct display_guest_rect destination;
+    assert(display_guest_fit(1280, 800, 2560, 1600, &destination));
+    assert(destination.width == 2560 && destination.height == 1600);
+    assert(destination.x == 0 && destination.y == 0);
+    assert(display_guest_fit(1280, 720, 2560, 1600, &destination));
+    assert(destination.width == 2560 && destination.height == 1440);
+    assert(destination.x == 0 && destination.y == 80);
+    assert(!display_guest_fit(0, 800, 2560, 1600, &destination));
+    assert(!display_guest_fit(1280, 800, 0, 1600, &destination));
+    assert(!display_guest_fit(1280, 800, 2560, 1600, NULL));
+
     const struct display_guest_ops ops = {
         .map = fake_map,
         .present = fake_present,

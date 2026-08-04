@@ -405,12 +405,47 @@ static u64 display_guest_map(void *opaque, u64 base, u64 size)
 static bool display_guest_present(void *opaque, u64 iova, u32 width, u32 height, u32 stride)
 {
     (void)opaque;
-    if (display_swap(iova, stride, width, height) < 0)
+    struct display_guest_rect destination;
+    if (!display_guest_fit(width, height, cur_boot_args.video.width,
+                           cur_boot_args.video.height, &destination))
+        return false;
+
+    dcp_layer_t layer = {
+        .planes = {{
+            .addr = iova,
+            .stride = stride,
+            .addr_format = ADDR_PLANAR,
+        }},
+        .plane_cnt = 1,
+        .width = width,
+        .height = height,
+        .surface_fmt = FMT_BGRA,
+        .colorspace = 2,
+        .eotf = EOTF_GAMMA_SDR,
+        .transform = XFRM_NONE,
+    };
+    dcp_rect_t source = {.w = width, .h = height};
+    dcp_rect_t target = {
+        .w = destination.width,
+        .h = destination.height,
+        .x = destination.x,
+        .y = destination.y,
+    };
+
+    int swap_id = dcp_ib_swap_begin(iboot);
+    if (swap_id < 0)
+        return false;
+    int layer_ret = dcp_ib_swap_set_layer(iboot, 0, &layer, &source, &target);
+    int end_ret = dcp_ib_swap_end(iboot);
+    if (layer_ret < 0 || end_ret < 0)
         return false;
 
     /* DCP consumes the surface asynchronously. Keep the old mapping alive until
      * the swap has crossed at least one display interval. */
     mdelay(150);
+    printf("display: guest surface scaled %ux%u -> %ux%u at %u,%u (swap_id=%d)\n",
+           width, height, destination.width, destination.height, destination.x,
+           destination.y, swap_id);
     return true;
 }
 

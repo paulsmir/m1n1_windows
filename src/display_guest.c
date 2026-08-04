@@ -49,3 +49,21 @@ bool display_guest_prepare(uint64_t base, uint64_t size, uint32_t width, uint32_
     *out_iova = iova;
     return true;
 }
+
+bool display_guest_fit(uint32_t source_width, uint32_t source_height, uint32_t panel_width,
+                       uint32_t panel_height, struct display_guest_rect *destination)
+{
+    if (!source_width || !source_height || !panel_width || !panel_height || !destination)
+        return false;
+
+    if ((uint64_t)panel_width * source_height <= (uint64_t)panel_height * source_width) {
+        destination->width = panel_width;
+        destination->height = (uint64_t)panel_width * source_height / source_width;
+    } else {
+        destination->height = panel_height;
+        destination->width = (uint64_t)panel_height * source_width / source_height;
+    }
+    destination->x = (panel_width - destination->width) / 2;
+    destination->y = (panel_height - destination->height) / 2;
+    return destination->width && destination->height;
+}
