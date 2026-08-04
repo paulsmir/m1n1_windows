@@ -11,6 +11,7 @@ static struct hv_autonomous_manifest valid_manifest(void)
     memcpy(manifest.magic, HV_AUTONOMOUS_MAGIC, sizeof(manifest.magic));
     manifest.format_version = HV_AUTONOMOUS_FORMAT_VERSION;
     manifest.header_size = HV_AUTONOMOUS_MANIFEST_SIZE;
+    manifest.flags = HV_AUTONOMOUS_DISPLAY_PHYSICAL;
     manifest.layout_version = 1;
     manifest.payload_offset = HV_AUTONOMOUS_IMAGE_ALIGNMENT;
     manifest.compressed_size = 0x8000;
@@ -58,7 +59,11 @@ int main(void)
     expect_error(&manifest, available, HV_AUTONOMOUS_ERROR_VERSION);
 
     manifest = valid_manifest();
-    manifest.flags = 1;
+    manifest.flags = 0x10;
+    expect_error(&manifest, available, HV_AUTONOMOUS_ERROR_FLAGS);
+
+    manifest = valid_manifest();
+    manifest.flags = HV_AUTONOMOUS_DEBUG_MASK;
     expect_error(&manifest, available, HV_AUTONOMOUS_ERROR_FLAGS);
 
     manifest = valid_manifest();

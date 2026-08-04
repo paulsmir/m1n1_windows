@@ -41,7 +41,9 @@ bool hv_autonomous_manifest_parse(const void *image_end, size_t available,
         return fail(HV_AUTONOMOUS_ERROR_HEADER_SIZE, error);
     if (manifest->format_version != HV_AUTONOMOUS_FORMAT_VERSION)
         return fail(HV_AUTONOMOUS_ERROR_VERSION, error);
-    if (manifest->flags || manifest->reserved || manifest->reserved2)
+    if ((manifest->flags & ~HV_AUTONOMOUS_KNOWN_FLAGS) ||
+        (manifest->flags & HV_AUTONOMOUS_DEBUG_MASK) == HV_AUTONOMOUS_DEBUG_MASK ||
+        manifest->reserved || manifest->reserved2)
         return fail(HV_AUTONOMOUS_ERROR_FLAGS, error);
     for (size_t i = 0; i < sizeof(manifest->reserved_tail); i++) {
         if (manifest->reserved_tail[i])

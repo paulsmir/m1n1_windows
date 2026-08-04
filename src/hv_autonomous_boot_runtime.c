@@ -4,6 +4,7 @@
 
 #include "hv_autonomous_boot.h"
 #include "hv_autonomous_manifest.h"
+#include "hv_autonomous_profile.h"
 #include "iodev.h"
 #include "types.h"
 #include "uartproxy.h"
@@ -62,6 +63,7 @@ enum hv_autonomous_boot_attempt hv_autonomous_boot_if_present(bool *usb_up)
     struct hv_autonomous_payload payload;
     struct hv_autonomous_status status = {0};
     enum hv_autonomous_error manifest_error;
+    struct hv_autonomous_profile profile;
     struct boot_runtime_io io = {0};
     const struct hv_autonomous_boot_ops ops = {
         .now = runtime_now,
@@ -81,6 +83,22 @@ enum hv_autonomous_boot_attempt hv_autonomous_boot_if_present(bool *usb_up)
 
     printf("Standalone: image valid layout=%u compressed=0x%lx firmware=0x%lx\n",
            payload.layout_version, (u64)payload.compressed_size, (u64)payload.uncompressed_size);
+
+    if (!hv_autonomous_profile_decode(payload.flags, &profile)) {
+        printf("Standalone: invalid launch profile flags=%#x\n", payload.flags);
+        return HV_AUTONOMOUS_BOOT_ATTEMPT_FAILED;
+    }
+
+    /* A physical/headless production profile has no host-side consumer. Avoid
+     * bringing up USB and avoid the three-second proxy window entirely. A
+     * virtual display still needs the USB link even when debug capture is off. */
+    if (!profile.debug_host && !profile.virtual_display) {
+        printf("Standalone: quiet automatic Windows entry (flags=%#x)\n", payload.flags);
+        if (hv_autonomous_prepare(&payload, &status) == HV_AUTONOMOUS_RESULT_OK)
+            return HV_AUTONOMOUS_BOOT_HANDLED;
+        printf("Standalone: launch returned stage=%u error=%u\n", status.stage, status.error);
+        return HV_AUTONOMOUS_BOOT_ATTEMPT_FAILED;
+    }
 
     if (!*usb_up) {
         usb_init();

@@ -6,7 +6,9 @@
 #include "heapblock.h"
 #include "hv.h"
 #include "hv_autonomous_layout.generated.h"
+#include "hv_autonomous_profile.h"
 #include "hv_vgic.h"
+#include "display.h"
 #include "memory.h"
 #include "minilzlib/minlzma.h"
 #include "string.h"
@@ -18,6 +20,7 @@
 struct hv_autonomous_runtime {
     void *firmware;
     u32 firmware_size;
+    struct hv_autonomous_profile profile;
 };
 
 static bool map_arm_io_ranges(void)
@@ -122,7 +125,8 @@ static bool runtime_stage(enum hv_autonomous_stage stage,
 
     switch (stage) {
         case HV_AUTONOMOUS_STAGE_VALIDATE:
-            return payload->layout_version == layout->layout_version &&
+            return hv_autonomous_profile_decode(payload->flags, &runtime->profile) &&
+                   payload->layout_version == layout->layout_version &&
                    payload->uncompressed_size <= layout->firmware_max_size &&
                    payload->compressed_size <= UINT32_MAX &&
                    payload->uncompressed_size <= UINT32_MAX;
@@ -157,6 +161,25 @@ static bool runtime_stage(enum hv_autonomous_stage stage,
         case HV_AUTONOMOUS_STAGE_VUART:
             return map_vuart_from_adt();
         case HV_AUTONOMOUS_STAGE_READY:
+            memset((void *)layout->virtual_fb_base, 0,
+                   (u64)layout->virtual_fb_stride * layout->virtual_fb_height);
+            if (runtime->profile.physical_display &&
+                display_prepare_guest_surface(
+                    layout->virtual_fb_base,
+                    (u64)layout->virtual_fb_stride * layout->virtual_fb_height,
+                    layout->virtual_fb_width, layout->virtual_fb_height,
+                    layout->virtual_fb_stride, 32) != 1)
+                return false;
+            if (runtime->profile.virtual_display &&
+                !hv_configure_fb_stream(
+                    layout->virtual_fb_base,
+                    (u64)layout->virtual_fb_stride * layout->virtual_fb_height,
+                    layout->virtual_fb_width, layout->virtual_fb_height,
+                    layout->virtual_fb_stride))
+                return false;
+            printf("Standalone: display physical=%u virtual=%u telemetry=%u\n",
+                   runtime->profile.physical_display, runtime->profile.virtual_display,
+                   runtime->profile.telemetry);
             return true;
         case HV_AUTONOMOUS_STAGE_ENTERED: {
             u64 regs[4] = {layout->boot_args_base, 0, 0, 0};
