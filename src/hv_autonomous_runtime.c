@@ -6,6 +6,7 @@
 #include "heapblock.h"
 #include "hv.h"
 #include "hv_autonomous_layout.generated.h"
+#include "hv_autonomous_memory.h"
 #include "hv_autonomous_profile.h"
 #include "hv_vgic.h"
 #include "display.h"
@@ -20,6 +21,7 @@
 struct hv_autonomous_runtime {
     void *firmware;
     u32 firmware_size;
+    u64 ram_end;
     struct hv_autonomous_profile profile;
 };
 
@@ -61,7 +63,7 @@ static bool prepare_boot_data(struct hv_autonomous_runtime *runtime,
     memcpy((void *)layout->adt_base, adt, cur_boot_args.devtree_size);
 
     guest_args.phys_base = layout->phys_base;
-    guest_args.mem_size = layout->ram_end - layout->phys_base;
+    guest_args.mem_size = runtime->ram_end - layout->phys_base;
     guest_args.virt_base = 0xfffffe0010000000ULL + (layout->phys_base & (SZ_32M - 1));
     guest_args.devtree = (void *)(guest_args.virt_base + layout->adt_base - layout->phys_base);
     guest_args.devtree_size = cur_boot_args.devtree_size;
@@ -88,12 +90,13 @@ static bool prepare_boot_data(struct hv_autonomous_runtime *runtime,
     return true;
 }
 
-static bool map_stage2(void)
+static bool map_stage2(const struct hv_autonomous_runtime *runtime)
 {
     const struct hv_autonomous_layout *layout = &J313_AUTONOMOUS_LAYOUT;
 
     hv_init();
-    if (hv_map_hw(layout->phys_base, layout->phys_base, layout->ram_end - layout->phys_base))
+    if (hv_map_hw(layout->phys_base, layout->phys_base,
+                  runtime->ram_end - layout->phys_base))
         return false;
     if (hv_map_hw(layout->low_mem_ipa, layout->low_mem_pa, layout->low_mem_size))
         return false;
@@ -124,12 +127,30 @@ static bool runtime_stage(enum hv_autonomous_stage stage,
     const struct hv_autonomous_layout *layout = &J313_AUTONOMOUS_LAYOUT;
 
     switch (stage) {
-        case HV_AUTONOMOUS_STAGE_VALIDATE:
-            return hv_autonomous_profile_decode(payload->flags, &runtime->profile) &&
-                   payload->layout_version == layout->layout_version &&
-                   payload->uncompressed_size <= layout->firmware_max_size &&
-                   payload->compressed_size <= UINT32_MAX &&
-                   payload->uncompressed_size <= UINT32_MAX;
+        case HV_AUTONOMOUS_STAGE_VALIDATE: {
+            if (!hv_autonomous_profile_decode(payload->flags, &runtime->profile) ||
+                payload->layout_version != layout->layout_version ||
+                payload->uncompressed_size > layout->firmware_max_size ||
+                payload->compressed_size > UINT32_MAX ||
+                payload->uncompressed_size > UINT32_MAX)
+                return false;
+
+            if (!hv_autonomous_resolve_ram_end(
+                    layout->phys_base, layout->ram_end, cur_boot_args.phys_base,
+                    cur_boot_args.mem_size, &runtime->ram_end)) {
+                printf("Standalone: invalid RAM bounds guest=0x%lx configured=0x%lx "
+                       "platform=0x%lx+0x%lx\n",
+                       layout->phys_base, layout->ram_end, cur_boot_args.phys_base,
+                       cur_boot_args.mem_size);
+                return false;
+            }
+
+            printf("Standalone: RAM configured=0x%lx platform=0x%lx effective=0x%lx "
+                   "size=0x%lx\n",
+                   layout->ram_end, cur_boot_args.phys_base + cur_boot_args.mem_size,
+                   runtime->ram_end, runtime->ram_end - layout->phys_base);
+            return true;
+        }
         case HV_AUTONOMOUS_STAGE_DECOMPRESS: {
             u32 source_size = payload->compressed_size;
             u32 destination_size = payload->uncompressed_size;
@@ -148,7 +169,7 @@ static bool runtime_stage(enum hv_autonomous_stage stage,
         case HV_AUTONOMOUS_STAGE_BOOT_DATA:
             return prepare_boot_data(runtime, status);
         case HV_AUTONOMOUS_STAGE_STAGE2:
-            return map_stage2();
+            return map_stage2(runtime);
         case HV_AUTONOMOUS_STAGE_VGIC:
             return true; // hv_init() owns vGIC/PSCI initialization.
         case HV_AUTONOMOUS_STAGE_PCI_NVME:
