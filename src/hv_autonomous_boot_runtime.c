@@ -15,6 +15,7 @@
 #define HV_AUTONOMOUS_WINDOW_SECONDS 3u
 
 struct boot_runtime_io {
+    const struct hv_autonomous_profile *profile;
     bool proxy_ready;
 };
 
@@ -41,7 +42,9 @@ static void runtime_service(void *opaque)
 static enum hv_autonomous_command runtime_command(void *opaque)
 {
     struct boot_runtime_io *io = opaque;
-    return io->proxy_ready ? HV_AUTONOMOUS_COMMAND_PROXY : HV_AUTONOMOUS_COMMAND_NONE;
+    return hv_autonomous_profile_accept_proxy(io->profile, io->proxy_ready)
+               ? HV_AUTONOMOUS_COMMAND_PROXY
+               : HV_AUTONOMOUS_COMMAND_NONE;
 }
 
 static bool runtime_launch(const struct hv_autonomous_payload *payload,
@@ -91,6 +94,7 @@ enum hv_autonomous_boot_attempt hv_autonomous_boot_if_present(bool *usb_up)
     }
 
     hv_autonomous_profile_usb_plan(&profile, &usb_plan);
+    io.profile = &profile;
     if (usb_plan.power_platform)
         usb_init();
 
@@ -117,9 +121,16 @@ enum hv_autonomous_boot_attempt hv_autonomous_boot_if_present(bool *usb_up)
             usb_iodev_vuart_setup(iodev);
     }
 
-    u64 deadline = mrs(CNTFRQ_EL0) * HV_AUTONOMOUS_WINDOW_SECONDS;
-    printf("Standalone: automatic Windows entry in %u seconds (attach debug host to hold)\n",
-           HV_AUTONOMOUS_WINDOW_SECONDS);
+    u64 deadline;
+    if (profile.monitor) {
+        deadline = 0;
+        printf("Standalone: USB monitor active; proxy takeover disabled\n");
+    } else {
+        deadline = mrs(CNTFRQ_EL0) * HV_AUTONOMOUS_WINDOW_SECONDS;
+        printf("Standalone: automatic Windows entry in %u seconds "
+               "(attach debug host to hold)\n",
+               HV_AUTONOMOUS_WINDOW_SECONDS);
+    }
     enum hv_autonomous_boot_result result =
         hv_autonomous_boot_poll(deadline, &ops, &payload, &status, &io);
 

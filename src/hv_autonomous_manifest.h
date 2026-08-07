@@ -15,10 +15,11 @@
 #define HV_AUTONOMOUS_DISPLAY_MASK     0x3u
 #define HV_AUTONOMOUS_DISPLAY_PHYSICAL 0x1u
 #define HV_AUTONOMOUS_DISPLAY_VIRTUAL  0x2u
-#define HV_AUTONOMOUS_DEBUG_MASK       0xcu
+#define HV_AUTONOMOUS_DEBUG_MASK       0x1cu
 #define HV_AUTONOMOUS_DEBUG_UART       0x4u
 #define HV_AUTONOMOUS_DEBUG_FULL       0x8u
-#define HV_AUTONOMOUS_KNOWN_FLAGS      0xfu
+#define HV_AUTONOMOUS_DEBUG_MONITOR    0x10u
+#define HV_AUTONOMOUS_KNOWN_FLAGS      0x1fu
 
 /*
  * This header begins at m1n1's _payload_start. All multibyte fields are

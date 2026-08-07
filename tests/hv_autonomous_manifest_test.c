@@ -47,6 +47,12 @@ int main(void)
     assert(payload.flags == manifest.flags);
 
     manifest = valid_manifest();
+    manifest.flags = HV_AUTONOMOUS_DISPLAY_PHYSICAL | HV_AUTONOMOUS_DEBUG_MONITOR;
+    assert(hv_autonomous_manifest_parse(&manifest, available, &payload, &error));
+    assert(payload.flags ==
+           (HV_AUTONOMOUS_DISPLAY_PHYSICAL | HV_AUTONOMOUS_DEBUG_MONITOR));
+
+    manifest = valid_manifest();
     manifest.magic[0] ^= 1;
     expect_error(&manifest, available, HV_AUTONOMOUS_ERROR_MAGIC);
 
@@ -59,12 +65,17 @@ int main(void)
     expect_error(&manifest, available, HV_AUTONOMOUS_ERROR_VERSION);
 
     manifest = valid_manifest();
-    manifest.flags = 0x10;
-    expect_error(&manifest, available, HV_AUTONOMOUS_ERROR_FLAGS);
-
-    manifest = valid_manifest();
     manifest.flags = HV_AUTONOMOUS_DEBUG_MASK;
     expect_error(&manifest, available, HV_AUTONOMOUS_ERROR_FLAGS);
+
+    const uint32_t conflicting_debug_flags[] = {0x14, 0x18, 0x1c};
+    for (size_t i = 0; i < sizeof(conflicting_debug_flags) /
+                                      sizeof(conflicting_debug_flags[0]);
+         i++) {
+        manifest = valid_manifest();
+        manifest.flags = conflicting_debug_flags[i];
+        expect_error(&manifest, available, HV_AUTONOMOUS_ERROR_FLAGS);
+    }
 
     manifest = valid_manifest();
     manifest.layout_version++;

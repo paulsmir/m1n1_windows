@@ -4,15 +4,27 @@
 
 bool hv_autonomous_profile_decode(uint32_t flags, struct hv_autonomous_profile *out)
 {
+    uint32_t debug = flags & HV_AUTONOMOUS_DEBUG_MASK;
+
     if (!out || (flags & ~HV_AUTONOMOUS_KNOWN_FLAGS) ||
-        (flags & HV_AUTONOMOUS_DEBUG_MASK) == HV_AUTONOMOUS_DEBUG_MASK)
+        (debug != 0 && debug != HV_AUTONOMOUS_DEBUG_UART &&
+         debug != HV_AUTONOMOUS_DEBUG_FULL && debug != HV_AUTONOMOUS_DEBUG_MONITOR))
         return false;
 
     out->physical_display = flags & HV_AUTONOMOUS_DISPLAY_PHYSICAL;
     out->virtual_display = flags & HV_AUTONOMOUS_DISPLAY_VIRTUAL;
-    out->debug_host = flags & HV_AUTONOMOUS_DEBUG_MASK;
-    out->telemetry = (flags & HV_AUTONOMOUS_DEBUG_MASK) == HV_AUTONOMOUS_DEBUG_FULL;
+    out->debug_host = debug != 0;
+    out->monitor = debug == HV_AUTONOMOUS_DEBUG_MONITOR;
+    out->telemetry = debug == HV_AUTONOMOUS_DEBUG_FULL;
+    out->proxy_takeover =
+        debug == HV_AUTONOMOUS_DEBUG_UART || debug == HV_AUTONOMOUS_DEBUG_FULL;
     return true;
+}
+
+bool hv_autonomous_profile_accept_proxy(const struct hv_autonomous_profile *profile,
+                                        bool host_connected)
+{
+    return profile && host_connected && profile->proxy_takeover;
 }
 
 void hv_autonomous_profile_usb_plan(const struct hv_autonomous_profile *profile,
