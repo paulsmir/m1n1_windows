@@ -64,6 +64,7 @@ enum hv_autonomous_boot_attempt hv_autonomous_boot_if_present(bool *usb_up)
     struct hv_autonomous_status status = {0};
     enum hv_autonomous_error manifest_error;
     struct hv_autonomous_profile profile;
+    struct hv_autonomous_usb_plan usb_plan;
     struct boot_runtime_io io = {0};
     const struct hv_autonomous_boot_ops ops = {
         .now = runtime_now,
@@ -89,10 +90,15 @@ enum hv_autonomous_boot_attempt hv_autonomous_boot_if_present(bool *usb_up)
         return HV_AUTONOMOUS_BOOT_ATTEMPT_FAILED;
     }
 
-    /* A physical/headless production profile has no host-side consumer. Avoid
-     * bringing up USB and avoid the three-second proxy window entirely. A
-     * virtual display still needs the USB link even when debug capture is off. */
-    if (!profile.debug_host && !profile.virtual_display) {
+    hv_autonomous_profile_usb_plan(&profile, &usb_plan);
+    if (usb_plan.power_platform)
+        usb_init();
+
+    /* A physical/headless production profile has no host-side consumer. Power
+     * the guest's Type-C/xHCI hardware above, but avoid the USB gadget stack
+     * and the three-second proxy window. A virtual display still needs the
+     * debug transport even when diagnostic capture is off. */
+    if (!usb_plan.start_debug_transport) {
         printf("Standalone: quiet automatic Windows entry (flags=%#x)\n", payload.flags);
         if (hv_autonomous_prepare(&payload, &status) == HV_AUTONOMOUS_RESULT_OK)
             return HV_AUTONOMOUS_BOOT_HANDLED;

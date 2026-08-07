@@ -6,12 +6,16 @@
 int main(void)
 {
     struct hv_autonomous_profile profile;
+    struct hv_autonomous_usb_plan usb;
 
     assert(hv_autonomous_profile_decode(HV_AUTONOMOUS_DISPLAY_PHYSICAL, &profile));
     assert(profile.physical_display);
     assert(!profile.virtual_display);
     assert(!profile.debug_host);
     assert(!profile.telemetry);
+    hv_autonomous_profile_usb_plan(&profile, &usb);
+    assert(usb.power_platform);
+    assert(!usb.start_debug_transport);
 
     assert(hv_autonomous_profile_decode(HV_AUTONOMOUS_DISPLAY_VIRTUAL |
                                             HV_AUTONOMOUS_DEBUG_UART,
@@ -20,6 +24,9 @@ int main(void)
     assert(profile.virtual_display);
     assert(profile.debug_host);
     assert(!profile.telemetry);
+    hv_autonomous_profile_usb_plan(&profile, &usb);
+    assert(usb.power_platform);
+    assert(usb.start_debug_transport);
 
     assert(hv_autonomous_profile_decode(HV_AUTONOMOUS_DISPLAY_MASK |
                                             HV_AUTONOMOUS_DEBUG_FULL,
@@ -28,6 +35,9 @@ int main(void)
     assert(profile.virtual_display);
     assert(profile.debug_host);
     assert(profile.telemetry);
+    hv_autonomous_profile_usb_plan(&profile, &usb);
+    assert(usb.power_platform);
+    assert(usb.start_debug_transport);
 
     assert(!hv_autonomous_profile_decode(HV_AUTONOMOUS_DEBUG_MASK, &profile));
     assert(!hv_autonomous_profile_decode(0x10, &profile));
