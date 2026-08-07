@@ -11,6 +11,7 @@ chainload_layout_test
 display_guest_test
 hv_autonomous_manifest_test
 hv_bootstrap_manifest_test
+hv_bootstrap_test
 hv_autonomous_memory_test
 hv_autonomous_profile_test
 hv_autonomous_stage_test
@@ -51,6 +52,10 @@ for name in "$@"; do
             ;;
         hv_bootstrap_manifest_test)
             sources="$sources src/hv_bootstrap_manifest.c src/hv_autonomous_profile.c"
+            ;;
+        hv_bootstrap_test)
+            definitions="-DHV_BOOTSTRAP_HOST_TEST"
+            sources="$sources src/hv_bootstrap.c"
             ;;
         hv_autonomous_memory_test)
             sources="$sources src/hv_autonomous_memory.c"
