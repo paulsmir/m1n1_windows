@@ -16,6 +16,7 @@ int main(void)
     assert(!profile.telemetry);
     assert(!profile.proxy_takeover);
     assert(!hv_autonomous_profile_accept_proxy(&profile, true));
+    assert(hv_autonomous_profile_usb_window_seconds(&profile) == 0);
     hv_autonomous_profile_usb_plan(&profile, &usb);
     assert(usb.power_platform);
     assert(!usb.start_debug_transport);
@@ -31,6 +32,7 @@ int main(void)
     assert(profile.proxy_takeover);
     assert(hv_autonomous_profile_accept_proxy(&profile, true));
     assert(!hv_autonomous_profile_accept_proxy(&profile, false));
+    assert(hv_autonomous_profile_usb_window_seconds(&profile) == 3);
     hv_autonomous_profile_usb_plan(&profile, &usb);
     assert(usb.power_platform);
     assert(usb.start_debug_transport);
@@ -44,6 +46,7 @@ int main(void)
     assert(!profile.monitor);
     assert(profile.telemetry);
     assert(profile.proxy_takeover);
+    assert(hv_autonomous_profile_usb_window_seconds(&profile) == 3);
     hv_autonomous_profile_usb_plan(&profile, &usb);
     assert(usb.power_platform);
     assert(usb.start_debug_transport);
@@ -58,6 +61,7 @@ int main(void)
     assert(!profile.telemetry);
     assert(!profile.proxy_takeover);
     assert(!hv_autonomous_profile_accept_proxy(&profile, true));
+    assert(hv_autonomous_profile_usb_window_seconds(&profile) == 3);
     hv_autonomous_profile_usb_plan(&profile, &usb);
     assert(usb.power_platform);
     assert(usb.start_debug_transport);
@@ -68,6 +72,7 @@ int main(void)
     assert(!hv_autonomous_profile_decode(0x1c, &profile));
     assert(!hv_autonomous_profile_decode(0, NULL));
     assert(!hv_autonomous_profile_accept_proxy(NULL, true));
+    assert(hv_autonomous_profile_usb_window_seconds(NULL) == 0);
 
     puts("hv_autonomous_profile_test: ok");
     return 0;

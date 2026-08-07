@@ -12,8 +12,6 @@
 #include "utils.h"
 
 #define HV_AUTONOMOUS_MAX_IMAGE_SIZE (64u * 1024u * 1024u)
-#define HV_AUTONOMOUS_WINDOW_SECONDS 3u
-
 struct boot_runtime_io {
     const struct hv_autonomous_profile *profile;
     bool proxy_ready;
@@ -121,15 +119,16 @@ enum hv_autonomous_boot_attempt hv_autonomous_boot_if_present(bool *usb_up)
             usb_iodev_vuart_setup(iodev);
     }
 
-    u64 deadline;
+    uint32_t usb_window_seconds = hv_autonomous_profile_usb_window_seconds(&profile);
+    u64 deadline = mrs(CNTFRQ_EL0) * usb_window_seconds;
     if (profile.monitor) {
-        deadline = 0;
-        printf("Standalone: USB monitor active; proxy takeover disabled\n");
+        printf("Standalone: USB monitor active; settling USB for %u seconds; "
+               "proxy takeover disabled\n",
+               usb_window_seconds);
     } else {
-        deadline = mrs(CNTFRQ_EL0) * HV_AUTONOMOUS_WINDOW_SECONDS;
         printf("Standalone: automatic Windows entry in %u seconds "
                "(attach debug host to hold)\n",
-               HV_AUTONOMOUS_WINDOW_SECONDS);
+               usb_window_seconds);
     }
     enum hv_autonomous_boot_result result =
         hv_autonomous_boot_poll(deadline, &ops, &payload, &status, &io);

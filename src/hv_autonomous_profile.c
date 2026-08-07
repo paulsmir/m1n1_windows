@@ -27,6 +27,16 @@ bool hv_autonomous_profile_accept_proxy(const struct hv_autonomous_profile *prof
     return profile && host_connected && profile->proxy_takeover;
 }
 
+uint32_t hv_autonomous_profile_usb_window_seconds(
+    const struct hv_autonomous_profile *profile)
+{
+    /* USB CDC endpoints only become observable after the host has completed
+     * enumeration.  Every profile that starts the debug transport must keep
+     * servicing it for the same bounded window.  Whether an enumerated host
+     * may take control is a separate policy enforced by accept_proxy(). */
+    return profile && (profile->debug_host || profile->virtual_display) ? 3u : 0u;
+}
+
 void hv_autonomous_profile_usb_plan(const struct hv_autonomous_profile *profile,
                                     struct hv_autonomous_usb_plan *out)
 {
