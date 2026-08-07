@@ -51,8 +51,7 @@
 
 static u32 j313_xhci_tick_trace_budget;
 static struct hv_xhci_dma_trace j313_xhci_dma_trace;
-static u32 j313_xhci_caplen;
-static u32 j313_xhci_rtsoff;
+static struct hv_xhci_cap_state j313_xhci_caps;
 static u32 j313_xhci_erdp_trace_budget = 16;
 static u32 j313_xhci_erdp_last_upper = 0xffffffff;
 
@@ -137,9 +136,9 @@ static bool handle_j313_xhci_mmio(struct exc_info *ctx, u64 addr, u64 *val, bool
     enum hv_xhci_dma_reg reg = HV_XHCI_DMA_REG_NONE;
     u64 offset = addr - J313_XHCI1_BASE;
 
-    if (write)
-        reg = hv_xhci_dma_trace_write(&j313_xhci_dma_trace, j313_xhci_caplen,
-                                      j313_xhci_rtsoff, offset, *val, width);
+    if (write && hv_xhci_cap_state_ready(&j313_xhci_caps))
+        reg = hv_xhci_dma_trace_write(&j313_xhci_dma_trace, j313_xhci_caps.caplen,
+                                      j313_xhci_caps.rtsoff, offset, *val, width);
 
     /* Install the guest IPA -> PA DART view before the first DMA pointer reaches xHCI. */
     if (write && reg != HV_XHCI_DMA_REG_NONE && !hv_prepare_j313_xhci_darts())
@@ -150,6 +149,13 @@ static bool handle_j313_xhci_mmio(struct exc_info *ctx, u64 addr, u64 *val, bool
 
     if (!write) {
         u64 hardware_value = *val;
+        bool caps_were_ready = hv_xhci_cap_state_ready(&j313_xhci_caps);
+
+        hv_xhci_cap_state_observe_read(&j313_xhci_caps, offset, hardware_value, width);
+        if (!caps_were_ready && hv_xhci_cap_state_ready(&j313_xhci_caps))
+            printf("HV: xHCI capabilities discovered caplen=0x%x rtsoff=0x%x\n",
+                   j313_xhci_caps.caplen, j313_xhci_caps.rtsoff);
+
         *val = hv_xhci_cap_read_for_guest(offset, *val, width);
         if (*val != hardware_value) {
             static bool logged;
@@ -171,19 +177,19 @@ static bool handle_j313_xhci_mmio(struct exc_info *ctx, u64 addr, u64 *val, bool
         switch (reg) {
             case HV_XHCI_DMA_REG_CRCR:
                 guest_value = j313_xhci_dma_trace.crcr;
-                reg_offset = j313_xhci_caplen + 0x18;
+                reg_offset = j313_xhci_caps.caplen + 0x18;
                 break;
             case HV_XHCI_DMA_REG_DCBAAP:
                 guest_value = j313_xhci_dma_trace.dcbaap;
-                reg_offset = j313_xhci_caplen + 0x30;
+                reg_offset = j313_xhci_caps.caplen + 0x30;
                 break;
             case HV_XHCI_DMA_REG_ERSTBA:
                 guest_value = j313_xhci_dma_trace.erstba;
-                reg_offset = j313_xhci_rtsoff + 0x30;
+                reg_offset = j313_xhci_caps.rtsoff + 0x30;
                 break;
             case HV_XHCI_DMA_REG_ERDP: {
                 guest_value = j313_xhci_dma_trace.erdp;
-                reg_offset = j313_xhci_rtsoff + 0x38;
+                reg_offset = j313_xhci_caps.rtsoff + 0x38;
                 u32 upper = guest_value >> 32;
                 log = upper != j313_xhci_erdp_last_upper || j313_xhci_erdp_trace_budget;
                 j313_xhci_erdp_last_upper = upper;
@@ -207,20 +213,13 @@ static bool handle_j313_xhci_mmio(struct exc_info *ctx, u64 addr, u64 *val, bool
 
 bool hv_vgic_rearm_j313_xhci_trace(void)
 {
-    u32 hccparams1 = read32(J313_XHCI1_BASE + 0x10);
-
-    j313_xhci_caplen = read32(J313_XHCI1_BASE) & 0xff;
-    j313_xhci_rtsoff = read32(J313_XHCI1_BASE + 0x18) & ~0x1fU;
-    j313_xhci_dma_trace.crcr = read64(J313_XHCI1_BASE + j313_xhci_caplen + 0x18);
-    j313_xhci_dma_trace.dcbaap = read64(J313_XHCI1_BASE + j313_xhci_caplen + 0x30);
-    j313_xhci_dma_trace.erstba = read64(J313_XHCI1_BASE + j313_xhci_rtsoff + 0x30);
-    j313_xhci_dma_trace.erdp = read64(J313_XHCI1_BASE + j313_xhci_rtsoff + 0x38);
+    memset(&j313_xhci_caps, 0, sizeof(j313_xhci_caps));
+    memset(&j313_xhci_dma_trace, 0, sizeof(j313_xhci_dma_trace));
 
     int ret = hv_map_hook(J313_XHCI1_BASE, handle_j313_xhci_mmio, HV_XHCI_DMA_PAGE_SIZE);
-    printf("HV: xHCI MMIO trace %s base=0x%lx size=0x%lx caplen=0x%x rtsoff=0x%x "
-           "HCCPARAMS1=0x%x AC64=%u\n",
-           ret ? "FAILED" : "armed", (u64)J313_XHCI1_BASE, (u64)HV_XHCI_DMA_PAGE_SIZE,
-           j313_xhci_caplen, j313_xhci_rtsoff, hccparams1, hccparams1 & 1);
+    printf("HV: xHCI MMIO trace %s lazily base=0x%lx size=0x%lx\n",
+           ret ? "FAILED" : "armed", (u64)J313_XHCI1_BASE,
+           (u64)HV_XHCI_DMA_PAGE_SIZE);
     return ret == 0;
 }
 

@@ -42,6 +42,13 @@ struct hv_xhci_dma_trace {
     u64 erdp;
 };
 
+struct hv_xhci_cap_state {
+    u32 caplen;
+    u32 rtsoff;
+    bool caplen_valid;
+    bool rtsoff_valid;
+};
+
 typedef u64 (*hv_xhci_dma_translate_fn)(u64 ipa, void *opaque);
 
 bool hv_xhci_handoff_clear_plan(u32 usbcmd, u32 usbsts, u32 iman, bool dma_programmed,
@@ -53,5 +60,8 @@ enum hv_xhci_dma_reg hv_xhci_dma_trace_write(struct hv_xhci_dma_trace *trace, u3
                                              u32 rtsoff, u64 offset, u64 value, int width);
 const char *hv_xhci_dma_reg_name(enum hv_xhci_dma_reg reg);
 u64 hv_xhci_cap_read_for_guest(u64 offset, u64 value, int width);
+bool hv_xhci_cap_state_observe_read(struct hv_xhci_cap_state *state, u64 offset, u64 value,
+                                    int width);
+bool hv_xhci_cap_state_ready(const struct hv_xhci_cap_state *state);
 
 #endif

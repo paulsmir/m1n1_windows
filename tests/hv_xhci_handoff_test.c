@@ -20,6 +20,26 @@ static uint64_t fake_translate(uint64_t ipa, void *opaque)
 int main(void)
 {
     struct hv_xhci_handoff_clear clear = {0};
+    struct hv_xhci_cap_state caps = {0};
+
+    /* Cold boot must not require touching an unpowered xHCI MMIO block. */
+    assert(!hv_xhci_cap_state_ready(NULL));
+    assert(!hv_xhci_cap_state_observe_read(NULL, 0x0, 0x01100020, 2));
+    assert(!hv_xhci_cap_state_ready(&caps));
+    assert(!hv_xhci_cap_state_observe_read(&caps, 0x0, 0, 2));
+    assert(!hv_xhci_cap_state_observe_read(&caps, 0x18, 0, 2));
+    assert(hv_xhci_cap_state_observe_read(&caps, 0x0, 0x01100020, 2));
+    assert(caps.caplen == 0x20);
+    assert(!hv_xhci_cap_state_ready(&caps));
+
+    /* A 64-bit capability read may contain RTSOFF in its upper dword. */
+    assert(!hv_xhci_cap_state_observe_read(&caps, 0x8, 0, 2));
+    assert(hv_xhci_cap_state_observe_read(&caps, 0x14, (0x1000ULL << 32) | 0x000004e0, 3));
+    assert(caps.rtsoff == 0x1000);
+    assert(hv_xhci_cap_state_ready(&caps));
+
+    assert(!hv_xhci_cap_state_observe_read(&caps, 0x18, 0x1000, -1));
+    assert(!hv_xhci_cap_state_observe_read(&caps, 0x18, 0x1000, 4));
 
     /* Measured J313 handoff: halted controller, HSE|PCD stale, interrupter disabled. */
     assert(hv_xhci_handoff_clear_plan(0x0, 0x15, 0x0, false, &clear));
@@ -87,11 +107,10 @@ int main(void)
            HV_XHCI_DMA_REG_CRCR);
     assert(trace.crcr == 0x0000000900123001ULL);
 
-    assert(hv_xhci_dma_trace_write(&trace, 0x20, 0x1000, 0x50, 0x00000008f3733000ULL,
-                                   3) == HV_XHCI_DMA_REG_DCBAAP);
+    assert(hv_xhci_dma_trace_write(&trace, 0x20, 0x1000, 0x50, 0x00000008f3733000ULL, 3) ==
+           HV_XHCI_DMA_REG_DCBAAP);
     assert(trace.dcbaap == 0x00000008f3733000ULL);
-    assert(hv_xhci_dma_trace_write(&trace, 0x20, 0x1000, 0x1030,
-                                   0x00000008f372d000ULL, 3) ==
+    assert(hv_xhci_dma_trace_write(&trace, 0x20, 0x1000, 0x1030, 0x00000008f372d000ULL, 3) ==
            HV_XHCI_DMA_REG_ERSTBA);
     assert(trace.erstba == 0x00000008f372d000ULL);
     assert(hv_xhci_dma_trace_write(&trace, 0x20, 0x1000, 0x1038, 0xf372e000, 2) ==
@@ -105,8 +124,7 @@ int main(void)
 
     /* The T8103 DART cannot honor the 64-bit DMA addresses advertised by xHCI. */
     assert(hv_xhci_cap_read_for_guest(0x10, 0x0238ffcd, 2) == 0x0238ffcc);
-    assert(hv_xhci_cap_read_for_guest(0x0c, 0x0238ffcd00000000ULL, 3) ==
-           0x0238ffcc00000000ULL);
+    assert(hv_xhci_cap_read_for_guest(0x0c, 0x0238ffcd00000000ULL, 3) == 0x0238ffcc00000000ULL);
     assert(hv_xhci_cap_read_for_guest(0x14, 0x000004e0, 2) == 0x000004e0);
 
     puts("hv_xhci_handoff_test: ok");

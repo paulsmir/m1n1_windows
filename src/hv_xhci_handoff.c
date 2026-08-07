@@ -17,8 +17,8 @@ bool hv_xhci_handoff_clear_plan(u32 usbcmd, u32 usbsts, u32 iman, bool dma_progr
         (iman & XHCI_IMAN_IE))
         return false;
 
-    clear->reset = (usbsts & (XHCI_USBSTS_HCH | XHCI_USBSTS_HSE)) ==
-                   (XHCI_USBSTS_HCH | XHCI_USBSTS_HSE);
+    clear->reset =
+        (usbsts & (XHCI_USBSTS_HCH | XHCI_USBSTS_HSE)) == (XHCI_USBSTS_HCH | XHCI_USBSTS_HSE);
     clear->usbsts_w1c = usbsts & XHCI_USBSTS_W1C;
     clear->iman_w1c = iman & XHCI_IMAN_IP;
     return clear->usbsts_w1c || clear->iman_w1c;
@@ -127,4 +127,51 @@ u64 hv_xhci_cap_read_for_guest(u64 offset, u64 value, int width)
 
     u32 bit = (hccparams1_offset - offset) * 8;
     return value & ~(1ULL << bit);
+}
+
+static bool hv_xhci_read_field(u64 offset, u64 value, int width, u64 field_offset, u32 field_size,
+                               u32 *field)
+{
+    if (!field || width < 0 || width > 3 || offset > field_offset)
+        return false;
+
+    u64 bytes = 1ULL << width;
+    u64 delta = field_offset - offset;
+    if (bytes < delta + field_size)
+        return false;
+
+    *field = (value >> (delta * 8)) & ((1ULL << (field_size * 8)) - 1);
+    return true;
+}
+
+bool hv_xhci_cap_state_observe_read(struct hv_xhci_cap_state *state, u64 offset, u64 value,
+                                    int width)
+{
+    u32 field;
+    bool observed = false;
+
+    if (!state)
+        return false;
+
+    if (hv_xhci_read_field(offset, value, width, 0, 1, &field) && field >= 0x20) {
+        state->caplen = field;
+        state->caplen_valid = true;
+        observed = true;
+    }
+
+    if (hv_xhci_read_field(offset, value, width, 0x18, 4, &field)) {
+        field &= ~0x1fU;
+        if (field) {
+            state->rtsoff = field;
+            state->rtsoff_valid = true;
+            observed = true;
+        }
+    }
+
+    return observed;
+}
+
+bool hv_xhci_cap_state_ready(const struct hv_xhci_cap_state *state)
+{
+    return state && state->caplen_valid && state->rtsoff_valid;
 }
