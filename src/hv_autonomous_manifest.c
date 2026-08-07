@@ -2,6 +2,8 @@
 
 #include "hv_autonomous_manifest.h"
 
+#include "hv_autonomous_profile.h"
+
 #include <stdint.h>
 
 static bool fail(enum hv_autonomous_error value, enum hv_autonomous_error *error)
@@ -20,14 +22,6 @@ static bool magic_matches(const uint8_t magic[8])
             return false;
     }
     return true;
-}
-
-static bool debug_flags_valid(uint32_t flags)
-{
-    uint32_t debug = flags & HV_AUTONOMOUS_DEBUG_MASK;
-
-    return debug == 0 || debug == HV_AUTONOMOUS_DEBUG_UART ||
-           debug == HV_AUTONOMOUS_DEBUG_FULL || debug == HV_AUTONOMOUS_DEBUG_MONITOR;
 }
 
 bool hv_autonomous_manifest_parse(const void *image_end, size_t available,
@@ -49,8 +43,8 @@ bool hv_autonomous_manifest_parse(const void *image_end, size_t available,
         return fail(HV_AUTONOMOUS_ERROR_HEADER_SIZE, error);
     if (manifest->format_version != HV_AUTONOMOUS_FORMAT_VERSION)
         return fail(HV_AUTONOMOUS_ERROR_VERSION, error);
-    if ((manifest->flags & ~HV_AUTONOMOUS_KNOWN_FLAGS) ||
-        !debug_flags_valid(manifest->flags) || manifest->reserved || manifest->reserved2)
+    if (!hv_autonomous_flags_valid(manifest->flags) || manifest->reserved ||
+        manifest->reserved2)
         return fail(HV_AUTONOMOUS_ERROR_FLAGS, error);
     for (size_t i = 0; i < sizeof(manifest->reserved_tail); i++) {
         if (manifest->reserved_tail[i])

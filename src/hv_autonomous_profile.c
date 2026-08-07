@@ -2,13 +2,20 @@
 
 #include "hv_autonomous_profile.h"
 
+bool hv_autonomous_flags_valid(uint32_t flags)
+{
+    uint32_t debug = flags & HV_AUTONOMOUS_DEBUG_MASK;
+
+    return !(flags & ~HV_AUTONOMOUS_KNOWN_FLAGS) &&
+           (debug == 0 || debug == HV_AUTONOMOUS_DEBUG_UART ||
+            debug == HV_AUTONOMOUS_DEBUG_FULL || debug == HV_AUTONOMOUS_DEBUG_MONITOR);
+}
+
 bool hv_autonomous_profile_decode(uint32_t flags, struct hv_autonomous_profile *out)
 {
     uint32_t debug = flags & HV_AUTONOMOUS_DEBUG_MASK;
 
-    if (!out || (flags & ~HV_AUTONOMOUS_KNOWN_FLAGS) ||
-        (debug != 0 && debug != HV_AUTONOMOUS_DEBUG_UART &&
-         debug != HV_AUTONOMOUS_DEBUG_FULL && debug != HV_AUTONOMOUS_DEBUG_MONITOR))
+    if (!out || !hv_autonomous_flags_valid(flags))
         return false;
 
     out->physical_display = flags & HV_AUTONOMOUS_DISPLAY_PHYSICAL;

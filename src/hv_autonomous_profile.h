@@ -19,6 +19,7 @@ struct hv_autonomous_usb_plan {
     bool start_debug_transport;
 };
 
+bool hv_autonomous_flags_valid(uint32_t flags);
 bool hv_autonomous_profile_decode(uint32_t flags, struct hv_autonomous_profile *out);
 bool hv_autonomous_profile_accept_proxy(const struct hv_autonomous_profile *profile,
                                         bool host_connected);

@@ -8,6 +8,12 @@ int main(void)
     struct hv_autonomous_profile profile;
     struct hv_autonomous_usb_plan usb;
 
+    assert(hv_autonomous_flags_valid(HV_AUTONOMOUS_DISPLAY_PHYSICAL));
+    assert(hv_autonomous_flags_valid(HV_AUTONOMOUS_DISPLAY_PHYSICAL |
+                                     HV_AUTONOMOUS_DEBUG_MONITOR));
+    assert(!hv_autonomous_flags_valid(HV_AUTONOMOUS_DEBUG_MASK));
+    assert(!hv_autonomous_flags_valid(0x20));
+
     assert(hv_autonomous_profile_decode(HV_AUTONOMOUS_DISPLAY_PHYSICAL, &profile));
     assert(profile.physical_display);
     assert(!profile.virtual_display);

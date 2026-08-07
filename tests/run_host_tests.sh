@@ -9,6 +9,7 @@ cc=${CC:-cc}
 all_tests="
 display_guest_test
 hv_autonomous_manifest_test
+hv_bootstrap_manifest_test
 hv_autonomous_memory_test
 hv_autonomous_profile_test
 hv_autonomous_stage_test
@@ -42,7 +43,10 @@ for name in "$@"; do
             sources="$sources src/display_guest.c"
             ;;
         hv_autonomous_manifest_test)
-            sources="$sources src/hv_autonomous_manifest.c"
+            sources="$sources src/hv_autonomous_manifest.c src/hv_autonomous_profile.c"
+            ;;
+        hv_bootstrap_manifest_test)
+            sources="$sources src/hv_bootstrap_manifest.c src/hv_autonomous_profile.c"
             ;;
         hv_autonomous_memory_test)
             sources="$sources src/hv_autonomous_memory.c"
