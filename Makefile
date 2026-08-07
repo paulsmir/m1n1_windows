@@ -107,6 +107,7 @@ OBJECTS := \
 	asc.o \
 	bootlogo_48.o bootlogo_128.o bootlogo_256.o \
 	chainload.o \
+	chainload_layout.o \
 	chainload_asm.o \
 	chickens.o \
 	chickens_avalanche.o \

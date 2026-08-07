@@ -7,6 +7,7 @@ trap 'rm -rf "$build_dir"' EXIT HUP INT TERM
 cc=${CC:-cc}
 
 all_tests="
+chainload_layout_test
 display_guest_test
 hv_autonomous_manifest_test
 hv_bootstrap_manifest_test
@@ -38,6 +39,9 @@ for name in "$@"; do
     definitions=""
     sources="tests/$name.c"
     case "$name" in
+        chainload_layout_test)
+            sources="$sources src/chainload_layout.c"
+            ;;
         display_guest_test)
             definitions="-DDISPLAY_GUEST_HOST_TEST"
             sources="$sources src/display_guest.c"
