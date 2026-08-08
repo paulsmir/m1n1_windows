@@ -6,6 +6,7 @@
 #include "assert.h"
 #include "cpu_regs.h"
 #include "exception.h"
+#include "hv_stage2_state.h"
 #include "iodev.h"
 #include "malloc.h"
 #include "smp.h"
@@ -120,6 +121,7 @@ void hv_pt_init(void)
     uint64_t pa_range = FIELD_GET(ID_AA64MMFR0_PARange, mrs(ID_AA64MMFR0_EL1));
 
     vaddr_bits = min(44, pa_bits[pa_range]);
+    hv_stage2_state_reset();
 
     printf("HV: Initializing for %ld-bit PA range\n", vaddr_bits);
 
@@ -305,6 +307,10 @@ static void hv_pt_map_l4(u64 from, u64 to, u64 size, u64 incr)
 
 int hv_map(u64 from, u64 to, u64 size, u64 incr)
 {
+    const u64 requested_from = from;
+    const u64 requested_to = to;
+    const u64 requested_size = size;
+    const u64 requested_incr = incr;
     u64 chunk;
     bool hw = IS_HW(to);
 
@@ -364,6 +370,22 @@ int hv_map(u64 from, u64 to, u64 size, u64 incr)
         hv_pt_map_l4(from, to, size, incr);
     }
 
+    u32 kind;
+    u64 target;
+    if (!requested_to) {
+        kind = HV_STAGE2_MAPPING_UNMAP;
+        target = 0;
+    } else if (IS_HW(requested_to)) {
+        kind = HV_STAGE2_MAPPING_HARDWARE;
+        target = requested_to & PTE_TARGET_MASK_L4;
+    } else if (FIELD_GET(SPTE_TYPE, requested_to) == SPTE_MAP) {
+        kind = HV_STAGE2_MAPPING_SOFTWARE;
+        target = requested_to & PTE_TARGET_MASK_L4;
+    } else {
+        kind = HV_STAGE2_MAPPING_HOOK;
+        target = 0;
+    }
+    (void)hv_stage2_state_record(requested_from, target, requested_size, requested_incr, kind);
     return 0;
 }
 

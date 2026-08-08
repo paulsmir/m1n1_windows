@@ -2,6 +2,7 @@
 
 #include "hv_launch_j313.h"
 #include "hv_pci_state.h"
+#include "hv_stage2_state.h"
 #include "string.h"
 
 #ifndef HV_LAUNCH_J313_HOST_TEST
@@ -129,10 +130,12 @@ static bool hv_launch_j313_platform_read_state(struct hv_launch_j313_host_state 
 {
     struct hv_launch_j313_cpu_registers registers;
     struct hv_pci_state pci;
+    struct hv_stage2_mapping mappings[HV_CONTRACT_MAX_MAPPINGS];
     struct hv_irq_route irq_routes[HV_CONTRACT_MAX_IRQ_ROUTES];
     uint64_t mpidrs[HV_CONTRACT_MAX_CPUS];
     uint32_t cpu_count;
     size_t irq_route_count;
+    size_t mapping_count;
 
     if (!observed_valid)
         return false;
@@ -143,6 +146,18 @@ static bool hv_launch_j313_platform_read_state(struct hv_launch_j313_host_state 
         return false;
     state->devices.pci_ecam_base = pci.ecam_base;
     state->devices.nvme_bar_base = pci.bar_mapped ? pci.bar0_base : 0;
+
+    if (!hv_stage2_state_snapshot(mappings, HV_CONTRACT_MAX_MAPPINGS, &mapping_count))
+        return false;
+    state->mapping_count = (uint32_t)mapping_count;
+    for (size_t i = 0; i < mapping_count; i++) {
+        state->mappings[i] = (struct hv_contract_mapping){
+            .ipa = mappings[i].ipa,
+            .pa = mappings[i].pa,
+            .size = mappings[i].size,
+            .attributes = (uint64_t)mappings[i].kind | (mappings[i].increment << 32),
+        };
+    }
 
     cpu_count = state->cpu_count;
     for (uint32_t i = 0; i < cpu_count; i++)

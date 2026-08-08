@@ -21,6 +21,7 @@ hv_fb_stream_test
 hv_fb_stream_usb_limit_test
 hv_irq_routes_test
 hv_pci_state_test
+hv_stage2_state_test
 hv_launch_contract_test
 hv_launch_j313_test
 hv_launch_snapshot_test
@@ -91,6 +92,9 @@ for name in "$@"; do
             ;;
         hv_pci_state_test)
             sources="$sources src/hv_pci_state.c"
+            ;;
+        hv_stage2_state_test)
+            sources="$sources src/hv_stage2_state.c"
             ;;
         hv_launch_contract_test)
             sources="$sources src/hv_launch_contract.c"
