@@ -46,6 +46,7 @@ struct hv_launch_j313_cpu_registers {
 extern const struct hv_contract_schema HV_J313_CONTRACT_SCHEMA;
 
 void hv_launch_j313_provider_init(struct hv_launch_snapshot_provider *provider);
+bool hv_launch_j313_set_base_state(const struct hv_launch_j313_host_state *state);
 bool hv_launch_j313_fill_cpus(struct hv_launch_j313_host_state *state, const uint64_t *mpidrs,
                               uint32_t cpu_count,
                               const struct hv_launch_j313_cpu_registers *registers);

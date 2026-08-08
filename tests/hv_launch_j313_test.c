@@ -163,12 +163,24 @@ static void test_cpu_image_is_applied_to_every_mpidr(void)
     assert(!hv_launch_j313_fill_cpus(&state, mpidrs, 8, NULL));
 }
 
+static void test_base_state_publication_is_fail_closed(void)
+{
+    struct hv_launch_j313_host_state state = valid_state();
+
+    assert(!hv_launch_j313_set_base_state(NULL));
+    state.identity.target = 0;
+    assert(!hv_launch_j313_set_base_state(&state));
+    state = valid_state();
+    assert(hv_launch_j313_set_base_state(&state));
+}
+
 int main(void)
 {
     test_schema_classifies_j313_invariants();
     test_host_provider_captures_injected_state();
     test_schema_reports_required_hacr_bit();
     test_cpu_image_is_applied_to_every_mpidr();
+    test_base_state_publication_is_fail_closed();
     puts("hv_launch_j313_test: ok");
     return 0;
 }

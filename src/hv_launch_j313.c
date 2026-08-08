@@ -65,6 +65,22 @@ const struct hv_contract_schema HV_J313_CONTRACT_SCHEMA = {
 };
 
 static struct hv_launch_j313_host_state observed;
+static bool observed_valid;
+
+bool hv_launch_j313_set_base_state(const struct hv_launch_j313_host_state *state)
+{
+    observed_valid = false;
+    if (!state || state->identity.target != HV_J313_TARGET ||
+        state->identity.schema_revision != HV_J313_SCHEMA_REVISION || !state->cpu_count ||
+        state->cpu_count > HV_CONTRACT_MAX_CPUS || state->region_count > HV_CONTRACT_MAX_REGIONS ||
+        state->mapping_count > HV_CONTRACT_MAX_MAPPINGS ||
+        state->irq_route_count > HV_CONTRACT_MAX_IRQ_ROUTES)
+        return false;
+
+    observed = *state;
+    observed_valid = true;
+    return true;
+}
 
 bool hv_launch_j313_fill_cpus(struct hv_launch_j313_host_state *state, const uint64_t *mpidrs,
                               uint32_t cpu_count,
@@ -91,22 +107,16 @@ bool hv_launch_j313_fill_cpus(struct hv_launch_j313_host_state *state, const uin
 }
 
 #ifndef HV_LAUNCH_J313_HOST_TEST
-__attribute__((weak)) bool
-hv_launch_j313_platform_read_base_state(struct hv_launch_j313_host_state *state)
-{
-    (void)state;
-    return false;
-}
-
 static bool hv_launch_j313_platform_read_state(struct hv_launch_j313_host_state *state)
 {
     struct hv_launch_j313_cpu_registers registers;
     uint64_t mpidrs[HV_CONTRACT_MAX_CPUS];
     uint32_t cpu_count;
 
-    if (!hv_launch_j313_platform_read_base_state(state) || !state->cpu_count ||
-        state->cpu_count > HV_CONTRACT_MAX_CPUS)
+    if (!observed_valid)
         return false;
+
+    *state = observed;
 
     cpu_count = state->cpu_count;
     for (uint32_t i = 0; i < cpu_count; i++)
@@ -196,7 +206,13 @@ bool hv_launch_j313_capture(enum hv_contract_checkpoint checkpoint, uint32_t seq
     struct hv_launch_snapshot_provider provider;
 
 #ifndef HV_LAUNCH_J313_HOST_TEST
-    if (!hv_launch_j313_platform_read_state(&observed))
+    struct hv_launch_j313_host_state live;
+
+    if (!hv_launch_j313_platform_read_state(&live))
+        return false;
+    observed = live;
+#else
+    if (!observed_valid)
         return false;
 #endif
     hv_launch_j313_provider_init(&provider);
@@ -206,6 +222,6 @@ bool hv_launch_j313_capture(enum hv_contract_checkpoint checkpoint, uint32_t seq
 #ifdef HV_LAUNCH_J313_HOST_TEST
 void hv_launch_j313_host_set_state(const struct hv_launch_j313_host_state *state)
 {
-    observed = *state;
+    (void)hv_launch_j313_set_base_state(state);
 }
 #endif
