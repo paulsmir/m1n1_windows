@@ -85,6 +85,30 @@ bool hv_launch_j313_set_base_state(const struct hv_launch_j313_host_state *state
     return true;
 }
 
+bool hv_launch_j313_publish_descriptor(const struct hv_launch_j313_descriptor *descriptor)
+{
+    struct hv_launch_j313_host_state state = {0};
+
+    if (!descriptor || descriptor->identity.target != HV_J313_TARGET ||
+        descriptor->identity.schema_revision != HV_J313_SCHEMA_REVISION || !descriptor->cpu_count ||
+        descriptor->cpu_count > HV_CONTRACT_MAX_CPUS ||
+        descriptor->region_count > HV_CONTRACT_MAX_REGIONS)
+        return false;
+
+    state.identity = descriptor->identity;
+    state.boot = descriptor->boot;
+    state.adt_size = descriptor->adt_size;
+    memcpy(state.adt_digest, descriptor->adt_digest, sizeof(state.adt_digest));
+    state.region_count = descriptor->region_count;
+    memcpy(state.regions, descriptor->regions,
+           (size_t)descriptor->region_count * sizeof(state.regions[0]));
+    state.cpu_count = descriptor->cpu_count;
+    for (uint32_t i = 0; i < descriptor->cpu_count; i++)
+        state.cpus[i].mpidr = descriptor->mpidrs[i];
+    state.devices = descriptor->devices;
+    return hv_launch_j313_set_base_state(&state);
+}
+
 bool hv_launch_j313_fill_cpus(struct hv_launch_j313_host_state *state, const uint64_t *mpidrs,
                               uint32_t cpu_count,
                               const struct hv_launch_j313_cpu_registers *registers)

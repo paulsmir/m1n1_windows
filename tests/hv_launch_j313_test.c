@@ -195,6 +195,39 @@ static void test_irq_routes_are_converted_from_live_route_records(void)
     assert(!hv_launch_j313_fill_irq_routes(&state, NULL, 1));
 }
 
+static void test_descriptor_publishes_boot_regions_and_cpu_affinities(void)
+{
+    struct hv_launch_j313_descriptor descriptor = {0};
+    struct hv_contract_snapshot snapshot;
+
+    descriptor.identity.target = HV_J313_TARGET;
+    descriptor.identity.schema_revision = HV_J313_SCHEMA_REVISION;
+    descriptor.boot.ram_base = 0x800000000ULL;
+    descriptor.boot.ram_size = 0x200000000ULL;
+    descriptor.boot.guest_entry = 0x8510b4000ULL;
+    descriptor.boot.args[0] = 0x854000000ULL;
+    descriptor.cpu_count = 2;
+    descriptor.mpidrs[0] = 0;
+    descriptor.mpidrs[1] = 1;
+    descriptor.region_count = 1;
+    descriptor.regions[0] = (struct hv_contract_region){
+        .kind = HV_CONTRACT_REGION_GUEST_RAM,
+        .base = descriptor.boot.ram_base,
+        .size = descriptor.boot.ram_size,
+    };
+
+    assert(hv_launch_j313_publish_descriptor(&descriptor));
+    assert(hv_launch_j313_capture(HV_CONTRACT_PRE_GUEST, 4, &snapshot));
+    assert(snapshot.boot.guest_entry == descriptor.boot.guest_entry);
+    assert(snapshot.region_count == 1);
+    assert(snapshot.cpu_count == 2);
+    assert(snapshot.cpus[0].mpidr == 0);
+    assert(snapshot.cpus[1].mpidr == 1);
+
+    descriptor.cpu_count = HV_CONTRACT_MAX_CPUS + 1;
+    assert(!hv_launch_j313_publish_descriptor(&descriptor));
+}
+
 int main(void)
 {
     test_schema_classifies_j313_invariants();
@@ -203,6 +236,7 @@ int main(void)
     test_cpu_image_is_applied_to_every_mpidr();
     test_base_state_publication_is_fail_closed();
     test_irq_routes_are_converted_from_live_route_records();
+    test_descriptor_publishes_boot_regions_and_cpu_affinities();
     puts("hv_launch_j313_test: ok");
     return 0;
 }

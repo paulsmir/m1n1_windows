@@ -11,6 +11,7 @@
 #include "heapblock.h"
 #include "hv.h"
 #include "hv_diag.h"
+#include "hv_launch_j313.h"
 #include "iodev.h"
 #include "kboot.h"
 #include "malloc.h"
@@ -509,6 +510,15 @@ int proxy_process(ProxyRequest *request, ProxyReply *reply)
         case P_HV_DIAG_SAMPLE:
             reply->retval = hv_diag_copy_sample(request->args[0], (void *)request->args[1],
                                                 request->args[2]);
+            break;
+        case P_HV_LAUNCH_PUBLISH:
+            reply->retval = request->args[1] == sizeof(struct hv_launch_j313_descriptor) &&
+                            hv_launch_j313_publish_descriptor((void *)request->args[0]);
+            break;
+        case P_HV_LAUNCH_CAPTURE:
+            reply->retval = request->args[3] == sizeof(struct hv_contract_snapshot) &&
+                            hv_launch_j313_capture(request->args[0], request->args[1],
+                                                   (void *)request->args[2]);
             break;
         case P_HV_MAP_VIRTIO:
             hv_map_virtio(request->args[0], (void *)request->args[1]);

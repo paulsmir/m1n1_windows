@@ -646,6 +646,8 @@ class M1N1Proxy(Reloadable):
     P_HV_FB_STREAM_CONFIG = 0xc1a
     P_HV_DIAG_STATUS = 0xc1b
     P_HV_DIAG_SAMPLE = 0xc1c
+    P_HV_LAUNCH_PUBLISH = 0xc1d
+    P_HV_LAUNCH_CAPTURE = 0xc1e
 
     P_FB_INIT = 0xd00
     P_FB_SHUTDOWN = 0xd01
@@ -1120,6 +1122,22 @@ class M1N1Proxy(Reloadable):
         address = self.heap.malloc(size)
         try:
             if not self.request(self.P_HV_DIAG_SAMPLE, sequence, address, size):
+                return None
+            return self.iface.readmem(address, size)
+        finally:
+            self.heap.free(address)
+    def hv_launch_publish(self, descriptor):
+        address = self.heap.malloc(len(descriptor))
+        try:
+            self.iface.writemem(address, descriptor)
+            return bool(self.request(self.P_HV_LAUNCH_PUBLISH, address, len(descriptor)))
+        finally:
+            self.heap.free(address)
+    def hv_launch_capture(self, checkpoint, sequence):
+        size = 2456
+        address = self.heap.malloc(size)
+        try:
+            if not self.request(self.P_HV_LAUNCH_CAPTURE, checkpoint, sequence, address, size):
                 return None
             return self.iface.readmem(address, size)
         finally:

@@ -44,10 +44,23 @@ struct hv_launch_j313_cpu_registers {
     uint64_t actlr;
 };
 
+struct hv_launch_j313_descriptor {
+    struct hv_contract_identity identity;
+    struct hv_contract_boot boot;
+    uint64_t adt_size;
+    uint8_t adt_digest[HV_CONTRACT_DIGEST_SIZE];
+    uint32_t region_count;
+    uint32_t cpu_count;
+    struct hv_contract_region regions[HV_CONTRACT_MAX_REGIONS];
+    uint64_t mpidrs[HV_CONTRACT_MAX_CPUS];
+    struct hv_contract_devices devices;
+} __attribute__((packed));
+
 extern const struct hv_contract_schema HV_J313_CONTRACT_SCHEMA;
 
 void hv_launch_j313_provider_init(struct hv_launch_snapshot_provider *provider);
 bool hv_launch_j313_set_base_state(const struct hv_launch_j313_host_state *state);
+bool hv_launch_j313_publish_descriptor(const struct hv_launch_j313_descriptor *descriptor);
 bool hv_launch_j313_fill_cpus(struct hv_launch_j313_host_state *state, const uint64_t *mpidrs,
                               uint32_t cpu_count,
                               const struct hv_launch_j313_cpu_registers *registers);
