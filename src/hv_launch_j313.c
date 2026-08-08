@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: MIT */
 
 #include "hv_launch_j313.h"
+#include "hv_pci_state.h"
 #include "string.h"
 
 #ifndef HV_LAUNCH_J313_HOST_TEST
@@ -127,6 +128,7 @@ bool hv_launch_j313_fill_irq_routes(struct hv_launch_j313_host_state *state,
 static bool hv_launch_j313_platform_read_state(struct hv_launch_j313_host_state *state)
 {
     struct hv_launch_j313_cpu_registers registers;
+    struct hv_pci_state pci;
     struct hv_irq_route irq_routes[HV_CONTRACT_MAX_IRQ_ROUTES];
     uint64_t mpidrs[HV_CONTRACT_MAX_CPUS];
     uint32_t cpu_count;
@@ -136,6 +138,11 @@ static bool hv_launch_j313_platform_read_state(struct hv_launch_j313_host_state 
         return false;
 
     *state = observed;
+
+    if (!hv_pci_state_get(&pci))
+        return false;
+    state->devices.pci_ecam_base = pci.ecam_base;
+    state->devices.nvme_bar_base = pci.bar_mapped ? pci.bar0_base : 0;
 
     cpu_count = state->cpu_count;
     for (uint32_t i = 0; i < cpu_count; i++)

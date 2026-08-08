@@ -169,7 +169,7 @@ OBJECTS := \
 	vsprintf.o \
 	wdt.o \
 	hv_launch_contract.o \
-	hv_launch_j313.o \
+	hv_launch_j313.o hv_pci_state.o \
 	hv_launch_snapshot.o \
 	$(DCP_OBJECTS) \
 	$(MINILZLIB_OBJECTS) $(TINF_OBJECTS) $(DLMALLOC_OBJECTS) $(LIBFDT_OBJECTS) $(RUST_LIB)

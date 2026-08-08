@@ -14,13 +14,14 @@
 //
 
 #include "hv.h"
+#include "hv_pci_state.h"
 #include "iodev.h"
 #include "types.h"
 #include "utils.h"
 
 // --- identity of the emulated controller ---
-#define PCI_VENDOR_ID  0x1B36 // Red Hat / QEMU vendor
-#define PCI_DEVICE_ID  0x0010 // QEMU NVMe - stornvme knows this pair
+#define PCI_VENDOR_ID  0x1B36   // Red Hat / QEMU vendor
+#define PCI_DEVICE_ID  0x0010   // QEMU NVMe - stornvme knows this pair
 #define PCI_CLASS_CODE 0x010802 // base 01 (mass storage), sub 08 (NVM), prog-if 02 (NVMe)
 #define PCI_REVISION   0x02
 
@@ -64,8 +65,8 @@ static void bar_reeval(void)
     // dwords of a 64-bit BAR during sizing; checking only the low dword (old addr != 0xFF000000)
     // let bar0_addr()==0xFFFFFFFFFF000000 through and would map the trap at a bogus address.
     bool sizing = (cfg_bar0_hi == 0xFFFFFFFF) || ((cfg_bar0_lo & BAR0_ADDR_MASK) == BAR0_ADDR_MASK);
-    bool want = (cfg_command & CMD_MEM_SPACE) && addr != 0 && !sizing &&
-                (addr & (BAR0_SIZE - 1)) == 0;
+    bool want =
+        (cfg_command & CMD_MEM_SPACE) && addr != 0 && !sizing && (addr & (BAR0_SIZE - 1)) == 0;
 
     if (want && !bar_mapped) {
         printf("HV: PCI BAR0 programmed at 0x%lx, arming NVMe MMIO trap\n", addr);
@@ -75,6 +76,8 @@ static void bar_reeval(void)
         hv_nvme_unmap_bar();
         bar_mapped = false;
     }
+
+    hv_pci_state_record_config(cfg_command, bar0_addr(), bar_mapped);
 }
 
 // Return the full 32-bit config dword at register offset `reg` (reg is 4-byte aligned).
@@ -90,7 +93,7 @@ static u32 cfg_read_dword(u32 reg)
             return (PCI_CLASS_CODE << 8) | PCI_REVISION;
         case 0x0c:
             return 0x00000000; // cacheline/latency/header-type 0/BIST
-        case 0x10: // BAR0 low
+        case 0x10:             // BAR0 low
             return (cfg_bar0_lo & BAR0_ADDR_MASK) | BAR0_TYPE_BITS;
         case 0x14: // BAR0 high
             return cfg_bar0_hi;
@@ -186,6 +189,7 @@ bool hv_pci_init(u64 ecam, u64 bar_window, int irq)
     cfg_command = 0;
     cfg_bar0_lo = cfg_bar0_hi = 0;
     bar_mapped = false;
+    hv_pci_state_reset(ecam, bar_window, (u32)irq);
 
     // m1n1 retains ownership of the native Apple ANS controller. Initialize it before the
     // guest enumerates PCI so Identify can return the real namespace geometry immediately.
@@ -196,6 +200,7 @@ bool hv_pci_init(u64 ecam, u64 bar_window, int irq)
     // the ECAM base (vs. failing to split a HW block, which would leave the pass-through and
     // send guest config reads to real hardware instead of us).
     u64 pte = hv_pt_walk(ecam_base);
+    hv_pci_state_record_init(r == 0, backend);
     printf("HV: emulated PCIe ECAM at 0x%lx (map_hook=%d pte=0x%lx), NVMe 00:00.0 "
            "(INTx SPI %d backend=%d)\n",
            ecam_base, r, pte, intx_irq, backend);
