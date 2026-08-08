@@ -3,6 +3,12 @@
 #include "hv_launch_j313.h"
 #include "string.h"
 
+#ifndef HV_LAUNCH_J313_HOST_TEST
+#include "arm_cpu_regs.h"
+#include "cpu_regs.h"
+#include "utils.h"
+#endif
+
 static const struct hv_contract_rule j313_rules[] = {
     {.field = HV_CONTRACT_FIELD_IDENTITY_TARGET, .kind = HV_CONTRACT_EXACT},
     {.field = HV_CONTRACT_FIELD_BOOT_GUEST_ENTRY, .kind = HV_CONTRACT_EXACT},
@@ -60,12 +66,63 @@ const struct hv_contract_schema HV_J313_CONTRACT_SCHEMA = {
 
 static struct hv_launch_j313_host_state observed;
 
+bool hv_launch_j313_fill_cpus(struct hv_launch_j313_host_state *state, const uint64_t *mpidrs,
+                              uint32_t cpu_count,
+                              const struct hv_launch_j313_cpu_registers *registers)
+{
+    if (!state || !mpidrs || !registers || !cpu_count || cpu_count > HV_CONTRACT_MAX_CPUS)
+        return false;
+
+    state->cpu_count = cpu_count;
+    for (uint32_t i = 0; i < cpu_count; i++) {
+        state->cpus[i] = (struct hv_contract_cpu){
+            .mpidr = mpidrs[i],
+            .hacr = registers->hacr,
+            .mdcr = registers->mdcr,
+            .mdscr = registers->mdscr,
+            .amx_config = registers->amx_config,
+            .apvmkeylo = registers->apvmkeylo,
+            .apvmkeyhi = registers->apvmkeyhi,
+            .apsts = registers->apsts,
+            .actlr = registers->actlr,
+        };
+    }
+    return true;
+}
+
 #ifndef HV_LAUNCH_J313_HOST_TEST
 __attribute__((weak)) bool
-hv_launch_j313_platform_read_state(struct hv_launch_j313_host_state *state)
+hv_launch_j313_platform_read_base_state(struct hv_launch_j313_host_state *state)
 {
     (void)state;
     return false;
+}
+
+static bool hv_launch_j313_platform_read_state(struct hv_launch_j313_host_state *state)
+{
+    struct hv_launch_j313_cpu_registers registers;
+    uint64_t mpidrs[HV_CONTRACT_MAX_CPUS];
+    uint32_t cpu_count;
+
+    if (!hv_launch_j313_platform_read_base_state(state) || !state->cpu_count ||
+        state->cpu_count > HV_CONTRACT_MAX_CPUS)
+        return false;
+
+    cpu_count = state->cpu_count;
+    for (uint32_t i = 0; i < cpu_count; i++)
+        mpidrs[i] = state->cpus[i].mpidr;
+
+    registers = (struct hv_launch_j313_cpu_registers){
+        .hacr = mrs(HACR_EL2),
+        .mdcr = mrs(MDCR_EL2),
+        .mdscr = mrs(MDSCR_EL1),
+        .amx_config = mrs(SYS_IMP_APL_AMX_CTL_EL1),
+        .apvmkeylo = mrs(SYS_IMP_APL_APVMKEYLO_EL2),
+        .apvmkeyhi = mrs(SYS_IMP_APL_APVMKEYHI_EL2),
+        .apsts = mrs(SYS_IMP_APL_APSTS_EL12),
+        .actlr = cpu_features->actlr_el2 ? mrs(SYS_ACTLR_EL12) : mrs(SYS_IMP_APL_ACTLR_EL12),
+    };
+    return hv_launch_j313_fill_cpus(state, mpidrs, cpu_count, &registers);
 }
 #endif
 

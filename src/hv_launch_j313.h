@@ -32,9 +32,23 @@ struct hv_launch_j313_host_state {
     struct hv_contract_devices devices;
 };
 
+struct hv_launch_j313_cpu_registers {
+    uint64_t hacr;
+    uint64_t mdcr;
+    uint64_t mdscr;
+    uint64_t amx_config;
+    uint64_t apvmkeylo;
+    uint64_t apvmkeyhi;
+    uint64_t apsts;
+    uint64_t actlr;
+};
+
 extern const struct hv_contract_schema HV_J313_CONTRACT_SCHEMA;
 
 void hv_launch_j313_provider_init(struct hv_launch_snapshot_provider *provider);
+bool hv_launch_j313_fill_cpus(struct hv_launch_j313_host_state *state, const uint64_t *mpidrs,
+                              uint32_t cpu_count,
+                              const struct hv_launch_j313_cpu_registers *registers);
 bool hv_launch_j313_capture(enum hv_contract_checkpoint checkpoint, uint32_t sequence,
                             struct hv_contract_snapshot *out);
 

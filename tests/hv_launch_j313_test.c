@@ -137,11 +137,38 @@ static void test_schema_reports_required_hacr_bit(void)
     assert(failure.rule == HV_CONTRACT_MASKED);
 }
 
+static void test_cpu_image_is_applied_to_every_mpidr(void)
+{
+    const uint64_t mpidrs[] = {0, 1, 2, 3, 0x100, 0x101, 0x102, 0x103};
+    const struct hv_launch_j313_cpu_registers registers = {
+        .hacr = HV_J313_HACR_REQUIRED_MASK,
+        .mdcr = HV_J313_MDCR_REQUIRED_MASK,
+        .mdscr = HV_J313_MDSCR_REQUIRED_MASK,
+        .amx_config = HV_J313_AMX_REQUIRED_MASK,
+        .apvmkeylo = 0x4e7672476f6e6147ULL,
+        .apvmkeyhi = 0x697665596f755570ULL,
+        .apsts = 1,
+        .actlr = HV_J313_ACTLR_REQUIRED_MASK,
+    };
+    struct hv_launch_j313_host_state state = {0};
+
+    assert(hv_launch_j313_fill_cpus(&state, mpidrs, 8, &registers));
+    assert(state.cpu_count == 8);
+    for (uint32_t i = 0; i < state.cpu_count; i++) {
+        assert(state.cpus[i].mpidr == mpidrs[i]);
+        assert(state.cpus[i].hacr == registers.hacr);
+        assert(state.cpus[i].actlr == registers.actlr);
+    }
+    assert(!hv_launch_j313_fill_cpus(&state, mpidrs, 9, &registers));
+    assert(!hv_launch_j313_fill_cpus(&state, mpidrs, 8, NULL));
+}
+
 int main(void)
 {
     test_schema_classifies_j313_invariants();
     test_host_provider_captures_injected_state();
     test_schema_reports_required_hacr_bit();
+    test_cpu_image_is_applied_to_every_mpidr();
     puts("hv_launch_j313_test: ok");
     return 0;
 }
