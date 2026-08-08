@@ -168,6 +168,7 @@ OBJECTS := \
 	utils.o utils_asm.o \
 	vsprintf.o \
 	wdt.o \
+	hv_launch_contract.o \
 	$(DCP_OBJECTS) \
 	$(MINILZLIB_OBJECTS) $(TINF_OBJECTS) $(DLMALLOC_OBJECTS) $(LIBFDT_OBJECTS) $(RUST_LIB)
 
