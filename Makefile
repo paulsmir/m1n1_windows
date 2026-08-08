@@ -171,7 +171,7 @@ OBJECTS := \
 	hv_guest_cpu_state.o \
 	hv_launch_contract.o \
 	hv_launch_j313.o hv_launch_transport.o hv_pci_state.o hv_stage2_state.o hv_stage_role.o \
-	hv_launch_snapshot.o \
+	hv_launch_snapshot.o hv_launch_preflight.o \
 	$(DCP_OBJECTS) \
 	$(MINILZLIB_OBJECTS) $(TINF_OBJECTS) $(DLMALLOC_OBJECTS) $(LIBFDT_OBJECTS) $(RUST_LIB)
 

@@ -666,6 +666,7 @@ void hv_percpu_diag_tick(struct exc_info *ctx)
 
     if (!d->online_reported) {
         d->online_reported = true;
+        printf("CPU_ENTRY cpu=%d mpidr=0x%lx\n", cpu, mrs(MPIDR_EL1));
         printf("HV DIAG ONLINE: cpu=%d mpidr=0x%lx pc=0x%lx spsr=0x%lx\n", cpu, mrs(MPIDR_EL1),
                ctx->elr, ctx->spsr);
     }
