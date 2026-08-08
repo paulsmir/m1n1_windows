@@ -19,9 +19,11 @@ hv_autonomous_boot_test
 hv_diag_test
 hv_fb_stream_test
 hv_fb_stream_usb_limit_test
+hv_guest_cpu_state_test
 hv_irq_routes_test
 hv_pci_state_test
 hv_stage2_state_test
+hv_stage_role_test
 hv_launch_contract_test
 hv_launch_j313_test
 hv_launch_transport_test
@@ -87,6 +89,9 @@ for name in "$@"; do
             definitions="-DHV_FB_STREAM_HOST_TEST -DUARTPROXY_EVENT_HOST_TEST"
             sources="$sources src/hv_fb_stream.c src/uartproxy_event.c"
             ;;
+        hv_guest_cpu_state_test)
+            sources="$sources src/hv_guest_cpu_state.c"
+            ;;
         hv_irq_routes_test)
             definitions="-DHV_IRQ_ROUTES_HOST_TEST"
             sources="$sources src/hv_irq_routes.c"
@@ -96,6 +101,9 @@ for name in "$@"; do
             ;;
         hv_stage2_state_test)
             sources="$sources src/hv_stage2_state.c"
+            ;;
+        hv_stage_role_test)
+            sources="$sources src/hv_stage_role.c"
             ;;
         hv_launch_contract_test)
             sources="$sources src/hv_launch_contract.c"

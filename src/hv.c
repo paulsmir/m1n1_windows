@@ -7,6 +7,7 @@
 #include "gxf.h"
 #include "hv_diag.h"
 #include "hv_fb_stream.h"
+#include "hv_guest_cpu_state.h"
 #include "hv_nvme_queue.h"
 #include "hv_vgic.h"
 #include "memory.h"
@@ -203,7 +204,7 @@ void hv_init(void)
     // No guest vectors initially
     msr(VBAR_EL12, 0);
 
-    //set up a HACR bit (56)
+    // Preserve the PMUv3 trap used by the established assisted path.
     printf("DEBUG: setting up HACR\n");
     uint64_t hacr_val = mrs(HACR_EL2);
     hacr_val |= BIT(56);
@@ -248,6 +249,39 @@ void hv_init(void)
     sysop("dsb ishst");
     sysop("tlbi alle1is");
     sysop("dsb ish");
+    sysop("isb");
+
+}
+
+void hv_prepare_guest_cpu_state(void)
+{
+    /*
+     * The assisted launcher performs these writes from Python after hv_init()
+     * and immediately before guest launch. Autonomous boot has no host
+     * process, so reproduce that boundary explicitly. hv_start() snapshots
+     * this state and copies it to every secondary CPU.
+     */
+    u64 current_guest_actlr;
+    if (cpu_features->actlr_el2)
+        current_guest_actlr = mrs(SYS_ACTLR_EL12);
+    else
+        current_guest_actlr = mrs(SYS_IMP_APL_ACTLR_EL12);
+    struct hv_guest_cpu_state guest_cpu =
+        hv_guest_cpu_state_prepare(mrs(SYS_IMP_APL_AMX_CTL_EL1),
+                                   current_guest_actlr);
+
+    printf("DEBUG: setting up guest CPU state\n");
+    msr(HACR_EL2, guest_cpu.hacr);
+    msr(MDCR_EL2, guest_cpu.mdcr);
+    msr(MDSCR_EL1, guest_cpu.mdscr);
+    msr(SYS_IMP_APL_AMX_CTL_EL1, guest_cpu.amx_config);
+    msr(SYS_IMP_APL_APVMKEYLO_EL2, guest_cpu.apvmkeylo);
+    msr(SYS_IMP_APL_APVMKEYHI_EL2, guest_cpu.apvmkeyhi);
+    msr(SYS_IMP_APL_APSTS_EL12, guest_cpu.apsts);
+    if (cpu_features->actlr_el2)
+        msr(SYS_ACTLR_EL12, guest_cpu.actlr);
+    else
+        msr(SYS_IMP_APL_ACTLR_EL12, guest_cpu.actlr);
     sysop("isb");
 }
 

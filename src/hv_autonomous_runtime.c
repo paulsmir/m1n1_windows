@@ -204,6 +204,7 @@ static bool runtime_stage(enum hv_autonomous_stage stage,
             return true;
         case HV_AUTONOMOUS_STAGE_ENTERED: {
             u64 regs[4] = {layout->boot_args_base, 0, 0, 0};
+            hv_prepare_guest_cpu_state();
             hv_start((void *)status->firmware_entry, regs);
             return false; // A successful guest entry does not return.
         }

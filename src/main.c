@@ -16,6 +16,7 @@
 #include "heapblock.h"
 #include "hv_autonomous_boot_runtime.h"
 #include "hv_bootstrap.h"
+#include "hv_stage_role.h"
 #include "mcc.h"
 #include "memory.h"
 #include "nvme.h"
@@ -120,17 +121,22 @@ void run_actions(void)
 
     printf("Checking for payloads...\n");
 
-    enum hv_bootstrap_attempt bootstrap = hv_bootstrap_chainload_if_present(&usb_up);
-    if (bootstrap == HV_BOOTSTRAP_HANDLED)
-        return;
-    if (bootstrap == HV_BOOTSTRAP_ATTEMPT_FAILED)
-        goto proxy_fallback;
+    enum hv_stage_role stage_role = hv_stage_role_current();
+    if (hv_stage_role_allows_bootstrap(stage_role)) {
+        enum hv_bootstrap_attempt bootstrap = hv_bootstrap_chainload_if_present(&usb_up);
+        if (bootstrap == HV_BOOTSTRAP_HANDLED)
+            return;
+        if (bootstrap == HV_BOOTSTRAP_ATTEMPT_FAILED)
+            goto proxy_fallback;
+    }
 
-    enum hv_autonomous_boot_attempt autonomous = hv_autonomous_boot_if_present(&usb_up);
-    if (autonomous == HV_AUTONOMOUS_BOOT_HANDLED)
-        return;
-    if (autonomous == HV_AUTONOMOUS_BOOT_ATTEMPT_FAILED)
-        goto proxy_fallback;
+    if (hv_stage_role_allows_autonomous(stage_role)) {
+        enum hv_autonomous_boot_attempt autonomous = hv_autonomous_boot_if_present(&usb_up);
+        if (autonomous == HV_AUTONOMOUS_BOOT_HANDLED)
+            return;
+        if (autonomous == HV_AUTONOMOUS_BOOT_ATTEMPT_FAILED)
+            goto proxy_fallback;
+    }
 
     if (payload_run() == 0) {
         printf("Valid payload found\n");
