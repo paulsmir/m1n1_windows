@@ -1134,7 +1134,10 @@ class M1N1Proxy(Reloadable):
         finally:
             self.heap.free(address)
     def hv_launch_capture(self, checkpoint, sequence):
-        size = 2456
+        # Keep this fixed ABI size in sync with struct hv_contract_snapshot.
+        # J313's final assisted map pass records more than 32 bounded stage-2
+        # operations, so schema v1 reserves 64 mapping slots.
+        size = 3480
         address = self.heap.malloc(size)
         try:
             if not self.request(self.P_HV_LAUNCH_CAPTURE, checkpoint, sequence, address, size):

@@ -7,7 +7,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#define HV_STAGE2_STATE_MAX_MAPPINGS 32
+#define HV_STAGE2_STATE_MAX_MAPPINGS 64
 
 enum hv_stage2_mapping_kind {
     HV_STAGE2_MAPPING_UNMAP,
