@@ -21,6 +21,7 @@ hv_fb_stream_test
 hv_fb_stream_usb_limit_test
 hv_irq_routes_test
 hv_launch_contract_test
+hv_launch_snapshot_test
 hv_nvme_queue_test
 hv_sgi_diag_test
 hv_vgic_diag_test
@@ -88,6 +89,9 @@ for name in "$@"; do
             ;;
         hv_launch_contract_test)
             sources="$sources src/hv_launch_contract.c"
+            ;;
+        hv_launch_snapshot_test)
+            sources="$sources src/hv_launch_snapshot.c src/hv_launch_contract.c"
             ;;
         hv_nvme_queue_test)
             definitions="-DVNVME_HOST_TEST"

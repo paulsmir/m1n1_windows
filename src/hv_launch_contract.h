@@ -7,11 +7,13 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#define HV_CONTRACT_MAGIC       0x4a43314cU /* "L1CJ" on the wire */
-#define HV_CONTRACT_VERSION     1
-#define HV_CONTRACT_MAX_CPUS    8
-#define HV_CONTRACT_MAX_REGIONS 16
-#define HV_CONTRACT_DIGEST_SIZE 32
+#define HV_CONTRACT_MAGIC          0x4a43314cU /* "L1CJ" on the wire */
+#define HV_CONTRACT_VERSION        1
+#define HV_CONTRACT_MAX_CPUS       8
+#define HV_CONTRACT_MAX_REGIONS    16
+#define HV_CONTRACT_MAX_MAPPINGS   32
+#define HV_CONTRACT_MAX_IRQ_ROUTES 16
+#define HV_CONTRACT_DIGEST_SIZE    32
 
 enum hv_contract_checkpoint {
     HV_CONTRACT_PRE_HV_INIT,
@@ -79,14 +81,61 @@ struct hv_contract_cpu {
     uint64_t actlr;
 } __attribute__((packed));
 
+struct hv_contract_identity {
+    uint32_t target;
+    uint32_t schema_revision;
+    uint64_t reserved;
+} __attribute__((packed));
+
+struct hv_contract_boot {
+    uint64_t ram_base;
+    uint64_t ram_size;
+    uint64_t guest_entry;
+    uint64_t args[4];
+} __attribute__((packed));
+
+struct hv_contract_mapping {
+    uint64_t ipa;
+    uint64_t pa;
+    uint64_t size;
+    uint64_t attributes;
+} __attribute__((packed));
+
+struct hv_contract_irq_route {
+    uint32_t physical_irq;
+    uint32_t vintid;
+    uint32_t flags;
+    uint32_t device;
+} __attribute__((packed));
+
+struct hv_contract_devices {
+    uint64_t pci_ecam_base;
+    uint64_t nvme_bar_base;
+    uint64_t xhci_base;
+    uint64_t dart_base;
+    uint64_t vuart_base;
+    uint64_t display_base;
+    uint32_t display_width;
+    uint32_t display_height;
+    uint32_t display_stride;
+    uint32_t flags;
+} __attribute__((packed));
+
 struct hv_contract_snapshot {
     struct hv_contract_header header;
+    struct hv_contract_identity identity;
+    struct hv_contract_boot boot;
     uint32_t region_count;
+    uint32_t mapping_count;
     uint32_t cpu_count;
+    uint32_t irq_route_count;
     uint64_t adt_size;
     uint8_t adt_digest[HV_CONTRACT_DIGEST_SIZE];
     struct hv_contract_region regions[HV_CONTRACT_MAX_REGIONS];
+    struct hv_contract_mapping mappings[HV_CONTRACT_MAX_MAPPINGS];
     struct hv_contract_cpu cpus[HV_CONTRACT_MAX_CPUS];
+    struct hv_contract_irq_route irq_routes[HV_CONTRACT_MAX_IRQ_ROUTES];
+    struct hv_contract_devices devices;
 } __attribute__((packed));
 
 struct hv_contract_rule {
