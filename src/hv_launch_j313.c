@@ -69,6 +69,7 @@ const struct hv_contract_schema HV_J313_CONTRACT_SCHEMA = {
 
 static struct hv_launch_j313_host_state observed;
 static bool observed_valid;
+static struct hv_launch_j313_host_state staged;
 
 bool hv_launch_j313_set_base_state(const struct hv_launch_j313_host_state *state)
 {
@@ -87,26 +88,25 @@ bool hv_launch_j313_set_base_state(const struct hv_launch_j313_host_state *state
 
 bool hv_launch_j313_publish_descriptor(const struct hv_launch_j313_descriptor *descriptor)
 {
-    struct hv_launch_j313_host_state state = {0};
-
     if (!descriptor || descriptor->identity.target != HV_J313_TARGET ||
         descriptor->identity.schema_revision != HV_J313_SCHEMA_REVISION || !descriptor->cpu_count ||
         descriptor->cpu_count > HV_CONTRACT_MAX_CPUS ||
         descriptor->region_count > HV_CONTRACT_MAX_REGIONS)
         return false;
 
-    state.identity = descriptor->identity;
-    state.boot = descriptor->boot;
-    state.adt_size = descriptor->adt_size;
-    memcpy(state.adt_digest, descriptor->adt_digest, sizeof(state.adt_digest));
-    state.region_count = descriptor->region_count;
-    memcpy(state.regions, descriptor->regions,
-           (size_t)descriptor->region_count * sizeof(state.regions[0]));
-    state.cpu_count = descriptor->cpu_count;
+    memset(&staged, 0, sizeof(staged));
+    staged.identity = descriptor->identity;
+    staged.boot = descriptor->boot;
+    staged.adt_size = descriptor->adt_size;
+    memcpy(staged.adt_digest, descriptor->adt_digest, sizeof(staged.adt_digest));
+    staged.region_count = descriptor->region_count;
+    memcpy(staged.regions, descriptor->regions,
+           (size_t)descriptor->region_count * sizeof(staged.regions[0]));
+    staged.cpu_count = descriptor->cpu_count;
     for (uint32_t i = 0; i < descriptor->cpu_count; i++)
-        state.cpus[i].mpidr = descriptor->mpidrs[i];
-    state.devices = descriptor->devices;
-    return hv_launch_j313_set_base_state(&state);
+        staged.cpus[i].mpidr = descriptor->mpidrs[i];
+    staged.devices = descriptor->devices;
+    return hv_launch_j313_set_base_state(&staged);
 }
 
 bool hv_launch_j313_fill_cpus(struct hv_launch_j313_host_state *state, const uint64_t *mpidrs,
@@ -167,10 +167,10 @@ static bool hv_launch_j313_platform_read_state(struct hv_launch_j313_host_state 
 
     *state = observed;
 
-    if (!hv_pci_state_get(&pci))
-        return false;
-    state->devices.pci_ecam_base = pci.ecam_base;
-    state->devices.nvme_bar_base = pci.bar_mapped ? pci.bar0_base : 0;
+    if (hv_pci_state_get(&pci)) {
+        state->devices.pci_ecam_base = pci.ecam_base;
+        state->devices.nvme_bar_base = pci.bar_mapped ? pci.bar0_base : 0;
+    }
 
     if (!hv_stage2_state_snapshot(mappings, HV_CONTRACT_MAX_MAPPINGS, &mapping_count))
         return false;
@@ -285,11 +285,9 @@ bool hv_launch_j313_capture(enum hv_contract_checkpoint checkpoint, uint32_t seq
     struct hv_launch_snapshot_provider provider;
 
 #ifndef HV_LAUNCH_J313_HOST_TEST
-    struct hv_launch_j313_host_state live;
-
-    if (!hv_launch_j313_platform_read_state(&live))
+    if (!hv_launch_j313_platform_read_state(&staged))
         return false;
-    observed = live;
+    observed = staged;
 #else
     if (!observed_valid)
         return false;
