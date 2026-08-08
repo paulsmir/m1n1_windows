@@ -23,6 +23,9 @@ bool hv_launch_preflight_init(struct hv_launch_preflight *state,
                               const struct hv_contract_schema *schema);
 bool hv_launch_preflight_check(struct hv_launch_preflight *state,
                                const struct hv_contract_snapshot *actual);
+bool hv_launch_preflight_check_schema(struct hv_launch_preflight *state,
+                                      const struct hv_contract_snapshot *actual,
+                                      const struct hv_contract_schema *schema);
 bool hv_launch_preflight_enter(const struct hv_launch_preflight *state,
                                hv_launch_preflight_entry_fn entry, void *opaque);
 

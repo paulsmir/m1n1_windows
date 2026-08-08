@@ -57,6 +57,8 @@ struct hv_launch_j313_descriptor {
 } __attribute__((packed));
 
 extern const struct hv_contract_schema HV_J313_CONTRACT_SCHEMA;
+extern const struct hv_contract_schema HV_J313_STANDALONE_PRE_INIT_SCHEMA;
+extern const struct hv_contract_schema HV_J313_STANDALONE_CONTRACT_SCHEMA;
 
 void hv_launch_j313_provider_init(struct hv_launch_snapshot_provider *provider);
 bool hv_launch_j313_set_base_state(const struct hv_launch_j313_host_state *state);
@@ -68,6 +70,8 @@ bool hv_launch_j313_fill_irq_routes(struct hv_launch_j313_host_state *state,
                                     const struct hv_irq_route *routes, size_t route_count);
 bool hv_launch_j313_capture(enum hv_contract_checkpoint checkpoint, uint32_t sequence,
                             struct hv_contract_snapshot *out);
+bool hv_launch_j313_capture_base(enum hv_contract_checkpoint checkpoint, uint32_t sequence,
+                                 struct hv_contract_snapshot *out);
 
 #ifdef HV_LAUNCH_J313_HOST_TEST
 void hv_launch_j313_host_set_state(const struct hv_launch_j313_host_state *state);

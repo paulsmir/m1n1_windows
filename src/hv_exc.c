@@ -2,11 +2,13 @@
 
 #include "hv.h"
 #include "hv_diag.h"
+#include "hv_exception_lower.h"
 #include "hv_irq_routes.h"
 #include "hv_sgi_diag.h"
 #include "assert.h"
 #include "cpu_regs.h"
 #include "exception.h"
+#include "iodev.h"
 #include "smp.h"
 #include "string.h"
 #include "uart.h"
@@ -1612,6 +1614,7 @@ void hv_exc_sync(struct exc_info *ctx)
     hv_wdt_breadcrumb('S');
     hv_get_context(ctx);
     bool handled = false;
+    bool advance_elr = true;
     u32 ec = FIELD_GET(ESR_EC, ctx->esr);
 
     switch (ec) {
@@ -1674,13 +1677,43 @@ void hv_exc_sync(struct exc_info *ctx)
                     break;
             }
             break;
+        case ESR_EC_BRK:
+            /*
+             * BRK #0x4242 is the assisted hypervisor call ABI and still needs a
+             * proxy.  Every other BRK belongs to the guest.  In particular,
+             * Windows uses BRK #0xf002 during normal kernel startup.
+             */
+            if (FIELD_GET(ESR_ISS, ctx->esr) != 0x4242) {
+                struct hv_exception_lower_plan plan;
+                u64 guest_vbar = mrs(VBAR_EL12);
+
+                if (hv_exception_lower_plan(ctx->spsr, guest_vbar, &plan)) {
+                    msr(ELR_EL12, ctx->elr);
+                    msr(SPSR_EL12, ctx->spsr);
+                    msr(ESR_EL12, ctx->esr);
+                    msr(FAR_EL12, ctx->far);
+                    ctx->spsr = plan.target_spsr;
+                    ctx->elr = plan.target_elr;
+                    handled = true;
+                    advance_elr = false;
+                    printf("HV LOWER BRK: cpu=%d imm=0x%lx vector=0x%lx\n", smp_id(),
+                           FIELD_GET(ESR_ISS, ctx->esr), ctx->elr);
+                }
+            }
+            break;
     }
 
     if (handled) {
         hv_wdt_breadcrumb('+');
-        ctx->elr += 4;
+        if (advance_elr)
+            ctx->elr += 4;
     } else {
         hv_wdt_breadcrumb('-');
+        printf("HV UNHANDLED SYNC: cpu=%d ec=0x%x elr=0x%lx esr=0x%lx far=0x%lx "
+               "afsr1=0x%lx spsr=0x%lx x0=0x%lx x1=0x%lx x18=0x%lx sp1=0x%lx\n",
+               smp_id(), ec, ctx->elr, ctx->esr, ctx->far, ctx->afsr1, ctx->spsr,
+               ctx->regs[0], ctx->regs[1], ctx->regs[18], ctx->sp[1]);
+        iodev_console_kick();
         // VM code can forward a nested SError exception here
         if (FIELD_GET(ESR_EC, ctx->esr) == ESR_EC_SERROR)
             hv_exc_proxy(ctx, START_EXCEPTION_LOWER, EXC_SERROR, NULL);

@@ -13,6 +13,8 @@
 
 static const struct hv_contract_rule j313_rules[] = {
     {.field = HV_CONTRACT_FIELD_IDENTITY_TARGET, .kind = HV_CONTRACT_EXACT},
+    {.field = HV_CONTRACT_FIELD_BOOT_RAM_BASE, .kind = HV_CONTRACT_EXACT},
+    {.field = HV_CONTRACT_FIELD_BOOT_RAM_SIZE, .kind = HV_CONTRACT_EXACT},
     {.field = HV_CONTRACT_FIELD_BOOT_GUEST_ENTRY, .kind = HV_CONTRACT_EXACT},
     {.field = HV_CONTRACT_FIELD_BOOT_ARG, .index = 0, .kind = HV_CONTRACT_EXACT},
     {.field = HV_CONTRACT_FIELD_CPU_MPIDR, .index = HV_CONTRACT_ALL_ITEMS, .kind = HV_CONTRACT_SET},
@@ -61,10 +63,80 @@ static const struct hv_contract_rule j313_rules[] = {
      .reference = HV_CONTRACT_REGION_GUEST_RAM},
 };
 
+/* Assisted launch deliberately leaves a small set of PMGR/CPU-start pages as
+ * software traps handled by the host Python process. Standalone has no such
+ * process and therefore uses native C hooks or safe hardware pass-through for
+ * those pages. The standalone gate checks every portable launch invariant but
+ * does not pretend those two mapping graphs are byte-for-byte identical. */
+static const struct hv_contract_rule j313_standalone_rules[] = {
+    {.field = HV_CONTRACT_FIELD_IDENTITY_TARGET, .kind = HV_CONTRACT_EXACT},
+    {.field = HV_CONTRACT_FIELD_BOOT_RAM_BASE, .kind = HV_CONTRACT_EXACT},
+    {.field = HV_CONTRACT_FIELD_BOOT_RAM_SIZE, .kind = HV_CONTRACT_EXACT},
+    {.field = HV_CONTRACT_FIELD_BOOT_GUEST_ENTRY, .kind = HV_CONTRACT_EXACT},
+    {.field = HV_CONTRACT_FIELD_BOOT_ARG, .index = 0, .kind = HV_CONTRACT_EXACT},
+    {.field = HV_CONTRACT_FIELD_CPU_MPIDR, .index = HV_CONTRACT_ALL_ITEMS, .kind = HV_CONTRACT_SET},
+    {.field = HV_CONTRACT_FIELD_CPU_HACR, .index = HV_CONTRACT_ALL_ITEMS,
+     .kind = HV_CONTRACT_MASKED, .mask = HV_J313_HACR_REQUIRED_MASK},
+    {.field = HV_CONTRACT_FIELD_CPU_MDCR, .index = HV_CONTRACT_ALL_ITEMS,
+     .kind = HV_CONTRACT_MASKED, .mask = HV_J313_MDCR_REQUIRED_MASK},
+    {.field = HV_CONTRACT_FIELD_CPU_MDSCR, .index = HV_CONTRACT_ALL_ITEMS,
+     .kind = HV_CONTRACT_MASKED, .mask = HV_J313_MDSCR_REQUIRED_MASK},
+    {.field = HV_CONTRACT_FIELD_CPU_AMX_CONFIG, .index = HV_CONTRACT_ALL_ITEMS,
+     .kind = HV_CONTRACT_MASKED, .mask = HV_J313_AMX_REQUIRED_MASK},
+    {.field = HV_CONTRACT_FIELD_CPU_APVMKEYLO, .index = HV_CONTRACT_ALL_ITEMS,
+     .kind = HV_CONTRACT_EXACT},
+    {.field = HV_CONTRACT_FIELD_CPU_APVMKEYHI, .index = HV_CONTRACT_ALL_ITEMS,
+     .kind = HV_CONTRACT_EXACT},
+    {.field = HV_CONTRACT_FIELD_CPU_APSTS, .index = HV_CONTRACT_ALL_ITEMS,
+     .kind = HV_CONTRACT_EXACT},
+    {.field = HV_CONTRACT_FIELD_CPU_ACTLR, .index = HV_CONTRACT_ALL_ITEMS,
+     .kind = HV_CONTRACT_MASKED, .mask = HV_J313_ACTLR_REQUIRED_MASK},
+    {.field = HV_CONTRACT_FIELD_IRQ_ROUTE, .index = HV_CONTRACT_ALL_ITEMS,
+     .kind = HV_CONTRACT_SET},
+    {.field = HV_CONTRACT_FIELD_REGION, .index = HV_CONTRACT_REGION_HEAP,
+     .kind = HV_CONTRACT_RELATIVE_REGION, .reference = HV_CONTRACT_REGION_GUEST_RAM},
+    {.field = HV_CONTRACT_FIELD_REGION, .index = HV_CONTRACT_REGION_FRAMEBUFFER,
+     .kind = HV_CONTRACT_RELATIVE_REGION, .reference = HV_CONTRACT_REGION_GUEST_RAM},
+    {.field = HV_CONTRACT_FIELD_REGION, .index = HV_CONTRACT_REGION_DART_TABLES,
+     .kind = HV_CONTRACT_RELATIVE_REGION, .reference = HV_CONTRACT_REGION_GUEST_RAM},
+};
+
+/* PRE_HV_INIT is intentionally limited to immutable launch inputs. CPU system
+ * registers and interrupt routes are established by hv_init() and therefore
+ * have no meaningful assisted/standalone parity before that boundary. */
+static const struct hv_contract_rule j313_standalone_pre_init_rules[] = {
+    {.field = HV_CONTRACT_FIELD_IDENTITY_TARGET, .kind = HV_CONTRACT_EXACT},
+    {.field = HV_CONTRACT_FIELD_BOOT_RAM_BASE, .kind = HV_CONTRACT_EXACT},
+    {.field = HV_CONTRACT_FIELD_BOOT_RAM_SIZE, .kind = HV_CONTRACT_EXACT},
+    {.field = HV_CONTRACT_FIELD_BOOT_GUEST_ENTRY, .kind = HV_CONTRACT_EXACT},
+    {.field = HV_CONTRACT_FIELD_BOOT_ARG, .index = 0, .kind = HV_CONTRACT_EXACT},
+    {.field = HV_CONTRACT_FIELD_CPU_MPIDR, .index = HV_CONTRACT_ALL_ITEMS,
+     .kind = HV_CONTRACT_SET},
+    {.field = HV_CONTRACT_FIELD_REGION, .index = HV_CONTRACT_REGION_HEAP,
+     .kind = HV_CONTRACT_RELATIVE_REGION, .reference = HV_CONTRACT_REGION_GUEST_RAM},
+    {.field = HV_CONTRACT_FIELD_REGION, .index = HV_CONTRACT_REGION_FRAMEBUFFER,
+     .kind = HV_CONTRACT_RELATIVE_REGION, .reference = HV_CONTRACT_REGION_GUEST_RAM},
+    {.field = HV_CONTRACT_FIELD_REGION, .index = HV_CONTRACT_REGION_DART_TABLES,
+     .kind = HV_CONTRACT_RELATIVE_REGION, .reference = HV_CONTRACT_REGION_GUEST_RAM},
+};
+
 const struct hv_contract_schema HV_J313_CONTRACT_SCHEMA = {
     .version = HV_CONTRACT_VERSION,
     .rules = j313_rules,
     .rule_count = sizeof(j313_rules) / sizeof(j313_rules[0]),
+};
+
+const struct hv_contract_schema HV_J313_STANDALONE_CONTRACT_SCHEMA = {
+    .version = HV_CONTRACT_VERSION,
+    .rules = j313_standalone_rules,
+    .rule_count = sizeof(j313_standalone_rules) / sizeof(j313_standalone_rules[0]),
+};
+
+const struct hv_contract_schema HV_J313_STANDALONE_PRE_INIT_SCHEMA = {
+    .version = HV_CONTRACT_VERSION,
+    .rules = j313_standalone_pre_init_rules,
+    .rule_count = sizeof(j313_standalone_pre_init_rules) /
+                  sizeof(j313_standalone_pre_init_rules[0]),
 };
 
 static struct hv_launch_j313_host_state observed;
@@ -279,10 +351,20 @@ void hv_launch_j313_provider_init(struct hv_launch_snapshot_provider *provider)
     };
 }
 
+bool hv_launch_j313_capture_base(enum hv_contract_checkpoint checkpoint, uint32_t sequence,
+                                 struct hv_contract_snapshot *out)
+{
+    struct hv_launch_snapshot_provider provider;
+
+    if (!observed_valid)
+        return false;
+    hv_launch_j313_provider_init(&provider);
+    return hv_launch_snapshot_collect(checkpoint, sequence, &provider, out);
+}
+
 bool hv_launch_j313_capture(enum hv_contract_checkpoint checkpoint, uint32_t sequence,
                             struct hv_contract_snapshot *out)
 {
-    struct hv_launch_snapshot_provider provider;
 
 #ifndef HV_LAUNCH_J313_HOST_TEST
     if (!hv_launch_j313_platform_read_state(&staged))
@@ -292,8 +374,7 @@ bool hv_launch_j313_capture(enum hv_contract_checkpoint checkpoint, uint32_t seq
     if (!observed_valid)
         return false;
 #endif
-    hv_launch_j313_provider_init(&provider);
-    return hv_launch_snapshot_collect(checkpoint, sequence, &provider, out);
+    return hv_launch_j313_capture_base(checkpoint, sequence, out);
 }
 
 #ifdef HV_LAUNCH_J313_HOST_TEST

@@ -8,6 +8,7 @@ cc=${CC:-cc}
 
 all_tests="
 chainload_layout_test
+hv_assisted_layout_test
 display_guest_test
 hv_autonomous_manifest_test
 hv_bootstrap_manifest_test
@@ -16,6 +17,8 @@ hv_autonomous_memory_test
 hv_autonomous_profile_test
 hv_autonomous_stage_test
 hv_autonomous_boot_test
+hv_autonomous_transport_test
+hv_exception_lower_test
 hv_diag_test
 hv_fb_stream_test
 hv_fb_stream_usb_limit_test
@@ -29,6 +32,7 @@ hv_launch_j313_test
 hv_launch_transport_test
 hv_launch_snapshot_test
 hv_launch_preflight_test
+hv_launch_golden_j313_test
 hv_nvme_queue_test
 hv_sgi_diag_test
 hv_vgic_diag_test
@@ -51,6 +55,9 @@ for name in "$@"; do
     case "$name" in
         chainload_layout_test)
             sources="$sources src/chainload_layout.c"
+            ;;
+        hv_assisted_layout_test)
+            sources="$sources src/hv_assisted_layout.c"
             ;;
         display_guest_test)
             definitions="-DDISPLAY_GUEST_HOST_TEST"
@@ -77,6 +84,11 @@ for name in "$@"; do
             ;;
         hv_autonomous_boot_test)
             sources="$sources src/hv_autonomous_boot.c"
+            ;;
+        hv_autonomous_transport_test)
+            ;;
+        hv_exception_lower_test)
+            definitions="-DHV_EXCEPTION_LOWER_HOST_TEST"
             ;;
         hv_diag_test)
             definitions="-DHV_DIAG_HOST_TEST"
@@ -121,6 +133,9 @@ for name in "$@"; do
             ;;
         hv_launch_preflight_test)
             sources="$sources src/hv_launch_preflight.c src/hv_launch_contract.c"
+            ;;
+        hv_launch_golden_j313_test)
+            sources="$sources src/hv_launch_golden_j313.c src/hv_launch_contract.c"
             ;;
         hv_nvme_queue_test)
             definitions="-DVNVME_HOST_TEST"

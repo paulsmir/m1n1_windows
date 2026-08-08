@@ -61,6 +61,23 @@ int main(void)
     assert(preflight.failure.field == HV_CONTRACT_FIELD_CPU_ACTLR);
     assert(preflight.failure.index == 1);
 
+    static const struct hv_contract_rule early_rules[] = {
+        {.field = HV_CONTRACT_FIELD_IDENTITY_TARGET, .kind = HV_CONTRACT_EXACT},
+    };
+    static const struct hv_contract_schema early_schema = {
+        .version = HV_CONTRACT_VERSION,
+        .rules = early_rules,
+        .rule_count = sizeof(early_rules) / sizeof(early_rules[0]),
+    };
+    assert(hv_launch_preflight_init(&preflight, golden,
+                                    HV_LAUNCH_PREFLIGHT_BLOCKING_CHECKPOINTS, &schema));
+    struct hv_contract_snapshot early = golden[0];
+    early.cpus[0].actlr = 0;
+    assert(hv_contract_finalize(&early));
+    assert(hv_launch_preflight_check_schema(&preflight, &early, &early_schema));
+    assert(preflight.next == 1);
+    assert(!preflight.blocked);
+
     assert(hv_launch_preflight_init(&preflight, golden,
                                     HV_LAUNCH_PREFLIGHT_BLOCKING_CHECKPOINTS, &schema));
     for (unsigned int i = 0; i < HV_LAUNCH_PREFLIGHT_BLOCKING_CHECKPOINTS; i++)

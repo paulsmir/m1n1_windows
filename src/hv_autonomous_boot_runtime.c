@@ -5,6 +5,7 @@
 #include "hv_autonomous_boot.h"
 #include "hv_autonomous_manifest.h"
 #include "hv_autonomous_profile.h"
+#include "hv_autonomous_transport.h"
 #include "iodev.h"
 #include "types.h"
 #include "uartproxy.h"
@@ -15,6 +16,7 @@
 struct boot_runtime_io {
     const struct hv_autonomous_profile *profile;
     bool proxy_ready;
+    iodev_id_t debug_iodev;
 };
 
 static u64 runtime_now(void *opaque)
@@ -32,8 +34,12 @@ static void runtime_service(void *opaque)
         if (!(iodev_get_usage(iodev) & USAGE_UARTPROXY))
             continue;
         iodev_handle_events(iodev);
-        if (iodev_can_write(iodev) || iodev_can_write(IODEV_USB_VUART))
+        if (iodev_can_write(iodev)) {
             io->proxy_ready = true;
+            io->debug_iodev = iodev;
+        } else if (iodev_can_write(IODEV_USB_VUART)) {
+            io->proxy_ready = true;
+        }
     }
 }
 
@@ -48,7 +54,18 @@ static enum hv_autonomous_command runtime_command(void *opaque)
 static bool runtime_launch(const struct hv_autonomous_payload *payload,
                            struct hv_autonomous_status *status, void *opaque)
 {
-    UNUSED(opaque);
+    struct boot_runtime_io *io = opaque;
+
+    /* Assisted launch records the USB device selected by uartproxy_run(), and
+     * hv_tick() subsequently services that exact device. Autonomous launch
+     * bypasses uartproxy_run(), so preserve the same boundary explicitly. */
+    int debug_iodev = hv_autonomous_debug_transport(io->debug_iodev, IODEV_USB0,
+                                                     USB_IODEV_COUNT);
+    if (debug_iodev >= 0) {
+        uartproxy_iodev = debug_iodev;
+        usb_iodev_vuart_setup(io->debug_iodev);
+        printf("Standalone: bound HV debug transport iodev=%u\n", io->debug_iodev);
+    }
     return hv_autonomous_prepare(payload, status) == HV_AUTONOMOUS_RESULT_OK;
 }
 
@@ -66,7 +83,7 @@ enum hv_autonomous_boot_attempt hv_autonomous_boot_if_present(bool *usb_up)
     enum hv_autonomous_error manifest_error;
     struct hv_autonomous_profile profile;
     struct hv_autonomous_usb_plan usb_plan;
-    struct boot_runtime_io io = {0};
+    struct boot_runtime_io io = {.debug_iodev = IODEV_MAX};
     const struct hv_autonomous_boot_ops ops = {
         .now = runtime_now,
         .command = runtime_command,

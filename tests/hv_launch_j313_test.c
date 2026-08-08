@@ -14,6 +14,17 @@ static const struct hv_contract_rule *find_rule(uint16_t field, uint16_t index)
     return NULL;
 }
 
+static const struct hv_contract_rule *find_rule_in(const struct hv_contract_schema *schema,
+                                                   uint16_t field, uint16_t index)
+{
+    for (size_t i = 0; i < schema->rule_count; i++) {
+        const struct hv_contract_rule *rule = &schema->rules[i];
+        if (rule->field == field && rule->index == index)
+            return rule;
+    }
+    return NULL;
+}
+
 static void assert_rule(uint16_t field, uint16_t index, uint16_t kind)
 {
     const struct hv_contract_rule *rule = find_rule(field, index);
@@ -54,6 +65,20 @@ static void test_schema_classifies_j313_invariants(void)
     rule = find_rule(HV_CONTRACT_FIELD_REGION, HV_CONTRACT_REGION_DART_TABLES);
     assert(rule && rule->kind == HV_CONTRACT_RELATIVE_REGION);
     assert(rule->reference == HV_CONTRACT_REGION_GUEST_RAM);
+}
+
+static void test_standalone_pre_init_schema_excludes_dynamic_state(void)
+{
+    const struct hv_contract_schema *schema = &HV_J313_STANDALONE_PRE_INIT_SCHEMA;
+
+    assert(find_rule_in(schema, HV_CONTRACT_FIELD_IDENTITY_TARGET, 0));
+    assert(find_rule_in(schema, HV_CONTRACT_FIELD_BOOT_RAM_BASE, 0));
+    assert(find_rule_in(schema, HV_CONTRACT_FIELD_BOOT_RAM_SIZE, 0));
+    assert(find_rule_in(schema, HV_CONTRACT_FIELD_BOOT_GUEST_ENTRY, 0));
+    assert(find_rule_in(schema, HV_CONTRACT_FIELD_BOOT_ARG, 0));
+    assert(find_rule_in(schema, HV_CONTRACT_FIELD_CPU_MPIDR, HV_CONTRACT_ALL_ITEMS));
+    assert(!find_rule_in(schema, HV_CONTRACT_FIELD_CPU_HACR, HV_CONTRACT_ALL_ITEMS));
+    assert(!find_rule_in(schema, HV_CONTRACT_FIELD_IRQ_ROUTE, HV_CONTRACT_ALL_ITEMS));
 }
 
 static struct hv_launch_j313_host_state valid_state(void)
@@ -109,6 +134,20 @@ static void test_host_provider_captures_injected_state(void)
     assert(snapshot.boot.guest_entry == state.boot.guest_entry);
     assert(snapshot.cpu_count == 1);
     assert(snapshot.cpus[0].hacr == HV_J313_HACR_REQUIRED_MASK);
+}
+
+static void test_base_capture_uses_published_state_without_live_refresh(void)
+{
+    struct hv_launch_j313_host_state state = valid_state();
+    struct hv_contract_snapshot snapshot;
+
+    hv_launch_j313_host_set_state(&state);
+    assert(hv_launch_j313_capture_base(HV_CONTRACT_PRE_HV_INIT, 1, &snapshot));
+    assert(snapshot.header.checkpoint == HV_CONTRACT_PRE_HV_INIT);
+    assert(snapshot.header.sequence == 1);
+    assert(snapshot.boot.ram_base == state.boot.ram_base);
+    assert(snapshot.boot.guest_entry == state.boot.guest_entry);
+    assert(snapshot.cpu_count == state.cpu_count);
 }
 
 static void test_schema_reports_required_hacr_bit(void)
@@ -231,7 +270,9 @@ static void test_descriptor_publishes_boot_regions_and_cpu_affinities(void)
 int main(void)
 {
     test_schema_classifies_j313_invariants();
+    test_standalone_pre_init_schema_excludes_dynamic_state();
     test_host_provider_captures_injected_state();
+    test_base_capture_uses_published_state_without_live_refresh();
     test_schema_reports_required_hacr_bit();
     test_cpu_image_is_applied_to_every_mpidr();
     test_base_state_publication_is_fail_closed();
