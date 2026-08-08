@@ -24,6 +24,7 @@ hv_pci_state_test
 hv_stage2_state_test
 hv_launch_contract_test
 hv_launch_j313_test
+hv_launch_transport_test
 hv_launch_snapshot_test
 hv_nvme_queue_test
 hv_sgi_diag_test
@@ -102,6 +103,9 @@ for name in "$@"; do
         hv_launch_j313_test)
             definitions="-DHV_LAUNCH_J313_HOST_TEST -DHV_IRQ_ROUTES_HOST_TEST"
             sources="$sources src/hv_launch_j313.c src/hv_launch_snapshot.c src/hv_launch_contract.c src/hv_irq_routes.c"
+            ;;
+        hv_launch_transport_test)
+            sources="$sources src/hv_launch_transport.c src/hv_launch_contract.c"
             ;;
         hv_launch_snapshot_test)
             sources="$sources src/hv_launch_snapshot.c src/hv_launch_contract.c"
