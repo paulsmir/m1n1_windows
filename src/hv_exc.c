@@ -5,6 +5,7 @@
 #include "hv_exception_lower.h"
 #include "hv_irq_routes.h"
 #include "hv_sgi_diag.h"
+#include "hv_sgi_pending.h"
 #include "assert.h"
 #include "cpu_regs.h"
 #include "exception.h"
@@ -142,10 +143,8 @@ static bool hv_vgic3_repend_live_sgi(u32 intid)
     return true;
 }
 
-static void hv_vgic3_drain_sgis(void)
+static void hv_vgic3_drain_sgi_mask(u32 pending)
 {
-    u32 pending = __atomic_exchange_n(&PERCPU(sgi_pending_mask), 0, __ATOMIC_ACQ_REL);
-
     if (pending)
         hv_sgi_diag_note(&PERCPU(sgi_diag), HV_SGI_DIAG_DRAIN);
 
@@ -169,6 +168,19 @@ static void hv_vgic3_drain_sgis(void)
         hv_sgi_diag_note(&PERCPU(sgi_diag), HV_SGI_DIAG_NO_LR);
         break;
     }
+}
+
+static void hv_vgic3_drain_sgis(void)
+{
+    u32 pending = __atomic_exchange_n(&PERCPU(sgi_pending_mask), 0, __ATOMIC_ACQ_REL);
+    hv_vgic3_drain_sgi_mask(pending);
+}
+
+static void hv_ack_fast_ipi(void *opaque)
+{
+    (void)opaque;
+    msr(SYS_IMP_APL_IPI_SR_EL1, IPI_SR_PENDING);
+    sysop("isb");
 }
 
 void hv_sgi_diag_vgic_event(enum hv_sgi_diag_event event)
@@ -2008,14 +2020,23 @@ void hv_exc_fiq(struct exc_info *ctx)
     if (mrs(SYS_IMP_APL_IPI_SR_EL1) & IPI_SR_PENDING) {
 #ifdef ENABLE_VGIC_MODULE
         hv_sgi_diag_note(&PERCPU(sgi_diag), HV_SGI_DIAG_IPI_RX);
-        hv_vgic3_drain_sgis();
+        //
+        // Acknowledge the physical IPI before consuming the software SGI bits. If a sender
+        // races immediately before the acknowledge, its SGI coalesces into the mask consumed
+        // below. If it races after the acknowledge, it raises a fresh physical IPI. Doing the
+        // exchange first allowed that fresh IPI to be cleared by this handler, stranding a
+        // non-zero SGI mask with no wakeup and eventually causing CLOCK_WATCHDOG_TIMEOUT.
+        //
+        u32 pending_sgis = hv_sgi_ack_and_take_pending(&PERCPU(sgi_pending_mask),
+                                                       hv_ack_fast_ipi, NULL);
+        hv_vgic3_drain_sgi_mask(pending_sgis);
+#else
+        hv_ack_fast_ipi(NULL);
 #endif
         if (PERCPU(ipi_queued)) {
             PERCPU(ipi_pending) = true;
             PERCPU(ipi_queued) = false;
         }
-        msr(SYS_IMP_APL_IPI_SR_EL1, IPI_SR_PENDING);
-        sysop("isb");
     }
 
     hv_maybe_switch_cpu(ctx, START_HV, HV_CPU_SWITCH, NULL);

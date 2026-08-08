@@ -34,6 +34,7 @@ hv_launch_snapshot_test
 hv_launch_preflight_test
 hv_launch_golden_j313_test
 hv_nvme_queue_test
+hv_sgi_pending_test
 hv_sgi_diag_test
 hv_vgic_diag_test
 hv_vgic_redist_test
@@ -140,6 +141,10 @@ for name in "$@"; do
         hv_nvme_queue_test)
             definitions="-DVNVME_HOST_TEST"
             sources="$sources src/hv_nvme_queue.c"
+            ;;
+        hv_sgi_pending_test)
+            definitions="-DHV_SGI_PENDING_HOST_TEST"
+            sources="$sources src/hv_sgi_pending.c"
             ;;
         hv_sgi_diag_test)
             definitions="-DHV_SGI_DIAG_HOST_TEST"
