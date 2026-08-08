@@ -14,6 +14,7 @@
 #define HV_CONTRACT_MAX_MAPPINGS   32
 #define HV_CONTRACT_MAX_IRQ_ROUTES 16
 #define HV_CONTRACT_DIGEST_SIZE    32
+#define HV_CONTRACT_ALL_ITEMS      UINT16_MAX
 
 enum hv_contract_checkpoint {
     HV_CONTRACT_PRE_HV_INIT,
@@ -41,6 +42,7 @@ enum hv_contract_region_kind {
     HV_CONTRACT_REGION_BOOT_ARGS,
     HV_CONTRACT_REGION_FRAMEBUFFER,
     HV_CONTRACT_REGION_LOW_MEMORY,
+    HV_CONTRACT_REGION_DART_TABLES,
 };
 
 enum hv_contract_field {
@@ -53,9 +55,23 @@ enum hv_contract_field {
     HV_CONTRACT_FIELD_SEQUENCE,
     HV_CONTRACT_FIELD_CHECKSUM,
     HV_CONTRACT_FIELD_SCHEMA,
+    HV_CONTRACT_FIELD_IDENTITY_TARGET,
+    HV_CONTRACT_FIELD_BOOT_RAM_BASE,
+    HV_CONTRACT_FIELD_BOOT_RAM_SIZE,
+    HV_CONTRACT_FIELD_BOOT_GUEST_ENTRY,
+    HV_CONTRACT_FIELD_BOOT_ARG,
     HV_CONTRACT_FIELD_REGION,
+    HV_CONTRACT_FIELD_MAPPING,
     HV_CONTRACT_FIELD_CPU_ACTLR,
     HV_CONTRACT_FIELD_CPU_MPIDR,
+    HV_CONTRACT_FIELD_CPU_HACR,
+    HV_CONTRACT_FIELD_CPU_MDCR,
+    HV_CONTRACT_FIELD_CPU_MDSCR,
+    HV_CONTRACT_FIELD_CPU_AMX_CONFIG,
+    HV_CONTRACT_FIELD_CPU_APVMKEYLO,
+    HV_CONTRACT_FIELD_CPU_APVMKEYHI,
+    HV_CONTRACT_FIELD_CPU_APSTS,
+    HV_CONTRACT_FIELD_IRQ_ROUTE,
     HV_CONTRACT_FIELD_ADT_DIGEST,
 };
 
@@ -78,6 +94,13 @@ struct hv_contract_region {
 
 struct hv_contract_cpu {
     uint64_t mpidr;
+    uint64_t hacr;
+    uint64_t mdcr;
+    uint64_t mdscr;
+    uint64_t amx_config;
+    uint64_t apvmkeylo;
+    uint64_t apvmkeyhi;
+    uint64_t apsts;
     uint64_t actlr;
 } __attribute__((packed));
 

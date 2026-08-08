@@ -210,32 +210,170 @@ static bool hv_contract_compare_mpidr_set(const struct hv_contract_snapshot *gol
     return true;
 }
 
+static const struct hv_contract_cpu *
+hv_contract_find_cpu(const struct hv_contract_snapshot *snapshot, uint64_t mpidr)
+{
+    for (uint32_t i = 0; i < snapshot->cpu_count; i++) {
+        if (snapshot->cpus[i].mpidr == mpidr)
+            return &snapshot->cpus[i];
+    }
+    return NULL;
+}
+
+static bool hv_contract_cpu_value(const struct hv_contract_cpu *cpu, uint16_t field,
+                                  uint64_t *value)
+{
+    switch (field) {
+        case HV_CONTRACT_FIELD_CPU_MPIDR:
+            *value = cpu->mpidr;
+            return true;
+        case HV_CONTRACT_FIELD_CPU_HACR:
+            *value = cpu->hacr;
+            return true;
+        case HV_CONTRACT_FIELD_CPU_MDCR:
+            *value = cpu->mdcr;
+            return true;
+        case HV_CONTRACT_FIELD_CPU_MDSCR:
+            *value = cpu->mdscr;
+            return true;
+        case HV_CONTRACT_FIELD_CPU_AMX_CONFIG:
+            *value = cpu->amx_config;
+            return true;
+        case HV_CONTRACT_FIELD_CPU_APVMKEYLO:
+            *value = cpu->apvmkeylo;
+            return true;
+        case HV_CONTRACT_FIELD_CPU_APVMKEYHI:
+            *value = cpu->apvmkeyhi;
+            return true;
+        case HV_CONTRACT_FIELD_CPU_APSTS:
+            *value = cpu->apsts;
+            return true;
+        case HV_CONTRACT_FIELD_CPU_ACTLR:
+            *value = cpu->actlr;
+            return true;
+        default:
+            return false;
+    }
+}
+
+static bool hv_contract_compare_cpu_rule(const struct hv_contract_snapshot *golden,
+                                         const struct hv_contract_snapshot *actual,
+                                         const struct hv_contract_rule *rule,
+                                         struct hv_contract_failure *failure)
+{
+    uint32_t first = rule->index;
+    uint32_t end = first + 1;
+
+    if (rule->field == HV_CONTRACT_FIELD_CPU_MPIDR && rule->kind == HV_CONTRACT_SET)
+        return hv_contract_compare_mpidr_set(golden, actual, failure);
+
+    if (rule->index == HV_CONTRACT_ALL_ITEMS) {
+        first = 0;
+        end = golden->cpu_count;
+    } else if (rule->index >= golden->cpu_count) {
+        hv_contract_fail(failure, HV_CONTRACT_FIELD_SCHEMA, rule->index, rule->kind,
+                         golden->cpu_count, rule->index);
+        return false;
+    }
+
+    for (uint32_t i = first; i < end; i++) {
+        const struct hv_contract_cpu *expected_cpu = &golden->cpus[i];
+        const struct hv_contract_cpu *observed_cpu =
+            hv_contract_find_cpu(actual, expected_cpu->mpidr);
+        uint64_t expected = 0;
+        uint64_t observed = 0;
+        struct hv_contract_rule indexed_rule = *rule;
+
+        if (!observed_cpu || !hv_contract_cpu_value(expected_cpu, rule->field, &expected) ||
+            !hv_contract_cpu_value(observed_cpu, rule->field, &observed)) {
+            hv_contract_fail(failure, rule->field, i, rule->kind, expected_cpu->mpidr,
+                             observed_cpu ? observed_cpu->mpidr : UINT64_MAX);
+            return false;
+        }
+        indexed_rule.index = i;
+        if (!hv_contract_compare_scalar(expected, observed, &indexed_rule, failure))
+            return false;
+    }
+    return true;
+}
+
+static bool hv_contract_compare_irq_set(const struct hv_contract_snapshot *golden,
+                                        const struct hv_contract_snapshot *actual,
+                                        struct hv_contract_failure *failure)
+{
+    if (golden->irq_route_count != actual->irq_route_count) {
+        hv_contract_fail(failure, HV_CONTRACT_FIELD_IRQ_ROUTE, HV_CONTRACT_ALL_ITEMS,
+                         HV_CONTRACT_SET, golden->irq_route_count, actual->irq_route_count);
+        return false;
+    }
+
+    for (uint32_t expected = 0; expected < golden->irq_route_count; expected++) {
+        bool found = false;
+
+        for (uint32_t observed = 0; observed < actual->irq_route_count; observed++) {
+            const struct hv_contract_irq_route *left = &golden->irq_routes[expected];
+            const struct hv_contract_irq_route *right = &actual->irq_routes[observed];
+
+            if (left->physical_irq == right->physical_irq && left->vintid == right->vintid &&
+                left->flags == right->flags && left->device == right->device) {
+                found = true;
+                break;
+            }
+        }
+        if (!found) {
+            hv_contract_fail(failure, HV_CONTRACT_FIELD_IRQ_ROUTE, expected, HV_CONTRACT_SET,
+                             golden->irq_routes[expected].vintid, UINT64_MAX);
+            return false;
+        }
+    }
+    return true;
+}
+
 static bool hv_contract_compare_rule(const struct hv_contract_snapshot *golden,
                                      const struct hv_contract_snapshot *actual,
                                      const struct hv_contract_rule *rule,
                                      struct hv_contract_failure *failure)
 {
     switch (rule->field) {
+        case HV_CONTRACT_FIELD_IDENTITY_TARGET:
+            return hv_contract_compare_scalar(golden->identity.target, actual->identity.target,
+                                              rule, failure);
+        case HV_CONTRACT_FIELD_BOOT_RAM_BASE:
+            return hv_contract_compare_scalar(golden->boot.ram_base, actual->boot.ram_base, rule,
+                                              failure);
+        case HV_CONTRACT_FIELD_BOOT_RAM_SIZE:
+            return hv_contract_compare_scalar(golden->boot.ram_size, actual->boot.ram_size, rule,
+                                              failure);
+        case HV_CONTRACT_FIELD_BOOT_GUEST_ENTRY:
+            return hv_contract_compare_scalar(golden->boot.guest_entry, actual->boot.guest_entry,
+                                              rule, failure);
+        case HV_CONTRACT_FIELD_BOOT_ARG:
+            if (rule->index >= 4) {
+                hv_contract_fail(failure, HV_CONTRACT_FIELD_SCHEMA, rule->index, rule->kind, 4,
+                                 rule->index);
+                return false;
+            }
+            return hv_contract_compare_scalar(golden->boot.args[rule->index],
+                                              actual->boot.args[rule->index], rule, failure);
         case HV_CONTRACT_FIELD_REGION:
             return hv_contract_compare_region(golden, actual, rule, failure);
         case HV_CONTRACT_FIELD_CPU_ACTLR:
-            if (rule->index >= golden->cpu_count || rule->index >= actual->cpu_count) {
-                hv_contract_fail(failure, HV_CONTRACT_FIELD_SCHEMA, rule->index, rule->kind,
-                                 golden->cpu_count, rule->index);
-                return false;
-            }
-            return hv_contract_compare_scalar(golden->cpus[rule->index].actlr,
-                                              actual->cpus[rule->index].actlr, rule, failure);
         case HV_CONTRACT_FIELD_CPU_MPIDR:
-            if (rule->kind == HV_CONTRACT_SET)
-                return hv_contract_compare_mpidr_set(golden, actual, failure);
-            if (rule->index >= golden->cpu_count || rule->index >= actual->cpu_count) {
+        case HV_CONTRACT_FIELD_CPU_HACR:
+        case HV_CONTRACT_FIELD_CPU_MDCR:
+        case HV_CONTRACT_FIELD_CPU_MDSCR:
+        case HV_CONTRACT_FIELD_CPU_AMX_CONFIG:
+        case HV_CONTRACT_FIELD_CPU_APVMKEYLO:
+        case HV_CONTRACT_FIELD_CPU_APVMKEYHI:
+        case HV_CONTRACT_FIELD_CPU_APSTS:
+            return hv_contract_compare_cpu_rule(golden, actual, rule, failure);
+        case HV_CONTRACT_FIELD_IRQ_ROUTE:
+            if (rule->kind != HV_CONTRACT_SET) {
                 hv_contract_fail(failure, HV_CONTRACT_FIELD_SCHEMA, rule->index, rule->kind,
-                                 golden->cpu_count, rule->index);
+                                 HV_CONTRACT_SET, rule->kind);
                 return false;
             }
-            return hv_contract_compare_scalar(golden->cpus[rule->index].mpidr,
-                                              actual->cpus[rule->index].mpidr, rule, failure);
+            return hv_contract_compare_irq_set(golden, actual, failure);
         case HV_CONTRACT_FIELD_ADT_DIGEST:
             if (rule->kind != HV_CONTRACT_DIGEST) {
                 hv_contract_fail(failure, HV_CONTRACT_FIELD_SCHEMA, rule->index, rule->kind,
