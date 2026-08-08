@@ -46,6 +46,7 @@ static const struct hv_contract_rule j313_rules[] = {
      .kind = HV_CONTRACT_MASKED,
      .mask = HV_J313_ACTLR_REQUIRED_MASK},
     {.field = HV_CONTRACT_FIELD_IRQ_ROUTE, .index = HV_CONTRACT_ALL_ITEMS, .kind = HV_CONTRACT_SET},
+    {.field = HV_CONTRACT_FIELD_MAPPING, .index = HV_CONTRACT_ALL_ITEMS, .kind = HV_CONTRACT_SET},
     {.field = HV_CONTRACT_FIELD_REGION,
      .index = HV_CONTRACT_REGION_HEAP,
      .kind = HV_CONTRACT_RELATIVE_REGION,

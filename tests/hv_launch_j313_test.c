@@ -32,6 +32,7 @@ static void test_schema_classifies_j313_invariants(void)
     assert_rule(HV_CONTRACT_FIELD_BOOT_ARG, 0, HV_CONTRACT_EXACT);
     assert_rule(HV_CONTRACT_FIELD_CPU_MPIDR, HV_CONTRACT_ALL_ITEMS, HV_CONTRACT_SET);
     assert_rule(HV_CONTRACT_FIELD_IRQ_ROUTE, HV_CONTRACT_ALL_ITEMS, HV_CONTRACT_SET);
+    assert_rule(HV_CONTRACT_FIELD_MAPPING, HV_CONTRACT_ALL_ITEMS, HV_CONTRACT_SET);
 
     rule = find_rule(HV_CONTRACT_FIELD_CPU_HACR, HV_CONTRACT_ALL_ITEMS);
     assert(rule && rule->kind == HV_CONTRACT_MASKED);

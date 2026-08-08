@@ -65,7 +65,9 @@ static bool hv_contract_snapshot_valid(const struct hv_contract_snapshot *snapsh
         return false;
     }
     if (snapshot->region_count > HV_CONTRACT_MAX_REGIONS ||
-        snapshot->cpu_count > HV_CONTRACT_MAX_CPUS)
+        snapshot->mapping_count > HV_CONTRACT_MAX_MAPPINGS ||
+        snapshot->cpu_count > HV_CONTRACT_MAX_CPUS ||
+        snapshot->irq_route_count > HV_CONTRACT_MAX_IRQ_ROUTES)
         return false;
 
     payload = (const uint8_t *)snapshot + sizeof(snapshot->header);
@@ -87,7 +89,9 @@ bool hv_contract_finalize(struct hv_contract_snapshot *snapshot)
         snapshot->header.version != HV_CONTRACT_VERSION ||
         snapshot->header.checkpoint >= HV_CONTRACT_CHECKPOINT_COUNT ||
         snapshot->region_count > HV_CONTRACT_MAX_REGIONS ||
-        snapshot->cpu_count > HV_CONTRACT_MAX_CPUS)
+        snapshot->mapping_count > HV_CONTRACT_MAX_MAPPINGS ||
+        snapshot->cpu_count > HV_CONTRACT_MAX_CPUS ||
+        snapshot->irq_route_count > HV_CONTRACT_MAX_IRQ_ROUTES)
         return false;
 
     snapshot->header.header_size = sizeof(snapshot->header);
@@ -329,6 +333,38 @@ static bool hv_contract_compare_irq_set(const struct hv_contract_snapshot *golde
     return true;
 }
 
+static bool hv_contract_compare_mapping_set(const struct hv_contract_snapshot *golden,
+                                            const struct hv_contract_snapshot *actual,
+                                            struct hv_contract_failure *failure)
+{
+    if (golden->mapping_count != actual->mapping_count) {
+        hv_contract_fail(failure, HV_CONTRACT_FIELD_MAPPING, HV_CONTRACT_ALL_ITEMS, HV_CONTRACT_SET,
+                         golden->mapping_count, actual->mapping_count);
+        return false;
+    }
+
+    for (uint32_t expected = 0; expected < golden->mapping_count; expected++) {
+        bool found = false;
+
+        for (uint32_t observed = 0; observed < actual->mapping_count; observed++) {
+            const struct hv_contract_mapping *left = &golden->mappings[expected];
+            const struct hv_contract_mapping *right = &actual->mappings[observed];
+
+            if (left->ipa == right->ipa && left->pa == right->pa && left->size == right->size &&
+                left->attributes == right->attributes) {
+                found = true;
+                break;
+            }
+        }
+        if (!found) {
+            hv_contract_fail(failure, HV_CONTRACT_FIELD_MAPPING, expected, HV_CONTRACT_SET,
+                             golden->mappings[expected].ipa, UINT64_MAX);
+            return false;
+        }
+    }
+    return true;
+}
+
 static bool hv_contract_compare_rule(const struct hv_contract_snapshot *golden,
                                      const struct hv_contract_snapshot *actual,
                                      const struct hv_contract_rule *rule,
@@ -357,6 +393,13 @@ static bool hv_contract_compare_rule(const struct hv_contract_snapshot *golden,
                                               actual->boot.args[rule->index], rule, failure);
         case HV_CONTRACT_FIELD_REGION:
             return hv_contract_compare_region(golden, actual, rule, failure);
+        case HV_CONTRACT_FIELD_MAPPING:
+            if (rule->kind != HV_CONTRACT_SET) {
+                hv_contract_fail(failure, HV_CONTRACT_FIELD_SCHEMA, rule->index, rule->kind,
+                                 HV_CONTRACT_SET, rule->kind);
+                return false;
+            }
+            return hv_contract_compare_mapping_set(golden, actual, failure);
         case HV_CONTRACT_FIELD_CPU_ACTLR:
         case HV_CONTRACT_FIELD_CPU_MPIDR:
         case HV_CONTRACT_FIELD_CPU_HACR:

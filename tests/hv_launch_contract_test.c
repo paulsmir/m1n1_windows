@@ -143,12 +143,47 @@ static void test_digest_mismatch_reports_digest_byte(void)
     assert(failure.index == 7);
 }
 
+static void test_mapping_set_is_order_independent_and_detects_target_change(void)
+{
+    static const struct hv_contract_rule rules[] = {
+        {.field = HV_CONTRACT_FIELD_MAPPING,
+         .index = HV_CONTRACT_ALL_ITEMS,
+         .kind = HV_CONTRACT_SET},
+    };
+    const struct hv_contract_schema schema = {
+        .version = HV_CONTRACT_VERSION,
+        .rules = rules,
+        .rule_count = 1,
+    };
+    struct hv_contract_snapshot golden = test_snapshot();
+    struct hv_contract_snapshot actual = golden;
+    struct hv_contract_failure failure = {0};
+
+    golden.mapping_count = 2;
+    golden.mappings[0] = (struct hv_contract_mapping){
+        .ipa = 0x1000, .pa = 0x800001000, .size = 0x4000, .attributes = 1};
+    golden.mappings[1] =
+        (struct hv_contract_mapping){.ipa = 0x5000, .pa = 0, .size = 0x4000, .attributes = 3};
+    actual.mapping_count = 2;
+    actual.mappings[0] = golden.mappings[1];
+    actual.mappings[1] = golden.mappings[0];
+    assert(hv_contract_finalize(&golden));
+    assert(hv_contract_finalize(&actual));
+    assert(hv_contract_compare(&golden, &actual, &schema, &failure));
+
+    actual.mappings[1].pa += 0x4000;
+    assert(hv_contract_finalize(&actual));
+    assert(!hv_contract_compare(&golden, &actual, &schema, &failure));
+    assert(failure.field == HV_CONTRACT_FIELD_MAPPING);
+}
+
 int main(void)
 {
     test_relative_region_and_exact_actlr();
     test_corrupt_payload_reports_checksum();
     test_invalid_cpu_rule_reports_schema_path();
     test_digest_mismatch_reports_digest_byte();
+    test_mapping_set_is_order_independent_and_detects_target_change();
 
     puts("hv_launch_contract_test: ok");
     return 0;
