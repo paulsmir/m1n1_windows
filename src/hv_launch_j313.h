@@ -3,6 +3,7 @@
 #ifndef HV_LAUNCH_J313_H
 #define HV_LAUNCH_J313_H
 
+#include "hv_irq_routes.h"
 #include "hv_launch_snapshot.h"
 
 #define HV_J313_TARGET          0x3331334aU /* J313 */
@@ -50,6 +51,8 @@ bool hv_launch_j313_set_base_state(const struct hv_launch_j313_host_state *state
 bool hv_launch_j313_fill_cpus(struct hv_launch_j313_host_state *state, const uint64_t *mpidrs,
                               uint32_t cpu_count,
                               const struct hv_launch_j313_cpu_registers *registers);
+bool hv_launch_j313_fill_irq_routes(struct hv_launch_j313_host_state *state,
+                                    const struct hv_irq_route *routes, size_t route_count);
 bool hv_launch_j313_capture(enum hv_contract_checkpoint checkpoint, uint32_t sequence,
                             struct hv_contract_snapshot *out);
 

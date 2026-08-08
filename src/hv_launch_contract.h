@@ -16,6 +16,8 @@
 #define HV_CONTRACT_DIGEST_SIZE    32
 #define HV_CONTRACT_ALL_ITEMS      UINT16_MAX
 
+#define HV_CONTRACT_IRQ_LEVEL (1U << 0)
+
 enum hv_contract_checkpoint {
     HV_CONTRACT_PRE_HV_INIT,
     HV_CONTRACT_POST_HV_INIT,

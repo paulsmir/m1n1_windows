@@ -32,6 +32,15 @@ int main(void)
     assert(hv_irq_route_resolve_incoming(857, 64, &vintid));
     assert(vintid == 857);
 
+    /* Launch-contract capture enumerates the installed route table itself. */
+    assert(hv_irq_route_count() == 1);
+    route = hv_irq_route_at(0);
+    assert(route != NULL);
+    assert(route->hw_irq == 857);
+    assert(route->vintid == 857);
+    assert(route->level);
+    assert(hv_irq_route_at(hv_irq_route_count()) == NULL);
+
     puts("hv_irq_routes_test: ok");
     return 0;
 }

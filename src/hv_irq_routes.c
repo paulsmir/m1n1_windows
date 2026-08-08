@@ -13,6 +13,19 @@ static const struct hv_irq_route routes[] = {
     {.hw_irq = 857, .vintid = 857, .level = true},
 };
 
+size_t hv_irq_route_count(void)
+{
+    return ROUTE_COUNT;
+}
+
+const struct hv_irq_route *hv_irq_route_at(size_t index)
+{
+    if (index >= ROUTE_COUNT)
+        return NULL;
+
+    return &routes[index];
+}
+
 const struct hv_irq_route *hv_irq_route_from_hw(u32 hw_irq)
 {
     for (u32 i = 0; i < ROUTE_COUNT; i++) {

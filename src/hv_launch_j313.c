@@ -106,12 +106,31 @@ bool hv_launch_j313_fill_cpus(struct hv_launch_j313_host_state *state, const uin
     return true;
 }
 
+bool hv_launch_j313_fill_irq_routes(struct hv_launch_j313_host_state *state,
+                                    const struct hv_irq_route *routes, size_t route_count)
+{
+    if (!state || (route_count && !routes) || route_count > HV_CONTRACT_MAX_IRQ_ROUTES)
+        return false;
+
+    state->irq_route_count = (uint32_t)route_count;
+    for (size_t i = 0; i < route_count; i++) {
+        state->irq_routes[i] = (struct hv_contract_irq_route){
+            .physical_irq = routes[i].hw_irq,
+            .vintid = routes[i].vintid,
+            .flags = routes[i].level ? HV_CONTRACT_IRQ_LEVEL : 0,
+        };
+    }
+    return true;
+}
+
 #ifndef HV_LAUNCH_J313_HOST_TEST
 static bool hv_launch_j313_platform_read_state(struct hv_launch_j313_host_state *state)
 {
     struct hv_launch_j313_cpu_registers registers;
+    struct hv_irq_route irq_routes[HV_CONTRACT_MAX_IRQ_ROUTES];
     uint64_t mpidrs[HV_CONTRACT_MAX_CPUS];
     uint32_t cpu_count;
+    size_t irq_route_count;
 
     if (!observed_valid)
         return false;
@@ -121,6 +140,19 @@ static bool hv_launch_j313_platform_read_state(struct hv_launch_j313_host_state 
     cpu_count = state->cpu_count;
     for (uint32_t i = 0; i < cpu_count; i++)
         mpidrs[i] = state->cpus[i].mpidr;
+
+    irq_route_count = hv_irq_route_count();
+    if (irq_route_count > HV_CONTRACT_MAX_IRQ_ROUTES)
+        return false;
+    for (size_t i = 0; i < irq_route_count; i++) {
+        const struct hv_irq_route *route = hv_irq_route_at(i);
+
+        if (!route)
+            return false;
+        irq_routes[i] = *route;
+    }
+    if (!hv_launch_j313_fill_irq_routes(state, irq_routes, irq_route_count))
+        return false;
 
     registers = (struct hv_launch_j313_cpu_registers){
         .hacr = mrs(HACR_EL2),

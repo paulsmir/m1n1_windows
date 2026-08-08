@@ -174,6 +174,26 @@ static void test_base_state_publication_is_fail_closed(void)
     assert(hv_launch_j313_set_base_state(&state));
 }
 
+static void test_irq_routes_are_converted_from_live_route_records(void)
+{
+    const struct hv_irq_route routes[] = {
+        {.hw_irq = 857, .vintid = 64, .level = true},
+        {.hw_irq = 900, .vintid = 65, .level = false},
+    };
+    struct hv_launch_j313_host_state state = valid_state();
+
+    assert(hv_launch_j313_fill_irq_routes(&state, routes, 2));
+    assert(state.irq_route_count == 2);
+    assert(state.irq_routes[0].physical_irq == 857);
+    assert(state.irq_routes[0].vintid == 64);
+    assert(state.irq_routes[0].flags == HV_CONTRACT_IRQ_LEVEL);
+    assert(state.irq_routes[1].physical_irq == 900);
+    assert(state.irq_routes[1].vintid == 65);
+    assert(state.irq_routes[1].flags == 0);
+    assert(!hv_launch_j313_fill_irq_routes(&state, routes, HV_CONTRACT_MAX_IRQ_ROUTES + 1));
+    assert(!hv_launch_j313_fill_irq_routes(&state, NULL, 1));
+}
+
 int main(void)
 {
     test_schema_classifies_j313_invariants();
@@ -181,6 +201,7 @@ int main(void)
     test_schema_reports_required_hacr_bit();
     test_cpu_image_is_applied_to_every_mpidr();
     test_base_state_publication_is_fail_closed();
+    test_irq_routes_are_converted_from_live_route_records();
     puts("hv_launch_j313_test: ok");
     return 0;
 }
