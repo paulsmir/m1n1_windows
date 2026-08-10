@@ -14,3 +14,4 @@ __pycache__
 /rust-fatfs-*\.tar\.gz
 .vscode/
 null.d
+.local/

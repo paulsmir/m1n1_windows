@@ -5,6 +5,7 @@
 // file owns the BAR register model, Apple ANS backend connection, and virtual INTx line.
 
 #include "hv.h"
+#include "hv_nvme_fast_path.h"
 #include "hv_nvme_queue.h"
 #include "hv_vgic.h"
 #include "nvme.h"
@@ -47,11 +48,13 @@
 extern int hv_pci_intx_irq(void);
 
 static u64 bar_base;
+static DECLARE_SPINLOCK(nvme_lock);
 static bool backend_ready;
 static u64 backend_blocks;
 static struct vnvme_intx_delivery irq_delivery;
 static u32 nvme_trace_budget;
 static struct vnvme_ctrl queue_ctrl;
+static bool irq_eoi_pending;
 
 static struct {
     u32 intms;
@@ -122,24 +125,79 @@ static void try_raise_intx(void)
     vnvme_intx_delivery_mark_injected(&irq_delivery);
 }
 
+static void drain_deferred_eoi(void)
+{
+    if (__atomic_exchange_n(&irq_eoi_pending, false, __ATOMIC_ACQ_REL))
+        vnvme_intx_delivery_eoi(&irq_delivery);
+}
+
+bool hv_nvme_try_handle_dabort(struct exc_info *ctx, bool *matched)
+{
+    bool is_write = ctx->esr & ESR_ISS_DABORT_WnR;
+    u64 ipa = hv_translate(ctx->far, true, is_write, NULL);
+    u64 base = __atomic_load_n(&bar_base, __ATOMIC_ACQUIRE);
+
+    if (matched)
+        *matched = false;
+    if (!ipa || !hv_nvme_bar_contains(base, NVME_BAR_SIZE, ipa))
+        return false;
+
+    /*
+     * The queue engine performs synchronous ANS I/O.  Serializing that work
+     * with the hypervisor-wide bhl stopped every vCPU during a busy doorbell,
+     * eventually tripping Windows' clock watchdog.  NVMe state needs
+     * serialization, but unrelated CPU timers and IPIs do not.
+     */
+    spin_lock(&nvme_lock);
+    base = __atomic_load_n(&bar_base, __ATOMIC_ACQUIRE);
+    if (!hv_nvme_bar_contains(base, NVME_BAR_SIZE, ipa)) {
+        spin_unlock(&nvme_lock);
+        return false;
+    }
+
+    if (matched)
+        *matched = true;
+    bool handled = hv_handle_dabort(ctx);
+    drain_deferred_eoi();
+    try_raise_intx();
+    spin_unlock(&nvme_lock);
+    return handled;
+}
+
 void hv_nvme_poll_irq(void)
 {
+    /* Never make a bhl owner wait behind synchronous storage I/O. */
+    if (!spin_try_lock(&nvme_lock))
+        return;
+    drain_deferred_eoi();
     try_raise_intx();
+    spin_unlock(&nvme_lock);
 }
 
 void hv_nvme_irq_eoi(u32 intid)
 {
     if (intid != (u32)hv_pci_intx_irq())
         return;
+    if (!spin_try_lock(&nvme_lock)) {
+        __atomic_store_n(&irq_eoi_pending, true, __ATOMIC_RELEASE);
+        return;
+    }
     vnvme_intx_delivery_eoi(&irq_delivery);
     try_raise_intx();
+    spin_unlock(&nvme_lock);
 }
 
 void hv_nvme_get_diag_snapshot(struct vnvme_snapshot *out, bool *ready)
 {
+    if (!spin_try_lock(&nvme_lock)) {
+        if (ready)
+            *ready = false;
+        return;
+    }
     vnvme_get_snapshot(&queue_ctrl, out);
     if (ready)
         *ready = backend_ready && (regs.csts & CSTS_RDY);
+    spin_unlock(&nvme_lock);
 }
 
 static void backend_irq(void *opaque, bool asserted)
@@ -209,6 +267,7 @@ static void reset_frontend(void)
 {
     memset(&regs, 0, sizeof(regs));
     irq_delivery = (struct vnvme_intx_delivery){0};
+    irq_eoi_pending = false;
     nvme_trace_budget = NVME_TRACE_BUDGET;
     vnvme_init(&queue_ctrl, backend_blocks, &backend_ops, NULL);
     hv_vgic3_trace_intid(hv_pci_intx_irq(), NVME_TRACE_BUDGET);
@@ -385,7 +444,7 @@ void hv_nvme_map_bar(u64 base)
 {
     if (bar_base && bar_base != base)
         hv_unmap(bar_base, NVME_BAR_SIZE);
-    bar_base = base;
+    __atomic_store_n(&bar_base, base, __ATOMIC_RELEASE);
     reset_frontend();
     hv_map_hook(base, handle_nvme_bar, NVME_BAR_SIZE);
     printf("HV: NVMe BAR0 MMIO live at 0x%lx (backend=%d)\n", base, backend_ready);
@@ -396,6 +455,6 @@ void hv_nvme_unmap_bar(void)
     if (!bar_base)
         return;
     hv_unmap(bar_base, NVME_BAR_SIZE);
-    bar_base = 0;
+    __atomic_store_n(&bar_base, 0, __ATOMIC_RELEASE);
     reset_frontend();
 }

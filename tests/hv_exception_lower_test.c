@@ -23,6 +23,9 @@ int main(void)
     expect_plan(0x4, vbar, 0x000); /* EL1t: current EL with SP0. */
     expect_plan(0x5, vbar, 0x200); /* EL1h: current EL with SPx. */
     assert(!hv_exception_lower_plan(0x8, vbar, &plan));
+    assert(hv_exception_lower_brk_is_fast(0xf002));
+    assert(hv_exception_lower_brk_is_fast(0xf802));
+    assert(!hv_exception_lower_brk_is_fast(0x4242));
 
     puts("hv_exception_lower_test: ok");
     return 0;

@@ -3,9 +3,12 @@
 #include "hv.h"
 #include "hv_diag.h"
 #include "hv_exception_lower.h"
+#include "hv_fiq_fast_path.h"
 #include "hv_irq_routes.h"
+#include "hv_runtime_diag.h"
 #include "hv_sgi_diag.h"
 #include "hv_sgi_pending.h"
+#include "hv_watchdog_snapshot.h"
 #include "assert.h"
 #include "cpu_regs.h"
 #include "exception.h"
@@ -51,6 +54,8 @@ struct hv_pcpu_data {
     u32 pmc_pending;
     u64 pmc_irq_mode;
     u64 exc_entry_pmcr0_cnt;
+    u64 watchdog_sample_ticks;
+    struct hv_watchdog_cpu_record watchdog_record;
 #ifdef ENABLE_VGIC_MODULE
     virq_queue_t irq_queue;
     virq_queue_t timer_queue;
@@ -80,6 +85,11 @@ extern int hv_want_cpu;
 static bool time_stealing = true;
 
 void init_vgic_irq_queues(void) {
+    for (int i = 0; i < MAX_CPUS; i++) {
+        PERCPU_N(i, watchdog_sample_ticks) = 0;
+        PERCPU_N(i, watchdog_record) = (struct hv_watchdog_cpu_record){0};
+    }
+
 #ifdef ENABLE_VGIC_MODULE
     int node = adt_path_offset(adt, "/cpus");
     num_cpus = adt_get_child_count(adt, node);
@@ -181,6 +191,31 @@ static void hv_ack_fast_ipi(void *opaque)
     (void)opaque;
     msr(SYS_IMP_APL_IPI_SR_EL1, IPI_SR_PENDING);
     sysop("isb");
+}
+
+/*
+ * Drain only sources whose state is private to the current CPU.  This is safe
+ * before the global hypervisor lock: the vGIC LRs, SGI mask and legacy proxy
+ * IPI flags below are all per-CPU.  Keeping this small is intentional; device
+ * IRQ routing and proxy work remain on the serialized slow path.
+ */
+static void hv_handle_local_ipi(void)
+{
+    if (!(mrs(SYS_IMP_APL_IPI_SR_EL1) & IPI_SR_PENDING))
+        return;
+
+#ifdef ENABLE_VGIC_MODULE
+    hv_sgi_diag_note(&PERCPU(sgi_diag), HV_SGI_DIAG_IPI_RX);
+    u32 pending_sgis = hv_sgi_ack_and_take_pending(&PERCPU(sgi_pending_mask),
+                                                   hv_ack_fast_ipi, NULL);
+    hv_vgic3_drain_sgi_mask(pending_sgis);
+#else
+    hv_ack_fast_ipi(NULL);
+#endif
+    if (PERCPU(ipi_queued)) {
+        PERCPU(ipi_pending) = true;
+        PERCPU(ipi_queued) = false;
+    }
 }
 
 void hv_sgi_diag_vgic_event(enum hv_sgi_diag_event event)
@@ -345,9 +380,106 @@ static int dbg_timer_v = 0;
 //
 u64 hv_fiq_count = 0;
 u64 hv_fiq_ticks = 0;
+static u64 watchdog_last_periodic_dump;
 
 static bool timer_p_injected[MAX_CPUS];
 static bool timer_v_injected[MAX_CPUS];
+
+void hv_watchdog_snapshot_tick(struct exc_info *ctx)
+{
+    (void)ctx;
+
+    int cpu = smp_id();
+    if (cpu < 0 || cpu >= MAX_CPUS)
+        return;
+
+    u64 sample_tick = ++PERCPU(watchdog_sample_ticks);
+    if (!hv_watchdog_snapshot_due(sample_tick))
+        return;
+
+    struct hv_watchdog_cpu_sample sample = {
+        .cpu = cpu,
+        .pc = hv_get_elr(),
+        .spsr = hv_get_spsr(),
+        .cntpct = mrs(CNTPCT_EL0),
+        .cntvct = mrs(CNTVCT_EL0),
+        .cntvoff = mrs(CNTVOFF_EL2),
+        .cntp_ctl = mrs(CNTP_CTL_EL02),
+        .cntp_cval = mrs(CNTP_CVAL_EL02),
+        .cntv_ctl = mrs(CNTV_CTL_EL02),
+        .cntv_cval = mrs(CNTV_CVAL_EL02),
+        .vm_tmr_fiq_ena = mrs(SYS_IMP_APL_VM_TMR_FIQ_ENA_EL2),
+        .timer_p_injected = timer_p_injected[cpu],
+        .timer_v_injected = timer_v_injected[cpu],
+        .last_el2_marker = hv_wdt_get_breadcrumb(cpu),
+    };
+
+#ifdef ENABLE_VGIC_MODULE
+    struct hv_sgi_diag_snapshot sgi = {0};
+    hv_sgi_diag_snapshot(&PERCPU(sgi_diag), &sgi);
+    sample.sgi_pending_mask =
+        __atomic_load_n(&PERCPU(sgi_pending_mask), __ATOMIC_ACQUIRE);
+    sample.sgi_queued = sgi.queued;
+    sample.sgi_ipi_received = sgi.ipi_received;
+    sample.sgi_drained = sgi.drained;
+    sample.sgi_injected = sgi.injected;
+    sample.sgi_repended = sgi.repended;
+    sample.sgi_no_lr = sgi.no_lr;
+    sample.sgi_iar = sgi.iars;
+    sample.sgi_eoi = sgi.eois;
+    sample.sgi_eoi_active_pending = sgi.eoi_active_pending;
+    sample.last_sgi_from = PERCPU(last_sgi_from);
+    sample.last_sgi_intid = PERCPU(last_sgi_intid);
+    sample.last_iar_intid = PERCPU(last_iar_intid);
+    sample.last_eoi_intid = PERCPU(last_eoi_intid);
+    sample.last_iar_tick = PERCPU(last_iar_tick);
+    sample.last_eoi_tick = PERCPU(last_eoi_tick);
+
+    u32 timer_head = __atomic_load_n(&PERCPU(timer_queue).head, __ATOMIC_ACQUIRE);
+    u32 timer_tail = __atomic_load_n(&PERCPU(timer_queue).tail, __ATOMIC_ACQUIRE);
+    u32 irq_head = __atomic_load_n(&PERCPU(irq_queue).head, __ATOMIC_ACQUIRE);
+    u32 irq_tail = __atomic_load_n(&PERCPU(irq_queue).tail, __ATOMIC_ACQUIRE);
+    sample.timer_queue_depth = timer_head - timer_tail;
+    sample.irq_queue_depth = irq_head - irq_tail;
+
+    int lr_count = hv_vgic3_num_lrs();
+    if (lr_count > HV_WATCHDOG_SNAPSHOT_LR_COUNT)
+        lr_count = HV_WATCHDOG_SNAPSHOT_LR_COUNT;
+    sample.lr_count = lr_count;
+    for (int lr = 0; lr < lr_count; lr++)
+        sample.lrs[lr] = hv_vgic3_read_lr(lr);
+#endif
+
+    hv_watchdog_snapshot_publish(&PERCPU(watchdog_record), &sample);
+}
+
+void hv_watchdog_snapshot_dump(void)
+{
+    for (int cpu = 0; cpu < MAX_CPUS; cpu++) {
+        struct hv_watchdog_cpu_sample s = {0};
+        if (!hv_watchdog_snapshot_read(&PERCPU_N(cpu, watchdog_record), &s))
+            continue;
+
+        printf("HV WATCHDOG CPU: cpu=%lu pc=0x%lx spsr=0x%lx cntpct=0x%lx "
+               "cntvct=0x%lx cntvoff=0x%lx pctl=0x%lx pcval=0x%lx "
+               "vctl=0x%lx vcval=0x%lx vm_tmr=0x%lx pinj=%lu vinj=%lu "
+               "tq=%lu iq=%lu pend=0x%lx q=%lu ipi=%lu drain=%lu inj=%lu "
+               "repend=%lu no_lr=%lu iar=%lu eoi=%lu ap_eoi=%lu "
+               "last_sgi=%lu<-%lu last_iar=%lu@0x%lx last_eoi=%lu@0x%lx "
+               "marker=0x%lx lrc=%lu lr0=0x%lx lr1=0x%lx lr2=0x%lx "
+               "lr3=0x%lx lr4=0x%lx lr5=0x%lx lr6=0x%lx lr7=0x%lx\n",
+               s.cpu, s.pc, s.spsr, s.cntpct, s.cntvct, s.cntvoff, s.cntp_ctl,
+               s.cntp_cval, s.cntv_ctl, s.cntv_cval, s.vm_tmr_fiq_ena,
+               s.timer_p_injected, s.timer_v_injected, s.timer_queue_depth,
+               s.irq_queue_depth, s.sgi_pending_mask, s.sgi_queued,
+               s.sgi_ipi_received, s.sgi_drained, s.sgi_injected, s.sgi_repended,
+               s.sgi_no_lr, s.sgi_iar, s.sgi_eoi, s.sgi_eoi_active_pending,
+               s.last_sgi_intid, s.last_sgi_from, s.last_iar_intid,
+               s.last_iar_tick, s.last_eoi_intid, s.last_eoi_tick,
+               s.last_el2_marker, s.lr_count, s.lrs[0], s.lrs[1], s.lrs[2],
+               s.lrs[3], s.lrs[4], s.lrs[5], s.lrs[6], s.lrs[7]);
+    }
+}
 
 static bool timer_irq_outstanding(u32 intid)
 {
@@ -444,7 +576,7 @@ static void hv_update_fiq(void)
             timer_p_injected[tcpu] = true;
             if (!dbg_inj_t0)
                 dbg_inj_t0 = mrs(CNTPCT_EL0);
-            if ((++dbg_inj_count & 1023) == 0) {
+            if (hv_runtime_diag_enabled() && (++dbg_inj_count & 1023) == 0) {
                 u64 now = mrs(CNTPCT_EL0);
                 printf("TIMERRATE: inj=0x%lx elapsed_ticks=0x%lx cntfrq=0x%lx interval=0x%lx\n",
                        dbg_inj_count, now - dbg_inj_t0, mrs(CNTFRQ_EL0),
@@ -1630,6 +1762,43 @@ void hv_exc_sync(struct exc_info *ctx)
     u32 ec = FIELD_GET(ESR_EC, ctx->esr);
 
     switch (ec) {
+        case ESR_EC_DABORT_LOWER: {
+            bool nvme_matched = false;
+            handled = hv_nvme_try_handle_dabort(ctx, &nvme_matched);
+            if (nvme_matched) {
+                if (!handled)
+                    break;
+                ctx->elr += 4;
+                hv_set_elr(ctx->elr);
+                hv_update_fiq();
+                hv_wdt_breadcrumb('s');
+                return;
+            }
+            break;
+        }
+        case ESR_EC_BRK: {
+            /*
+             * Windows uses BRK #0xf002/#0xf802 as an internal exception path.
+             * Lowering it only touches the current CPU's EL1 exception state;
+             * serializing thousands of these through bhl caused other vCPUs to
+             * miss their clock deadlines under load.
+             */
+            u64 immediate = FIELD_GET(ESR_ISS, ctx->esr);
+            struct hv_exception_lower_plan plan;
+            if (hv_exception_lower_brk_is_fast(immediate) &&
+                hv_exception_lower_plan(ctx->spsr, mrs(VBAR_EL12), &plan)) {
+                msr(ELR_EL12, ctx->elr);
+                msr(SPSR_EL12, ctx->spsr);
+                msr(ESR_EL12, ctx->esr);
+                msr(FAR_EL12, ctx->far);
+                hv_set_spsr(plan.target_spsr);
+                hv_set_elr(plan.target_elr);
+                hv_update_fiq();
+                hv_wdt_breadcrumb('s');
+                return;
+            }
+            break;
+        }
         case ESR_EC_MSR:
             hv_wdt_breadcrumb('m');
             handled = hv_handle_msr_unlocked(ctx, FIELD_GET(ESR_ISS, ctx->esr));
@@ -1695,7 +1864,7 @@ void hv_exc_sync(struct exc_info *ctx)
              * proxy.  Every other BRK belongs to the guest.  In particular,
              * Windows uses BRK #0xf002 during normal kernel startup.
              */
-            if (FIELD_GET(ESR_ISS, ctx->esr) != 0x4242) {
+            if (hv_exception_lower_brk_is_fast(FIELD_GET(ESR_ISS, ctx->esr))) {
                 struct hv_exception_lower_plan plan;
                 u64 guest_vbar = mrs(VBAR_EL12);
 
@@ -1888,17 +2057,34 @@ void hv_exc_fiq(struct exc_info *ctx)
     if (interruptible_cpu == -1)
         interruptible_cpu = boot_cpu_idx;
 
-    if (smp_id() != interruptible_cpu && !(mrs(ISR_EL1) & 0x40) && hv_want_cpu == -1) {
-        // Non-interruptible CPU and it was just a timer tick (or spurious), so just update FIQs
+    bool secondary_fast =
+        hv_fiq_secondary_fast_eligible(smp_id(), interruptible_cpu, hv_want_cpu);
+    bool snapshot_sampled = false;
+    if (secondary_fast) {
+        /*
+         * Service the two high-rate, per-CPU sources before taking bhl.  The old
+         * path made every guest clock interrupt on all eight vCPUs wait for one
+         * global lock.  Under load a secondary could wait in EL2 long enough for
+         * Windows to report CLOCK_WATCHDOG_TIMEOUT.
+         */
         hv_update_fiq();
-        hv_arm_tick(true);
-        return;
+        hv_handle_local_ipi();
+        sysop("isb");
+        hv_watchdog_snapshot_tick(ctx);
+        snapshot_sampled = true;
+
+        if (hv_fiq_secondary_fast_complete(true, !!(mrs(ISR_EL1) & 0x40))) {
+            hv_arm_tick(true);
+            return;
+        }
     }
 
     // Slow (single threaded) path
     hv_wdt_breadcrumb('F');
     hv_get_context(ctx);
     hv_exc_entry();
+    if (!snapshot_sampled)
+        hv_watchdog_snapshot_tick(ctx);
 
     //
     // The PC samples stop the moment the Windows kernel is reached, and so does the
@@ -1907,7 +2093,7 @@ void hv_exc_fiq(struct exc_info *ctx)
     // the EL2 physical timer fired and this is the interruptible CPU. The counts separate
     // those, and the registers printed alongside decide between them.
     //
-    if ((hv_fiq_count % 20000) == 0) {
+    if (hv_runtime_diag_enabled() && (hv_fiq_count % 20000) == 0) {
         printf("HV FIQ: total=%lu ticks=%lu cpu=%d boot=%d pinned=%d vm_tmr=0x%lx\n",
                hv_fiq_count, hv_fiq_ticks, smp_id(), boot_cpu_idx, hv_pinned_cpu,
                mrs(SYS_IMP_APL_VM_TMR_FIQ_ENA_EL2));
@@ -1978,6 +2164,21 @@ void hv_exc_fiq(struct exc_info *ctx)
         hv_trace_j313_xhci_tick();
     }
 
+    /*
+     * A CLOCK_WATCHDOG_TIMEOUT is often preceded by a long freeze without a
+     * bugcheck, so waiting for KiBugCheckData loses the state that caused it.
+     * In monitor builds, let the interruptible CPU periodically print the
+     * latest lockless snapshot published by every vCPU.  The subtraction-based
+     * cadence deliberately tolerates the shared FIQ counter skipping values.
+     */
+    if (hv_runtime_diag_enabled() && smp_id() == interruptible_cpu &&
+        hv_watchdog_snapshot_dump_due(hv_fiq_count, watchdog_last_periodic_dump,
+                                      2000000)) {
+        watchdog_last_periodic_dump = hv_fiq_count;
+        printf("HV WATCHDOG PERIODIC: fiq=%lu\n", hv_fiq_count);
+        hv_watchdog_snapshot_dump();
+    }
+
     // Only poll for HV events in the interruptible CPU
     if (tick) {
         //
@@ -2017,27 +2218,7 @@ void hv_exc_fiq(struct exc_info *ctx)
         hv_exc_proxy(ctx, START_EXCEPTION_LOWER, EXC_FIQ, NULL);
     }
 
-    if (mrs(SYS_IMP_APL_IPI_SR_EL1) & IPI_SR_PENDING) {
-#ifdef ENABLE_VGIC_MODULE
-        hv_sgi_diag_note(&PERCPU(sgi_diag), HV_SGI_DIAG_IPI_RX);
-        //
-        // Acknowledge the physical IPI before consuming the software SGI bits. If a sender
-        // races immediately before the acknowledge, its SGI coalesces into the mask consumed
-        // below. If it races after the acknowledge, it raises a fresh physical IPI. Doing the
-        // exchange first allowed that fresh IPI to be cleared by this handler, stranding a
-        // non-zero SGI mask with no wakeup and eventually causing CLOCK_WATCHDOG_TIMEOUT.
-        //
-        u32 pending_sgis = hv_sgi_ack_and_take_pending(&PERCPU(sgi_pending_mask),
-                                                       hv_ack_fast_ipi, NULL);
-        hv_vgic3_drain_sgi_mask(pending_sgis);
-#else
-        hv_ack_fast_ipi(NULL);
-#endif
-        if (PERCPU(ipi_queued)) {
-            PERCPU(ipi_pending) = true;
-            PERCPU(ipi_queued) = false;
-        }
-    }
+    hv_handle_local_ipi();
 
     hv_maybe_switch_cpu(ctx, START_HV, HV_CPU_SWITCH, NULL);
 

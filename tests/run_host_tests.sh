@@ -10,6 +10,7 @@ all_tests="
 chainload_layout_test
 hv_assisted_layout_test
 display_guest_test
+cpufreq_state_test
 hv_autonomous_manifest_test
 hv_bootstrap_manifest_test
 hv_bootstrap_test
@@ -34,6 +35,12 @@ hv_launch_snapshot_test
 hv_launch_preflight_test
 hv_launch_golden_j313_test
 hv_nvme_queue_test
+hv_nvme_fast_path_test
+hv_fiq_fast_path_test
+hv_tick_policy_test
+hv_runtime_diag_debug_test
+hv_runtime_diag_release_test
+hv_watchdog_snapshot_test
 hv_sgi_pending_test
 hv_sgi_diag_test
 hv_vgic_diag_test
@@ -63,6 +70,9 @@ for name in "$@"; do
         display_guest_test)
             definitions="-DDISPLAY_GUEST_HOST_TEST"
             sources="$sources src/display_guest.c"
+            ;;
+        cpufreq_state_test)
+            sources="$sources src/cpufreq_state.c"
             ;;
         hv_autonomous_manifest_test)
             sources="$sources src/hv_autonomous_manifest.c src/hv_autonomous_profile.c"
@@ -141,6 +151,27 @@ for name in "$@"; do
         hv_nvme_queue_test)
             definitions="-DVNVME_HOST_TEST"
             sources="$sources src/hv_nvme_queue.c"
+            ;;
+        hv_nvme_fast_path_test)
+            definitions="-DHV_NVME_FAST_PATH_HOST_TEST"
+            sources="$sources src/hv_nvme_fast_path.c"
+            ;;
+        hv_fiq_fast_path_test)
+            definitions="-DHV_FIQ_FAST_PATH_HOST_TEST"
+            sources="$sources src/hv_fiq_fast_path.c"
+            ;;
+        hv_tick_policy_test)
+            sources="$sources src/hv_tick_policy.c"
+            ;;
+        hv_runtime_diag_debug_test)
+            definitions="-DHV_RUNTIME_DIAG_HOST_TEST"
+            ;;
+        hv_runtime_diag_release_test)
+            definitions="-DHV_RUNTIME_DIAG_HOST_TEST -DRELEASE"
+            ;;
+        hv_watchdog_snapshot_test)
+            definitions="-DHV_WATCHDOG_SNAPSHOT_HOST_TEST"
+            sources="$sources src/hv_watchdog_snapshot.c"
             ;;
         hv_sgi_pending_test)
             definitions="-DHV_SGI_PENDING_HOST_TEST"

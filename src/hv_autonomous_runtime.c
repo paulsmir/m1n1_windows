@@ -5,6 +5,7 @@
 #include "adt.h"
 #include "arm_cpu_regs.h"
 #include "cpu_regs.h"
+#include "cpufreq.h"
 #include "heapblock.h"
 #include "hv.h"
 #include "hv_assisted_layout.h"
@@ -392,6 +393,21 @@ static bool runtime_stage(enum hv_autonomous_stage stage,
             iodev_console_kick();
             return check_launch_checkpoint(runtime, HV_CONTRACT_PRE_HV_INIT);
         }
+        case HV_AUTONOMOUS_STAGE_PLATFORM: {
+            if (runtime->profile.monitor)
+                cpufreq_print_state("standalone-before");
+            int result = cpufreq_init();
+            if (runtime->profile.monitor)
+                cpufreq_print_state("standalone-after");
+            if (result) {
+                printf("PREFLIGHT FAIL checkpoint=PLATFORM reason=cpufreq\n");
+                iodev_console_kick();
+                return false;
+            }
+            printf("PREFLIGHT PASS checkpoint=PLATFORM component=cpufreq\n");
+            iodev_console_kick();
+            return true;
+        }
         case HV_AUTONOMOUS_STAGE_DECOMPRESS: {
             u32 source_size = payload->compressed_size;
             u32 destination_size = payload->uncompressed_size;
@@ -466,6 +482,7 @@ enum hv_autonomous_result hv_autonomous_prepare(const struct hv_autonomous_paylo
         .callbacks = {
             runtime_stage, runtime_stage, runtime_stage, runtime_stage, runtime_stage,
             runtime_stage, runtime_stage, runtime_stage, runtime_stage, runtime_stage,
+            runtime_stage,
         },
     };
     /* Golden snapshots, live capture and the published base state do not fit

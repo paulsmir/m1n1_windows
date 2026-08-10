@@ -122,6 +122,7 @@ OBJECTS := \
 	chickens_twister.o \
 	clk.o \
 	cpufreq.o \
+	cpufreq_state.o \
 	dapf.o \
 	dart.o \
 	dcp.o \
@@ -134,7 +135,8 @@ OBJECTS := \
 	firmware.o \
 	gxf.o gxf_asm.o \
 	heapblock.o \
-	hv.o hv_vm.o hv_exc.o hv_vuart.o hv_pl011.o hv_pci.o hv_nvme.o hv_nvme_queue.o hv_fb_stream.o hv_diag.o hv_irq_routes.o hv_sgi_diag.o hv_sgi_pending.o hv_xhci_handoff.o hv_bootstrap.o hv_bootstrap_manifest.o hv_autonomous_manifest.o hv_autonomous_memory.o hv_autonomous.o hv_autonomous_runtime.o hv_autonomous_boot.o hv_autonomous_boot_runtime.o hv_wdt.o hv_asm.o hv_aic.o hv_virtio.o hv_psci.o hv_vgic.o hv_vgic_diag.o hv_vgic_redist.o \
+	hv.o hv_vm.o hv_exc.o hv_fiq_fast_path.o hv_vuart.o hv_pl011.o hv_pci.o hv_nvme.o hv_nvme_fast_path.o hv_nvme_queue.o hv_fb_stream.o hv_diag.o hv_irq_routes.o hv_sgi_diag.o hv_sgi_pending.o hv_xhci_handoff.o hv_bootstrap.o hv_bootstrap_manifest.o hv_autonomous_manifest.o hv_autonomous_memory.o hv_autonomous.o hv_autonomous_runtime.o hv_autonomous_boot.o hv_autonomous_boot_runtime.o hv_wdt.o hv_asm.o hv_aic.o hv_virtio.o hv_psci.o hv_vgic.o hv_vgic_diag.o hv_vgic_redist.o \
+	hv_tick_policy.o \
 	hv_autonomous_profile.o hv_assisted_layout.o hv_launch_golden_j313.o \
 	i2c.o \
 	iodev.o \
@@ -171,7 +173,7 @@ OBJECTS := \
 	hv_guest_cpu_state.o \
 	hv_launch_contract.o \
 	hv_launch_j313.o hv_launch_transport.o hv_pci_state.o hv_stage2_state.o hv_stage_role.o \
-	hv_launch_snapshot.o hv_launch_preflight.o \
+	hv_launch_snapshot.o hv_launch_preflight.o hv_watchdog_snapshot.o \
 	$(DCP_OBJECTS) \
 	$(MINILZLIB_OBJECTS) $(TINF_OBJECTS) $(DLMALLOC_OBJECTS) $(LIBFDT_OBJECTS) $(RUST_LIB)
 

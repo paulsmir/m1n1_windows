@@ -83,6 +83,7 @@ bool hv_configure_fb_stream(u64 ipa, u64 size, u64 width, u64 height, u64 stride
 bool hv_nvme_init_backend(void);
 void hv_nvme_map_bar(u64 base);
 void hv_nvme_unmap_bar(void);
+bool hv_nvme_try_handle_dabort(struct exc_info *ctx, bool *matched);
 void hv_nvme_poll_irq(void);
 void hv_nvme_irq_eoi(u32 intid);
 struct vnvme_snapshot;
@@ -104,6 +105,7 @@ void hv_wdt_init(void);
 void hv_wdt_start(int cpu);
 void hv_wdt_stop(void);
 void hv_wdt_breadcrumb(char c);
+u64 hv_wdt_get_breadcrumb(int cpu);
 void hv_do_panic(void);
 
 #define hv_panic(fmt, ...)                                                                         \
@@ -134,6 +136,8 @@ bool hv_switch_cpu(int cpu);
 void hv_pin_cpu(int cpu);
 void hv_arm_tick(bool secondary);
 void hv_percpu_diag_tick(struct exc_info *ctx);
+void hv_watchdog_snapshot_tick(struct exc_info *ctx);
+void hv_watchdog_snapshot_dump(void);
 void hv_rearm(void);
 void hv_maybe_exit(void);
 void hv_tick(struct exc_info *ctx);

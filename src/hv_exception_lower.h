@@ -17,6 +17,12 @@ struct hv_exception_lower_plan {
     hv_exception_u64 target_elr;
 };
 
+/* BRK #0x4242 is the assisted proxy ABI; all other BRKs belong to the guest. */
+static inline bool hv_exception_lower_brk_is_fast(hv_exception_u64 immediate)
+{
+    return immediate != 0x4242;
+}
+
 /*
  * Recreate the architectural exception entry that EL2 intercepted.  Windows uses
  * BRK instructions internally and expects them to arrive at its EL1 synchronous

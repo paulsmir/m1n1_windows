@@ -127,6 +127,14 @@ void hv_wdt_breadcrumb(char c)
     sysop("dmb ish");
 }
 
+u64 hv_wdt_get_breadcrumb(int cpu)
+{
+    if (cpu < 0 || cpu >= MAX_CPUS)
+        return 0;
+
+    return __atomic_load_n(&hv_wdt_breadcrumbs[cpu], __ATOMIC_RELAXED);
+}
+
 void hv_wdt_init(void)
 {
     char boot_cpu_name[32];

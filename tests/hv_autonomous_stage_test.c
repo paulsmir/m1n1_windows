@@ -54,6 +54,9 @@ int main(void)
     assert(recorder.count == HV_AUTONOMOUS_STAGE_COUNT);
     for (size_t i = 0; i < recorder.count; i++)
         assert(recorder.seen[i] == (enum hv_autonomous_stage)i);
+    assert(recorder.seen[0] == HV_AUTONOMOUS_STAGE_VALIDATE);
+    assert(recorder.seen[1] == HV_AUTONOMOUS_STAGE_PLATFORM);
+    assert(recorder.seen[2] == HV_AUTONOMOUS_STAGE_DECOMPRESS);
     assert(status.stage == HV_AUTONOMOUS_STAGE_ENTERED);
     assert(status.error == HV_AUTONOMOUS_RESULT_OK);
     assert(status.guest_running);
@@ -72,6 +75,13 @@ int main(void)
         assert(status.error == HV_AUTONOMOUS_RESULT_STAGE_FAILED);
         assert(!status.guest_running);
     }
+
+    memset(&status, 0, sizeof(status));
+    recorder = (struct recorder){.fail_at = HV_AUTONOMOUS_STAGE_PLATFORM};
+    assert(hv_autonomous_prepare_with_ops(&payload, &status, &ops, &recorder) ==
+           HV_AUTONOMOUS_RESULT_STAGE_FAILED);
+    assert(recorder.count == 2);
+    assert(status.stage == HV_AUTONOMOUS_STAGE_PLATFORM);
 
     assert(hv_autonomous_prepare_with_ops(NULL, &status, &ops, &recorder) ==
            HV_AUTONOMOUS_RESULT_INVALID_ARGUMENT);

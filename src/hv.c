@@ -1,6 +1,8 @@
 /* SPDX-License-Identifier: MIT */
 
 #include "hv.h"
+#include "hv_tick_policy.h"
+#include "hv_runtime_diag.h"
 #include "assert.h"
 #include "cpu_regs.h"
 #include "display.h"
@@ -47,8 +49,8 @@ static void hv_collect_diag(void *opaque, const struct exc_info *ctx,
                             struct hv_diag_sample_v1 *sample)
 {
     UNUSED(opaque);
-    struct vnvme_snapshot nvme;
-    bool nvme_ready;
+    struct vnvme_snapshot nvme = {0};
+    bool nvme_ready = false;
     struct hv_fb_stream_stats fb = hv_fb_stream_get_stats(&hv_framebuffer_stream);
 
     hv_nvme_get_diag_snapshot(&nvme, &nvme_ready);
@@ -122,6 +124,7 @@ struct hv_secondary_info_t {
     uint64_t actlr_el2;
     uint64_t actlr_el1;
     uint64_t cnthctl;
+    uint64_t cntvoff;
     uint64_t sprr_config;
     uint64_t gxf_config;
 };
@@ -230,18 +233,21 @@ void hv_init(void)
     hv_tick_interval = mrs(CNTFRQ_EL0) / HV_TICK_RATE;
 
     hv_has_ecv = mrs(ID_AA64MMFR0_EL1) & (0xfULL << 60);
+    u32 secondary_tick_rate = hv_secondary_tick_rate(hv_has_ecv);
+    hv_secondary_tick_interval =
+        hv_tick_interval_ticks(mrs(CNTFRQ_EL0), secondary_tick_rate);
+    printf("HV: tick rates boot=%uHz secondary=%uHz\n", HV_TICK_RATE,
+           secondary_tick_rate);
 
     if (hv_has_ecv) {
         printf("HV: ECV enabled\n");
         reg_set(CNTHCTL_EL2,
                 CNTHCTL_EL1NVVCT | CNTHCTL_EL1NVPCT | CNTHCTL_EL1TVT | CNTHCTL_EL1PCTEN);
-        hv_secondary_tick_interval = mrs(CNTFRQ_EL0) / HV_SLOW_TICK_RATE;
     } else {
         printf("HV: No ECV supported\n");
         // Enable physical timer for EL1
         msr(CNTHCTL_EL2, CNTHCTL_EL1PTEN | CNTHCTL_EL1PCTEN);
 
-        hv_secondary_tick_interval = hv_tick_interval;
     }
 
     hv_configure_guest_wfi();
@@ -323,6 +329,7 @@ void hv_start(void *entry, u64 regs[4])
     else
         hv_secondary_info.actlr_el1 = mrs(SYS_IMP_APL_ACTLR_EL12);
     hv_secondary_info.cnthctl = mrs(CNTHCTL_EL2);
+    hv_secondary_info.cntvoff = mrs(CNTVOFF_EL2);
     hv_secondary_info.sprr_config = mrs(SYS_IMP_APL_SPRR_CONFIG_EL1);
     hv_secondary_info.gxf_config = mrs(SYS_IMP_APL_GXF_CONFIG_EL1);
 
@@ -410,8 +417,10 @@ static void hv_init_secondary(struct hv_secondary_info_t *info)
     else
         msr(SYS_IMP_APL_ACTLR_EL12, info->actlr_el1);
     msr(CNTHCTL_EL2, info->cnthctl);
+    msr(CNTVOFF_EL2, info->cntvoff);
     msr(SYS_IMP_APL_SPRR_CONFIG_EL1, info->sprr_config);
     msr(SYS_IMP_APL_GXF_CONFIG_EL1, info->gxf_config);
+    sysop("isb");
 
 #ifdef ENABLE_VGIC_MODULE
     hv_vgicv3_enable_virtual_interrupts();
@@ -653,7 +662,7 @@ void hv_percpu_diag_tick(struct exc_info *ctx)
     d->sample_count++;
 
     u64 x18 = ctx->regs[18];
-    if ((!d->x18_seen || x18 != d->last_x18) &&
+    if (hv_runtime_diag_enabled() && (!d->x18_seen || x18 != d->last_x18) &&
         d->x18_reports < HV_DIAG_X18_REPORT_LIMIT) {
         printf("HV DIAG X18: cpu=%d sample=%lu pc=0x%lx x18=0x%lx x0=0x%lx sp0=0x%lx "
                "sp1=0x%lx spsr=0x%lx\n",
@@ -664,7 +673,7 @@ void hv_percpu_diag_tick(struct exc_info *ctx)
     d->last_x18 = x18;
     d->x18_seen = true;
 
-    if (!d->online_reported) {
+    if (hv_runtime_diag_enabled() && !d->online_reported) {
         d->online_reported = true;
         printf("CPU_ENTRY cpu=%d mpidr=0x%lx\n", cpu, mrs(MPIDR_EL1));
         printf("HV DIAG ONLINE: cpu=%d mpidr=0x%lx pc=0x%lx spsr=0x%lx\n", cpu, mrs(MPIDR_EL1),
@@ -679,7 +688,7 @@ void hv_percpu_diag_tick(struct exc_info *ctx)
     }
 
     // Sparse on purpose: flooding the UART from here would itself change SMP timing.
-    if ((d->sample_count & 0x3fff) == 0)
+    if (hv_runtime_diag_enabled() && (d->sample_count & 0x3fff) == 0)
         printf("HV DIAG: cpu=%d pc=0x%lx same=%lu spsr=0x%lx\n", cpu, ctx->elr,
                d->same_pc_ticks, ctx->spsr);
 
@@ -710,6 +719,7 @@ void hv_percpu_diag_tick(struct exc_info *ctx)
     hv_bugcheck_dumped = true;
     printf("HV BUGCHECK: seen_by_cpu=%d code=0x%lx P1=0x%lx P2=0x%lx P3=0x%lx P4=0x%lx\n", cpu,
            a[0], a[1], a[2], a[3], a[4]);
+    hv_watchdog_snapshot_dump();
     if (a[0] == 0xA)
         printf("HV BUGCHECK 0A: va=0x%lx irql=%lu access=%s fault_pc=0x%lx\n", a[1], a[2],
                (a[3] & 8) ? "EXECUTE" : (a[3] & 1) ? "WRITE" : "READ", a[4]);
@@ -1095,7 +1105,7 @@ static void hv_print_stuck_line(void)
     } else if (n < 5 + STUCK_CODE + STUCK_FRAMES) {
         int i = n - 5 - STUCK_CODE;
         if (i < stuck.frames)
-            printf("HV STUCK: frame %d: lr=0x%lx setup=%08x\n", i, stuck.frame_lr[i],
+            printf("HV STUCK: frame %d: lr=0x%lx setup=%08lx\n", i, stuck.frame_lr[i],
                    stuck.frame_code[i]);
     } else if (n < 5 + STUCK_CODE + STUCK_FRAMES + 1) {
         if (stuck.octx_ok)

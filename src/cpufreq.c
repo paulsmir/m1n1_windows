@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: MIT */
 
 #include "cpufreq.h"
+#include "cpufreq_state.h"
 #include "adt.h"
 #include "firmware.h"
 #include "pmgr.h"
@@ -17,9 +18,9 @@
 #define CLUSTER_PSTATE_UNK_M2                 BIT(22)
 #define CLUSTER_PSTATE_UNK_M1                 BIT(20)
 #define CLUSTER_PSTATE_DESIRED2               GENMASK(15, 12)
-#define CLUSTER_PSTATE_APSC_BUSY              BIT(7)
 #define CLUSTER_PSTATE_DESIRED1               GENMASK(4, 0)
 #define CLUSTER_PSTATE_DESIRED1_S5L8960X      GENMASK(24, 22)
+#define CLUSTER_PSTATE_APSC_BUSY              BIT(7)
 
 #define PMGR_VOLTAGE_CTL_OFF_S5L8960X 0x20c00
 #define PMGR_VOLTAGE_CTL_OFF_T7000    0x23000
@@ -46,32 +47,11 @@ struct feat_t {
 
 static u32 pstate_reg_to_pstate(u64 val)
 {
-    switch (chip_id) {
-        case S5L8960X:
-        case T7000:
-        case T7001:
-            return FIELD_GET(CLUSTER_PSTATE_DESIRED1_S5L8960X, val);
-        case S8000:
-        case S8001:
-        case S8003:
-        case T8010:
-        case T8011:
-        case T8012:
-        case T8015:
-        case T8103:
-        case T6000:
-        case T6001:
-        case T6002:
-        case T8112:
-        case T6020:
-        case T6021:
-        case T6022:
-        case T6031:
-            return FIELD_GET(CLUSTER_PSTATE_DESIRED1, val);
-        default:
-            printf("cpufreq: Chip 0x%x is unsupported\n", chip_id);
-            return 0;
+    if (!cpufreq_pstate_supported(chip_id)) {
+        printf("cpufreq: Chip 0x%x is unsupported\n", chip_id);
+        return 0;
     }
+    return cpufreq_decode_pstate(chip_id, val);
 }
 
 static int set_pstate(const struct cluster_t *cluster, uint32_t pstate)
@@ -401,6 +381,22 @@ const struct cluster_t *cpufreq_get_clusters(void)
         default:
             printf("cpufreq: Chip 0x%x is unsupported\n", chip_id);
             return NULL;
+    }
+}
+
+void cpufreq_print_state(const char *phase)
+{
+    const struct cluster_t *cluster = cpufreq_get_clusters();
+
+    if (!cluster)
+        return;
+
+    while (cluster->base) {
+        u64 value = read64(cluster->base + CLUSTER_PSTATE);
+        printf("cpufreq: %s cluster=%s raw=0x%lx pstate=%u default=%u\n",
+               phase, cluster->name, value, pstate_reg_to_pstate(value),
+               cluster->default_pstate);
+        cluster++;
     }
 }
 
