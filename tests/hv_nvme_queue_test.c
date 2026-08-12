@@ -30,6 +30,9 @@ static unsigned irq_deasserts;
 static bool cqe_published;
 static struct vnvme_trace_event trace_events[16];
 static unsigned trace_count;
+static unsigned read_commands;
+static unsigned write_commands;
+static unsigned last_transfer_blocks;
 
 static bool backend_read(void *opaque, uint64_t lba, void *buffer)
 {
@@ -46,6 +49,28 @@ static bool backend_write(void *opaque, uint64_t lba, const void *buffer)
     if (lba >= BLOCKS)
         return false;
     memcpy(disk[lba], buffer, VNVME_LBA_SIZE);
+    return true;
+}
+
+static bool backend_read_blocks(void *opaque, uint64_t lba, uint32_t blocks, void *buffer)
+{
+    (void)opaque;
+    if (!blocks || lba >= BLOCKS || blocks > BLOCKS - lba)
+        return false;
+    read_commands++;
+    last_transfer_blocks = blocks;
+    memcpy(buffer, disk[lba], (size_t)blocks * VNVME_LBA_SIZE);
+    return true;
+}
+
+static bool backend_write_blocks(void *opaque, uint64_t lba, uint32_t blocks, const void *buffer)
+{
+    (void)opaque;
+    if (!blocks || lba >= BLOCKS || blocks > BLOCKS - lba)
+        return false;
+    write_commands++;
+    last_transfer_blocks = blocks;
+    memcpy(disk[lba], buffer, (size_t)blocks * VNVME_LBA_SIZE);
     return true;
 }
 
@@ -123,6 +148,8 @@ int main(void)
     const struct vnvme_backend_ops ops = {
         .read = backend_read,
         .write = backend_write,
+        .read_blocks = backend_read_blocks,
+        .write_blocks = backend_write_blocks,
         .flush = backend_flush,
         .publish = backend_publish,
         .irq = backend_irq,
@@ -159,6 +186,41 @@ int main(void)
     assert(vnvme_set_admin_queue(&ctrl, (uint64_t)max_admin_sq, (uint64_t)max_admin_cq, 256, 256));
     assert(!vnvme_set_admin_queue(&ctrl, (uint64_t)max_admin_sq, (uint64_t)max_admin_cq, 257, 256));
 
+    vnvme_init(&ctrl, BLOCKS, &ops, NULL);
+    assert(vnvme_set_admin_queue(&ctrl, (uint64_t)admin_sq, (uint64_t)admin_cq, 4, 4));
+
+    /*
+     * A guest may publish a whole batch with one SQ tail write. The controller must not
+     * execute that entire batch synchronously in the MMIO trap: doing so prevents the guest
+     * from consuming completion interrupts and turns a busy queue into multi-second stalls.
+     * Keep one completion in flight and resume the queue as each CQ head is acknowledged.
+     */
+    put_cmd(admin_sq, 0, 0xff, 0x401);
+    put_cmd(admin_sq, 1, 0xff, 0x402);
+    put_cmd(admin_sq, 2, 0xff, 0x403);
+    assert(vnvme_sq_doorbell(&ctrl, 0, 3));
+    state = snapshot(&ctrl);
+    assert(state.stats.commands == 1);
+    assert(state.stats.completions == 1);
+    assert(state.queues[0].sq_head == 1);
+    assert(state.queues[0].sq_tail == 3);
+    assert(vnvme_cq_doorbell(&ctrl, 0, 1));
+    state = snapshot(&ctrl);
+    assert(state.stats.commands == 2);
+    assert(state.stats.completions == 2);
+    assert(state.queues[0].sq_head == 2);
+    assert(vnvme_cq_doorbell(&ctrl, 0, 2));
+    state = snapshot(&ctrl);
+    assert(state.stats.commands == 3);
+    assert(state.stats.completions == 3);
+    assert(state.queues[0].sq_head == 3);
+    assert(vnvme_cq_doorbell(&ctrl, 0, 3));
+
+    /* Start the functional command tests with clean queue and trace state. */
+    irq_asserts = 0;
+    irq_deasserts = 0;
+    cqe_published = false;
+    trace_count = 0;
     vnvme_init(&ctrl, BLOCKS, &ops, NULL);
     assert(vnvme_set_admin_queue(&ctrl, (uint64_t)admin_sq, (uint64_t)admin_cq, 4, 4));
 
@@ -226,6 +288,8 @@ int main(void)
     cmd->cdw10 = 2;
     cmd->cdw12 = 1; /* two logical blocks */
     assert(vnvme_sq_doorbell(&ctrl, 1, 1));
+    assert(write_commands == 1);
+    assert(last_transfer_blocks == 2);
     assert(memcmp(disk[2], write_data, sizeof(write_data)) == 0);
     assert((cqe_status(io_cq, 0) >> 1) == VNVME_SC_SUCCESS);
     assert(vnvme_cq_doorbell(&ctrl, 1, 1));
@@ -241,11 +305,14 @@ int main(void)
     cmd->cdw10 = 2;
     cmd->cdw12 = 1;
     assert(vnvme_sq_doorbell(&ctrl, 1, 2));
+    assert(read_commands == 1);
+    assert(last_transfer_blocks == 2);
     assert(memcmp(read_pages + 128, write_data, VNVME_PAGE_SIZE - 128) == 0);
     assert(memcmp(read_pages + VNVME_PAGE_SIZE, write_data + VNVME_PAGE_SIZE - 128,
                   VNVME_PAGE_SIZE) == 0);
     assert(memcmp(read_pages + 2 * VNVME_PAGE_SIZE, write_data + 2 * VNVME_PAGE_SIZE - 128, 128) ==
            0);
+    assert(vnvme_cq_doorbell(&ctrl, 1, 2));
 
     cmd = put_cmd(io_sq, 2, VNVME_IO_READ, 0x203);
     cmd->nsid = 2;

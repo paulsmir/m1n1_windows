@@ -372,13 +372,28 @@ static u16 process_io(struct vnvme_ctrl *ctrl, const struct vnvme_command *cmd)
         return VNVME_SC_INVALID_OPCODE;
 
     u32 blocks = (cmd->cdw12 & 0xffff) + 1;
-    if (blocks > 32)
+    if (blocks > VNVME_MAX_BLOCKS)
         return VNVME_SC_INVALID_FIELD;
     u64 lba = ((u64)cmd->cdw11 << 32) | cmd->cdw10;
     if (lba >= ctrl->namespace_blocks || blocks > ctrl->namespace_blocks - lba)
         return VNVME_SC_INVALID_FIELD;
     size_t total = (size_t)blocks * VNVME_LBA_SIZE;
 
+    if (cmd->opcode == VNVME_IO_WRITE && ctrl->ops->write_blocks) {
+        if (!prp_copy(cmd, total, 0, ctrl->bounce, total, false))
+            return VNVME_SC_DATA_TRANSFER_ERROR;
+        return ctrl->ops->write_blocks(ctrl->opaque, lba, blocks, ctrl->bounce)
+                   ? VNVME_SC_SUCCESS
+                   : VNVME_SC_INTERNAL;
+    }
+    if (cmd->opcode == VNVME_IO_READ && ctrl->ops->read_blocks) {
+        if (!ctrl->ops->read_blocks(ctrl->opaque, lba, blocks, ctrl->bounce))
+            return VNVME_SC_INTERNAL;
+        return prp_copy(cmd, total, 0, ctrl->bounce, total, true) ? VNVME_SC_SUCCESS
+                                                                 : VNVME_SC_DATA_TRANSFER_ERROR;
+    }
+
+    /* Compatibility path for simple test or non-batching backends. */
     for (u32 i = 0; i < blocks; i++) {
         size_t offset = (size_t)i * VNVME_LBA_SIZE;
         if (cmd->opcode == VNVME_IO_WRITE) {
@@ -443,18 +458,32 @@ static bool post_completion(struct vnvme_ctrl *ctrl, u16 cqid, u16 sqid, u16 sq_
     return true;
 }
 
-bool vnvme_sq_doorbell(struct vnvme_ctrl *ctrl, u16 qid, u16 new_tail)
+/*
+ * Execute pending submissions until exactly one completion has been published. A command
+ * such as AER may deliberately remain outstanding without a CQE, so it does not consume the
+ * completion budget and the following submission may still be considered.
+ *
+ * The old queue path drained every entry named by one SQ doorbell while still inside the MMIO
+ * exception. A 256-entry Windows batch could therefore perform thousands of synchronous ANS
+ * block operations before EL1 got a chance to acknowledge even the first CQE. Keeping one
+ * unconsumed CQE per queue provides backpressure and returns to the guest after each command.
+ */
+static bool process_until_completion(struct vnvme_ctrl *ctrl, u16 qid)
 {
-    if (qid >= VNVME_MAX_QUEUES)
-        return false;
     struct vnvme_queue *sq = &ctrl->queues[qid];
-    if (!sq->sq_valid || new_tail >= sq->sq_size)
+    u16 cqid = qid ? sq->cq_id : 0;
+    if (!sq->sq_valid || cqid >= VNVME_MAX_QUEUES)
         return false;
-    ctrl->stats.sq_doorbells++;
-    sq->sq_tail = new_tail;
+    struct vnvme_queue *cq = &ctrl->queues[cqid];
+    if (!cq->cq_valid)
+        return false;
+
+    /* Wait until EL1 consumes the previous CQE before doing more synchronous backend work. */
+    if (cq->cq_pending)
+        return true;
 
     u16 walked = 0;
-    while (sq->sq_head != new_tail) {
+    while (sq->sq_head != sq->sq_tail) {
         u16 slot = sq->sq_head;
         struct vnvme_command cmd;
         void *sqe_src = (void *)(uintptr_t)hv_ipa_to_pa(sq->sq_addr + sq->sq_head * sizeof(cmd));
@@ -475,21 +504,35 @@ bool vnvme_sq_doorbell(struct vnvme_ctrl *ctrl, u16 qid, u16 new_tail)
         struct vnvme_trace_event event = {
             .type = VNVME_TRACE_SUBMISSION,
             .qid = qid,
-            .cqid = qid ? sq->cq_id : 0,
+            .cqid = cqid,
             .slot = slot,
             .head = sq->sq_head,
-            .tail = new_tail,
+            .tail = sq->sq_tail,
             .cid = cmd.cid,
             .status = status,
             .opcode = cmd.opcode,
             .irq_asserted = ctrl->irq_asserted,
         };
         trace_event(ctrl, &event);
-        if (complete &&
-            !post_completion(ctrl, qid ? sq->cq_id : 0, qid, sq->sq_head, cmd.cid, result, status))
-            return false;
+        if (complete) {
+            if (!post_completion(ctrl, cqid, qid, sq->sq_head, cmd.cid, result, status))
+                return false;
+            return true;
+        }
     }
     return true;
+}
+
+bool vnvme_sq_doorbell(struct vnvme_ctrl *ctrl, u16 qid, u16 new_tail)
+{
+    if (qid >= VNVME_MAX_QUEUES)
+        return false;
+    struct vnvme_queue *sq = &ctrl->queues[qid];
+    if (!sq->sq_valid || new_tail >= sq->sq_size)
+        return false;
+    ctrl->stats.sq_doorbells++;
+    sq->sq_tail = new_tail;
+    return process_until_completion(ctrl, qid);
 }
 
 bool vnvme_cq_doorbell(struct vnvme_ctrl *ctrl, u16 qid, u16 new_head)
@@ -507,6 +550,18 @@ bool vnvme_cq_doorbell(struct vnvme_ctrl *ctrl, u16 qid, u16 new_head)
     cq->cq_head = new_head;
     cq->cq_pending -= consumed;
     update_irq(ctrl);
+
+    if (cq->cq_pending)
+        return true;
+
+    /* CQ0 serves admin SQ0; each I/O SQ records the CQ it was created against. */
+    if (qid == 0)
+        return process_until_completion(ctrl, 0);
+    for (u16 sqid = 1; sqid < VNVME_MAX_QUEUES; sqid++) {
+        struct vnvme_queue *sq = &ctrl->queues[sqid];
+        if (sq->sq_valid && sq->cq_id == qid && sq->sq_head != sq->sq_tail)
+            return process_until_completion(ctrl, sqid);
+    }
     return true;
 }
 

@@ -85,6 +85,18 @@ static bool backend_write(void *opaque, u64 lba, const void *buffer)
     return nvme_write(1, lba, buffer);
 }
 
+static bool backend_read_blocks(void *opaque, u64 lba, u32 blocks, void *buffer)
+{
+    UNUSED(opaque);
+    return nvme_read_blocks(1, lba, blocks, buffer);
+}
+
+static bool backend_write_blocks(void *opaque, u64 lba, u32 blocks, const void *buffer)
+{
+    UNUSED(opaque);
+    return nvme_write_blocks(1, lba, blocks, buffer);
+}
+
 static bool backend_flush(void *opaque)
 {
     UNUSED(opaque);
@@ -231,6 +243,8 @@ static void backend_trace(void *opaque, const struct vnvme_trace_event *event)
 static const struct vnvme_backend_ops backend_ops = {
     .read = backend_read,
     .write = backend_write,
+    .read_blocks = backend_read_blocks,
+    .write_blocks = backend_write_blocks,
     .flush = backend_flush,
     .publish = backend_publish,
     .irq = backend_irq,

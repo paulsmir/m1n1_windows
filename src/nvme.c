@@ -14,6 +14,7 @@
 #define NVME_ENABLE_TIMEOUT   5000000
 #define NVME_SHUTDOWN_TIMEOUT 5000000
 #define NVME_QUEUE_SIZE       64
+#define NVME_MAX_IO_BLOCKS    32
 
 #define NVME_CC            0x14
 #define NVME_CC_SHN        GENMASK(15, 14)
@@ -131,6 +132,7 @@ static sart_dev_t *nvme_sart = NULL;
 static u64 nvme_base;
 
 static struct nvme_queue adminq, ioq;
+static u64 io_prp_list[SZ_4K / sizeof(u64)] ALIGNED(SZ_4K);
 
 static bool alloc_queue(struct nvme_queue *q)
 {
@@ -527,48 +529,55 @@ bool nvme_flush(u32 nsid)
     return nvme_exec_command(&ioq, &cmd, NULL);
 }
 
-bool nvme_read(u32 nsid, u64 lba, void *buffer)
+static bool nvme_rw_blocks(u32 nsid, u64 lba, u32 blocks, void *buffer, bool write)
 {
     struct nvme_command cmd;
     u64 buffer_addr = (u64)buffer;
 
-    if (!nvme_initialized)
+    if (!nvme_initialized || !blocks || blocks > NVME_MAX_IO_BLOCKS)
         return false;
 
-    /* no need for 16K alignment here since the NVME page size is 4k */
+    /* ANS uses standard 4 KiB NVMe PRPs even though the CPU page size is 16 KiB. */
     if (buffer_addr & (SZ_4K - 1))
         return false;
 
     memset(&cmd, 0, sizeof(cmd));
-    cmd.opcode = NVME_CMD_READ;
+    cmd.opcode = write ? NVME_CMD_WRITE : NVME_CMD_READ;
     cmd.nsid = nsid;
     cmd.prp1 = (u64)buffer_addr;
+    if (blocks == 2) {
+        cmd.prp2 = buffer_addr + SZ_4K;
+    } else if (blocks > 2) {
+        for (u32 i = 1; i < blocks; i++)
+            io_prp_list[i - 1] = buffer_addr + (u64)i * SZ_4K;
+        dma_wmb();
+        cmd.prp2 = (u64)io_prp_list;
+    }
     cmd.cdw10 = lba;
     cmd.cdw11 = lba >> 32;
-    cmd.cdw12 = 0; // one logical block (the NVMe NLB field is zero-based)
+    cmd.cdw12 = blocks - 1; // NLB is zero-based
 
     return nvme_exec_command(&ioq, &cmd, NULL);
 }
 
+bool nvme_read_blocks(u32 nsid, u64 lba, u32 blocks, void *buffer)
+{
+    return nvme_rw_blocks(nsid, lba, blocks, buffer, false);
+}
+
+bool nvme_write_blocks(u32 nsid, u64 lba, u32 blocks, const void *buffer)
+{
+    return nvme_rw_blocks(nsid, lba, blocks, (void *)buffer, true);
+}
+
+bool nvme_read(u32 nsid, u64 lba, void *buffer)
+{
+    return nvme_read_blocks(nsid, lba, 1, buffer);
+}
+
 bool nvme_write(u32 nsid, u64 lba, const void *buffer)
 {
-    struct nvme_command cmd;
-    u64 buffer_addr = (u64)buffer;
-
-    if (!nvme_initialized)
-        return false;
-    if (buffer_addr & (SZ_4K - 1))
-        return false;
-
-    memset(&cmd, 0, sizeof(cmd));
-    cmd.opcode = NVME_CMD_WRITE;
-    cmd.nsid = nsid;
-    cmd.prp1 = buffer_addr;
-    cmd.cdw10 = lba;
-    cmd.cdw11 = lba >> 32;
-    cmd.cdw12 = 0; // one logical block
-
-    return nvme_exec_command(&ioq, &cmd, NULL);
+    return nvme_write_blocks(nsid, lba, 1, buffer);
 }
 
 bool nvme_get_namespace_info(u32 nsid, u64 *blocks, u32 *lba_size)

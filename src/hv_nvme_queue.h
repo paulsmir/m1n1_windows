@@ -22,6 +22,7 @@ typedef uint64_t u64;
 #define VNVME_LBA_SIZE   4096
 #define VNVME_MAX_QSIZE  256
 #define VNVME_MAX_QUEUES 2
+#define VNVME_MAX_BLOCKS 32
 
 enum vnvme_admin_opcode {
     VNVME_ADMIN_DELETE_SQ = 0x00,
@@ -108,6 +109,8 @@ struct vnvme_trace_event {
 struct vnvme_backend_ops {
     bool (*read)(void *opaque, u64 lba, void *buffer);
     bool (*write)(void *opaque, u64 lba, const void *buffer);
+    bool (*read_blocks)(void *opaque, u64 lba, u32 blocks, void *buffer);
+    bool (*write_blocks)(void *opaque, u64 lba, u32 blocks, const void *buffer);
     bool (*flush)(void *opaque);
     void (*publish)(void *opaque);
     void (*irq)(void *opaque, bool asserted);
@@ -162,7 +165,7 @@ struct vnvme_ctrl {
     struct vnvme_queue queues[VNVME_MAX_QUEUES];
     struct vnvme_stats stats;
     bool irq_asserted;
-    u8 bounce[VNVME_LBA_SIZE] ALIGNED(VNVME_PAGE_SIZE);
+    u8 bounce[VNVME_MAX_BLOCKS * VNVME_LBA_SIZE] ALIGNED(VNVME_PAGE_SIZE);
 };
 
 _Static_assert(sizeof(struct vnvme_command) == 64, "invalid virtual NVMe command size");
