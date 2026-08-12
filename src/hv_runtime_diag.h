@@ -6,6 +6,7 @@
 #ifdef HV_RUNTIME_DIAG_HOST_TEST
 #include <stdbool.h>
 #else
+#include "../build/build_cfg.h"
 #include "types.h"
 #endif
 
