@@ -2,6 +2,18 @@
 
 #include "hv_apple_input.h"
 
+#ifdef HV_APPLE_INPUT_HOST_TEST
+#include <string.h>
+#endif
+
+#ifndef HV_APPLE_INPUT_HOST_TEST
+#include "adt.h"
+#include "hv.h"
+#include "hv_irq_routes.h"
+#include "string.h"
+#include "utils.h"
+#endif
+
 static bool fail(struct hv_apple_input_preflight *result,
                  enum hv_apple_input_preflight_failure failure)
 {
@@ -115,3 +127,144 @@ bool hv_apple_input_prepare(const struct hv_apple_input_observed *observed,
     result->preflight_failure = HV_APPLE_INPUT_PREFLIGHT_OK;
     return true;
 }
+
+struct apple_input_adt_gpio_function {
+    u32 phandle;
+    char name[4];
+    u32 pin;
+};
+
+bool hv_apple_input_decode_gpio_function(const void *value, u32 length,
+                                         u32 controller_phandle, u32 *pin)
+{
+    struct apple_input_adt_gpio_function function;
+
+    if (!value || !pin || length < sizeof(function))
+        return false;
+    memcpy(&function, value, sizeof(function));
+    if (function.phandle != controller_phandle)
+        return false;
+    *pin = function.pin;
+    return true;
+}
+
+bool hv_apple_input_select_parent_irq(const u32 *parents, size_t parent_count,
+                                      u32 group, u32 *parent_irq)
+{
+    if (!parents || !parent_irq || group >= parent_count)
+        return false;
+    *parent_irq = parents[group];
+    return true;
+}
+
+#ifndef HV_APPLE_INPUT_HOST_TEST
+
+static bool read_reg(const char *path, u64 *base, u64 *size)
+{
+    int trace[8];
+    int node = adt_path_offset_trace(adt, path, trace);
+    return node >= 0 && adt_get_reg(adt, trace, "reg", 0, base, size) == 0;
+}
+
+static bool read_phandle(int node, u32 *phandle)
+{
+    return node >= 0 && ADT_GETPROP(adt, node, "AAPL,phandle", phandle) == 0;
+}
+
+static bool read_gpio_function(int node, const char *name, u32 controller_phandle, u32 *pin)
+{
+    u32 length = 0;
+    const void *value = adt_getprop(adt, node, name, &length);
+    return hv_apple_input_decode_gpio_function(value, length, controller_phandle, pin);
+}
+
+bool hv_apple_input_observe_adt(struct hv_apple_input_observed *observed)
+{
+    static const u32 expected_parents[] = HV_APPLE_INPUT_PARENT_IRQ_VALUES;
+    struct hv_apple_input_observed value = {
+        /* These clocks are reviewed J313 controller settings.  The live ADT
+         * proves identity and resources; it does not publish both rates. */
+        .spi_source_hz = HV_APPLE_INPUT_SPI_SOURCE_HZ,
+        .spi_bus_hz = HV_APPLE_INPUT_SPI_BUS_HZ,
+    };
+    int spi = adt_path_offset(adt, "/arm-io/spi3");
+    int hid = adt_path_offset(adt, "/arm-io/spi3/ipd");
+    int ap_gpio = adt_path_offset(adt, "/arm-io/gpio0");
+    int nub_gpio = adt_path_offset(adt, "/arm-io/nub-gpio");
+    u32 ap_phandle, nub_phandle, hid_parent, ap_pin, length = 0;
+    const u32 *hid_interrupts;
+    const u32 *parent_interrupts;
+
+    if (!observed || spi < 0 || hid < 0 || ap_gpio < 0 || nub_gpio < 0)
+        return false;
+    value.spi_compatible = adt_is_compatible(adt, spi, "spi-1,spimc");
+    value.hid_compatible = adt_is_compatible(adt, hid, "hid-transport,spi");
+    if (!read_reg("/arm-io/spi3", &value.spi_base, &value.spi_size) ||
+        !read_reg("/arm-io/gpio0", &value.ap_gpio_base, &value.ap_gpio_size) ||
+        !read_reg("/arm-io/nub-gpio", &value.nub_gpio_base, &value.nub_gpio_size) ||
+        !read_phandle(ap_gpio, &ap_phandle) || !read_phandle(nub_gpio, &nub_phandle) ||
+        ADT_GETPROP(adt, hid, "interrupt-parent", &hid_parent) || hid_parent != nub_phandle)
+        return false;
+
+    /* Firmware names this reset/enable binding function-enable_cs on J313. */
+    if (!read_gpio_function(hid, "function-enable_cs", ap_phandle, &ap_pin))
+        return false;
+    value.ap_gpio_pin = ap_pin;
+
+    hid_interrupts = adt_getprop(adt, hid, "interrupts", &length);
+    if (!hid_interrupts || length < 2 * sizeof(u32))
+        return false;
+    value.nub_gpio_pin = hid_interrupts[0];
+
+    parent_interrupts = adt_getprop(adt, nub_gpio, "interrupts", &length);
+    if (!parent_interrupts || length != sizeof(expected_parents))
+        return false;
+    for (size_t i = 0; i < ARRAY_SIZE(expected_parents); i++) {
+        if (parent_interrupts[i] != expected_parents[i])
+            return false;
+    }
+    if (!hv_apple_input_select_parent_irq(parent_interrupts, ARRAY_SIZE(expected_parents),
+                                          HV_APPLE_INPUT_IRQ_STARTUP_GROUP,
+                                          &value.parent_irq))
+        return false;
+    *observed = value;
+    return true;
+}
+
+static bool runtime_route_available(void *context, u32 parent_irq, u32 guest_vintid)
+{
+    UNUSED(context);
+    return !hv_irq_route_from_hw(parent_irq) && !hv_irq_route_from_vintid(guest_vintid);
+}
+
+static bool runtime_map_identity(void *context, u64 base, u64 size)
+{
+    UNUSED(context);
+    return hv_map_hw(base, base, size) == 0;
+}
+
+static bool runtime_register_route(void *context, u32 parent_irq, u32 guest_vintid,
+                                   bool level)
+{
+    UNUSED(context);
+    return hv_irq_route_register(parent_irq, guest_vintid, level);
+}
+
+bool hv_apple_input_prepare_runtime(struct hv_apple_input_prepare_result *result)
+{
+    struct hv_apple_input_observed observed;
+    const struct hv_apple_input_prepare_backend backend = {
+        .route_available = runtime_route_available,
+        .map_identity = runtime_map_identity,
+        .register_level_route = runtime_register_route,
+    };
+
+    if (!result)
+        return false;
+    if (!hv_apple_input_observe_adt(&observed))
+        return prepare_fail(result, HV_APPLE_INPUT_PREPARE_PREFLIGHT,
+                            HV_APPLE_INPUT_PREFLIGHT_NULL);
+    return hv_apple_input_prepare(&observed, &backend, result);
+}
+
+#endif

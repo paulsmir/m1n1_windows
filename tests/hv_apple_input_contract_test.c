@@ -120,6 +120,26 @@ int main(void)
     assert(trace.route_checks == 0 && trace.maps == 0 && trace.route_registers == 0);
     assert(trace.writes == 0);
 
+    /* ADT function-* is phandle + FourCC + argument words. */
+    const unsigned char gpio_function[] = {
+        0x6b, 0, 0, 0, 'g', 'p', 'i', 'o', 0xc3, 0, 0, 0, 0, 0, 0, 0,
+    };
+    u32 pin = 0;
+    assert(hv_apple_input_decode_gpio_function(gpio_function, sizeof(gpio_function),
+                                               0x6b, &pin));
+    assert(pin == HV_APPLE_INPUT_AP_GPIO_PIN);
+    assert(!hv_apple_input_decode_gpio_function(gpio_function, sizeof(gpio_function),
+                                                0x6c, &pin));
+    assert(!hv_apple_input_decode_gpio_function(gpio_function, 8, 0x6b, &pin));
+
+    const u32 parents[] = HV_APPLE_INPUT_PARENT_IRQ_VALUES;
+    u32 parent = 0;
+    assert(hv_apple_input_select_parent_irq(parents, HV_APPLE_INPUT_PARENT_IRQ_COUNT,
+                                            HV_APPLE_INPUT_IRQ_STARTUP_GROUP, &parent));
+    assert(parent == HV_APPLE_INPUT_PHYSICAL_PARENT_IRQ);
+    assert(!hv_apple_input_select_parent_irq(parents, HV_APPLE_INPUT_PARENT_IRQ_COUNT,
+                                             HV_APPLE_INPUT_PARENT_IRQ_COUNT, &parent));
+
     /* A route collision is detected before any stage-2 mapping. */
     observed = valid_observation();
     trace = (struct backend_trace){.route_available = false};

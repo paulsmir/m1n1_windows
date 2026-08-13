@@ -11,6 +11,8 @@
 #include "hv_diag.h"
 #include "hv_fb_stream.h"
 #include "hv_guest_cpu_state.h"
+#include "hv_apple_input.h"
+#include "hv_irq_routes.h"
 #include "hv_nvme_queue.h"
 #include "hv_vgic.h"
 #include "memory.h"
@@ -175,6 +177,19 @@ void hv_init(void)
     hv_wdt_init();
 
     hv_pt_init();
+
+    /* Assisted and autonomous launches share this exact passthrough gate.
+     * It only maps reviewed resources and routes the level interrupt; the
+     * Windows driver remains the sole owner of SPI/GPIO programming. */
+    hv_irq_routes_reset_dynamic();
+    struct hv_apple_input_prepare_result apple_input;
+    if (!hv_apple_input_prepare_runtime(&apple_input))
+        printf("HV: Apple input passthrough disabled (prepare=%u preflight=%u)\n",
+               apple_input.failure, apple_input.preflight_failure);
+    else
+        printf("HV: Apple input passthrough mapped, IRQ %u -> vINTID %u\n",
+               (u32)HV_APPLE_INPUT_PHYSICAL_PARENT_IRQ,
+               (u32)HV_APPLE_INPUT_GUEST_VINTID);
 
     // Configure hypervisor defaults
 

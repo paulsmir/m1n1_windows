@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: MIT */
 
 #include "hv_launch_golden_j313.h"
+#include "hv_apple_input.generated.h"
 
 #define GOLDEN_J313_TARGET          0x3331334aU
 #define GOLDEN_J313_SCHEMA_REVISION 1
@@ -71,6 +72,14 @@ static void fill_common(struct hv_contract_snapshot *snapshot, uint32_t checkpoi
     snapshot->irq_routes[0] = (struct hv_contract_irq_route){
         .physical_irq = 857, .vintid = 857, .flags = HV_CONTRACT_IRQ_LEVEL};
     snapshot->irq_route_count = 1;
+    if (checkpoint != HV_CONTRACT_PRE_HV_INIT) {
+        snapshot->irq_routes[1] = (struct hv_contract_irq_route){
+            .physical_irq = HV_APPLE_INPUT_PHYSICAL_PARENT_IRQ,
+            .vintid = HV_APPLE_INPUT_GUEST_VINTID,
+            .flags = HV_CONTRACT_IRQ_LEVEL,
+        };
+        snapshot->irq_route_count = 2;
+    }
     snapshot->devices = (struct hv_contract_devices){
         .pci_ecam_base = 0x690000000ULL,
         .xhci_base = 0x502280000ULL,

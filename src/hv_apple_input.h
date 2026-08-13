@@ -4,6 +4,7 @@
 #define HV_APPLE_INPUT_H
 
 #ifdef HV_APPLE_INPUT_HOST_TEST
+#include <stddef.h>
 #include <stdbool.h>
 #include <stdint.h>
 typedef uint32_t u32;
@@ -79,6 +80,16 @@ struct hv_apple_input_prepare_result {
     enum hv_apple_input_prepare_failure failure;
     enum hv_apple_input_preflight_failure preflight_failure;
 };
+
+bool hv_apple_input_decode_gpio_function(const void *value, u32 length,
+                                         u32 controller_phandle, u32 *pin);
+bool hv_apple_input_select_parent_irq(const u32 *parents, size_t parent_count,
+                                      u32 group, u32 *parent_irq);
+
+#ifndef HV_APPLE_INPUT_HOST_TEST
+bool hv_apple_input_observe_adt(struct hv_apple_input_observed *observed);
+bool hv_apple_input_prepare_runtime(struct hv_apple_input_prepare_result *result);
+#endif
 
 bool hv_apple_input_validate(const struct hv_apple_input_observed *observed,
                              struct hv_apple_input_preflight *result);
