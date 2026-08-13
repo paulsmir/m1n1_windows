@@ -38,6 +38,7 @@ hv_nvme_queue_test
 hv_nvme_fast_path_test
 hv_fiq_fast_path_test
 hv_tick_policy_test
+hv_timer_delivery_test
 hv_runtime_diag_debug_test
 hv_runtime_diag_verbose_test
 hv_runtime_diag_release_test
@@ -165,6 +166,10 @@ for name in "$@"; do
             ;;
         hv_tick_policy_test)
             sources="$sources src/hv_tick_policy.c"
+            ;;
+        hv_timer_delivery_test)
+            definitions="-DHV_TIMER_DELIVERY_HOST_TEST"
+            sources="$sources src/hv_timer_delivery.c"
             ;;
         hv_runtime_diag_debug_test)
             definitions="-DHV_RUNTIME_DIAG_HOST_TEST"

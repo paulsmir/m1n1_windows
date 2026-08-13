@@ -111,6 +111,36 @@ static void test_timer_reexpiry_coalesces_into_the_active_lr(void)
     assert(hv_vgic_diag_repend_live_intid(lrs, 19) == -1);
 }
 
+static void test_level_sync_covers_every_lr_state(void)
+{
+    const uint64_t pending = 1ULL << 62;
+    const uint64_t active = 1ULL << 63;
+    const uint64_t payload = (0x20ULL << 48) | 18;
+    const struct {
+        uint64_t before;
+        bool asserted;
+        uint64_t after;
+        bool changed;
+        bool newly_pending;
+    } cases[] = {
+        {payload, false, payload, false, false},
+        {pending | payload, false, payload, true, false},
+        {active | payload, false, active | payload, false, false},
+        {active | pending | payload, false, active | payload, true, false},
+        {pending | payload, true, pending | payload, false, false},
+        {active | payload, true, active | pending | payload, true, true},
+        {active | pending | payload, true, active | pending | payload, false, false},
+    };
+
+    for (unsigned int i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+        struct hv_vgic_level_result got =
+            hv_vgic_diag_sync_level_lr(cases[i].before, cases[i].asserted);
+        assert(got.lr == cases[i].after);
+        assert(got.changed == cases[i].changed);
+        assert(got.newly_pending == cases[i].newly_pending);
+    }
+}
+
 static void test_priority_is_masked_only_by_pmr_until_bpr_is_emulated(void)
 {
     assert(hv_vgic_diag_priority_deliverable(0x20, 0xf8, 0xff));
@@ -129,6 +159,7 @@ int main(void)
     test_finds_the_live_lr_for_sgi_repending();
     test_eoi_preserves_a_repending_interrupt();
     test_timer_reexpiry_coalesces_into_the_active_lr();
+    test_level_sync_covers_every_lr_state();
     test_priority_is_masked_only_by_pmr_until_bpr_is_emulated();
     puts("hv_vgic_diag_test: ok");
     return 0;

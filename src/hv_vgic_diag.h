@@ -20,11 +20,18 @@ struct hv_vgic_diag_snapshot {
     u32 occupied_lrs;
 };
 
+struct hv_vgic_level_result {
+    u64 lr;
+    bool changed;
+    bool newly_pending;
+};
+
 void hv_vgic_diag_classify_lrs(const u64 lrs[HV_VGIC_DIAG_LR_COUNT],
                                 struct hv_vgic_diag_snapshot *out);
 int hv_vgic_diag_find_live_intid(const u64 lrs[HV_VGIC_DIAG_LR_COUNT], u32 intid);
 bool hv_vgic_diag_has_live_intid(const u64 lrs[HV_VGIC_DIAG_LR_COUNT], u32 intid);
 int hv_vgic_diag_repend_live_intid(u64 lrs[HV_VGIC_DIAG_LR_COUNT], u32 intid);
+struct hv_vgic_level_result hv_vgic_diag_sync_level_lr(u64 lr, bool asserted);
 u64 hv_vgic_diag_eoi_lr(u64 lr);
 bool hv_vgic_diag_priority_deliverable(u32 priority, u32 pmr, u32 running_priority);
 

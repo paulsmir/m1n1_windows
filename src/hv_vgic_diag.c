@@ -50,6 +50,18 @@ int hv_vgic_diag_repend_live_intid(u64 lrs[HV_VGIC_DIAG_LR_COUNT], u32 intid)
     return lr;
 }
 
+struct hv_vgic_level_result hv_vgic_diag_sync_level_lr(u64 lr, bool asserted)
+{
+    const u64 pending = 1ULL << 62;
+    u64 next = asserted ? lr | pending : lr & ~pending;
+
+    return (struct hv_vgic_level_result){
+        .lr = next,
+        .changed = next != lr,
+        .newly_pending = asserted && !(lr & pending),
+    };
+}
+
 u64 hv_vgic_diag_eoi_lr(u64 lr)
 {
     const u64 pending = 1ULL << 62;
