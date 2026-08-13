@@ -1,5 +1,6 @@
 #include <assert.h>
 #include <stdio.h>
+#include <string.h>
 
 #include "../src/hv_apple_input.h"
 
@@ -120,17 +121,25 @@ int main(void)
     assert(trace.route_checks == 0 && trace.maps == 0 && trace.route_registers == 0);
     assert(trace.writes == 0);
 
-    /* ADT function-* is phandle + FourCC + argument words. */
+    /* Live J313 ADT function-spi_en is phandle + "GPIO" + argument
+     * words.  The binding itself identifies the controller; callers must not
+     * guess a path such as /arm-io/gpio0. */
     const unsigned char gpio_function[] = {
-        0x6b, 0, 0, 0, 'g', 'p', 'i', 'o', 0xc3, 0, 0, 0, 0, 0, 0, 0,
+        0x6a, 0, 0, 0, 'O', 'I', 'P', 'G', 0xc3, 0, 0, 0, 1, 1, 0, 0,
     };
+    u32 phandle = 0;
     u32 pin = 0;
     assert(hv_apple_input_decode_gpio_function(gpio_function, sizeof(gpio_function),
-                                               0x6b, &pin));
+                                               &phandle, &pin));
+    assert(phandle == 0x6a);
     assert(pin == HV_APPLE_INPUT_AP_GPIO_PIN);
-    assert(!hv_apple_input_decode_gpio_function(gpio_function, sizeof(gpio_function),
-                                                0x6c, &pin));
-    assert(!hv_apple_input_decode_gpio_function(gpio_function, 8, 0x6b, &pin));
+    assert(!hv_apple_input_decode_gpio_function(gpio_function, 8, &phandle, &pin));
+
+    unsigned char wrong_fourcc[sizeof(gpio_function)];
+    memcpy(wrong_fourcc, gpio_function, sizeof(gpio_function));
+    wrong_fourcc[4] = 'g';
+    assert(!hv_apple_input_decode_gpio_function(wrong_fourcc, sizeof(wrong_fourcc),
+                                                &phandle, &pin));
 
     const u32 parents[] = HV_APPLE_INPUT_PARENT_IRQ_VALUES;
     u32 parent = 0;

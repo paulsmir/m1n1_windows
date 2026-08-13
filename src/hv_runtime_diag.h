@@ -21,6 +21,20 @@ static inline bool hv_runtime_diag_enabled(void)
 }
 
 /*
+ * Synchronous console tracing is too expensive for the normal monitor image.
+ * Keep monitor-only snapshots available through hv_runtime_diag_enabled(), but
+ * require the explicit verbose build for formatting from guest hot paths.
+ */
+static inline bool hv_runtime_trace_enabled(void)
+{
+#if defined(RELEASE) || !defined(HV_RUNTIME_DIAG_VERBOSE)
+    return false;
+#else
+    return true;
+#endif
+}
+
+/*
  * Continuous formatting from FIQ/vGIC hot paths is intentionally a separate
  * build-time mode.  A normal debug image keeps lock-free snapshots and
  * anomaly/bugcheck reporting enabled without synchronously flooding UART.
@@ -36,7 +50,7 @@ static inline bool hv_runtime_diag_verbose_enabled(void)
 
 #define HV_RUNTIME_TRACE(...)                                                                    \
     do {                                                                                         \
-        if (hv_runtime_diag_enabled())                                                           \
+        if (hv_runtime_trace_enabled())                                                          \
             printf(__VA_ARGS__);                                                                 \
     } while (0)
 

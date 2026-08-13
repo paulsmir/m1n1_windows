@@ -2251,7 +2251,8 @@ int hv_vgic3_do_iar1(void){
         // Atomic: this counter is shared across cores once SMP is on, and a plain ++ there
         // would both race and let the print fire far more than the intended 16 times.
         static u32 spurious_iar = 0;
-        if(__atomic_fetch_add(&spurious_iar, 1, __ATOMIC_RELAXED) < 16)
+        if(hv_runtime_trace_enabled() &&
+           __atomic_fetch_add(&spurious_iar, 1, __ATOMIC_RELAXED) < 16)
             printf("VGIC IAR1 SPURIOUS: HCR=%lx VMCR=%lx\n", mrs(HCR_EL2), mrs(ICH_VMCR_EL2));
         hv_vgic3_update_vi();
         return 0x3FF;

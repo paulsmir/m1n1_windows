@@ -25,7 +25,7 @@
 #include "adt.h"
 #include "xnuboot.h"
 
-#define HV_TICK_RATE      5000
+#define HV_TICK_RATE      1000
 #define HV_SLOW_TICK_RATE 1
 
 DECLARE_SPINLOCK(bhl);
@@ -182,6 +182,11 @@ bool hv_init(void)
      * It only maps reviewed resources and routes the level interrupt; the
      * Windows driver remains the sole owner of SPI/GPIO programming. */
     hv_irq_routes_reset_dynamic();
+#ifdef HV_DISABLE_APPLE_INPUT
+    /* Narrow hardware A/B profile: preserve every other launch contract while
+     * proving whether the optional SPI-HID mapping/route affects guest timing. */
+    printf("HV: Apple input passthrough disabled by A/B build\n");
+#else
     struct hv_apple_input_prepare_result apple_input;
     if (!hv_apple_input_prepare_runtime(&apple_input))
         printf("HV: Apple input passthrough disabled (prepare=%u preflight=%u)\n",
@@ -190,6 +195,7 @@ bool hv_init(void)
         printf("HV: Apple input passthrough mapped, IRQ %u -> vINTID %u\n",
                (u32)HV_APPLE_INPUT_PHYSICAL_PARENT_IRQ,
                (u32)HV_APPLE_INPUT_GUEST_VINTID);
+#endif
 
     // Configure hypervisor defaults
 
@@ -251,13 +257,13 @@ bool hv_init(void)
 #endif
 
     // Compute tick interval
-    hv_tick_interval = mrs(CNTFRQ_EL0) / HV_TICK_RATE;
+    hv_tick_interval = hv_tick_interval_ticks(mrs(CNTFRQ_EL0), hv_boot_tick_rate());
 
     hv_has_ecv = mrs(ID_AA64MMFR0_EL1) & (0xfULL << 60);
     u32 secondary_tick_rate = hv_secondary_tick_rate(hv_has_ecv);
     hv_secondary_tick_interval =
         hv_tick_interval_ticks(mrs(CNTFRQ_EL0), secondary_tick_rate);
-    printf("HV: tick rates boot=%uHz secondary=%uHz\n", HV_TICK_RATE,
+    printf("HV: tick rates boot=%uHz secondary=%uHz\n", hv_boot_tick_rate(),
            secondary_tick_rate);
 
     if (hv_has_ecv) {

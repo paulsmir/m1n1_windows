@@ -80,17 +80,22 @@ void smp_secondary_entry(void)
                 sysop("wfe");
             } else {
                 deep_wfi();
-
-                if (cpu_features->fast_ipi) {
-                    msr(SYS_IMP_APL_IPI_SR_EL1, 1);
-                } else {
-                    aic_ack(); // Actually read IPI reason
-                    aic_write(AIC_IPI_ACK, AIC_IPI_OTHER);
-                    aic_write(AIC_IPI_MASK_CLR, AIC_IPI_OTHER);
-                }
             }
-            sysop("isb");
         }
+
+        /* Every mailbox publish sends both IPI and SEV so it can wake a
+         * secondary that observed either side of the WFI-to-WFE mode
+         * transition.  The target may observe the mailbox before it ever
+         * sleeps, so acknowledge the physical IPI unconditionally before
+         * running the callback. */
+        if (cpu_features->fast_ipi) {
+            msr(SYS_IMP_APL_IPI_SR_EL1, 1);
+        } else {
+            aic_ack(); // Actually read IPI reason
+            aic_write(AIC_IPI_ACK, AIC_IPI_OTHER);
+            aic_write(AIC_IPI_MASK_CLR, AIC_IPI_OTHER);
+        }
+        sysop("isb");
         sysop("dmb sy");
         me->flag++;
         sysop("dmb sy");
@@ -452,10 +457,8 @@ void smp_call4(int cpu, void *func, u64 arg0, u64 arg1, u64 arg2, u64 arg3)
     target->target = (u64)func;
     sysop("dsb sy");
 
-    if (wfe_mode)
-        sysop("sev");
-    else
-        smp_send_ipi(cpu);
+    smp_send_ipi(cpu);
+    sysop("sev");
 
     while (target->flag == flag)
         sysop("dmb sy");

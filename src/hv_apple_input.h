@@ -82,7 +82,7 @@ struct hv_apple_input_prepare_result {
 };
 
 bool hv_apple_input_decode_gpio_function(const void *value, u32 length,
-                                         u32 controller_phandle, u32 *pin);
+                                         u32 *controller_phandle, u32 *pin);
 bool hv_apple_input_select_parent_irq(const u32 *parents, size_t parent_count,
                                       u32 group, u32 *parent_irq);
 

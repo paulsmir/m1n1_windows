@@ -126,7 +126,7 @@ static void hv_vgic3_queue_sgi(int cpu, u32 intid)
     hv_sgi_diag_note(&PERCPU_N(cpu, sgi_diag), HV_SGI_DIAG_QUEUE);
     static u32 trace_budget = 32;
 
-    if (hv_runtime_diag_enabled() && trace_budget) {
+    if (hv_runtime_trace_enabled() && trace_budget) {
         trace_budget--;
         printf("HV SGI QUEUE: from=%d to=%d intid=%u old=0x%x%s\n", smp_id(), cpu,
                intid, old, old & bit ? " coalesced" : "");
@@ -584,7 +584,7 @@ static void hv_update_fiq(void)
             timer_p_injected[tcpu] = true;
             if (!dbg_inj_t0)
                 dbg_inj_t0 = mrs(CNTPCT_EL0);
-            if (hv_runtime_diag_enabled() && (++dbg_inj_count & 1023) == 0) {
+            if (hv_runtime_trace_enabled() && (++dbg_inj_count & 1023) == 0) {
                 u64 now = mrs(CNTPCT_EL0);
                 printf("TIMERRATE: inj=0x%lx elapsed_ticks=0x%lx cntfrq=0x%lx interval=0x%lx\n",
                        dbg_inj_count, now - dbg_inj_t0, mrs(CNTFRQ_EL0),
@@ -2106,6 +2106,16 @@ void hv_exc_fiq(struct exc_info *ctx)
          */
         hv_update_fiq();
         hv_handle_local_ipi();
+        /*
+         * Both helpers above may create or repend an LR.  HCR.VI is only a cached
+         * output line; reading it without recomputing from the live LR/VMCR state can
+         * therefore observe the value from before this FIQ.  A secondary that returns
+         * with a Pending timer LR and VI clear remains asleep indefinitely and Windows
+         * eventually reports a clock watchdog.  Resynchronise only at this early-return
+         * boundary rather than on every serialized exception exit (which measurably
+         * increases guest DPC latency).
+         */
+        hv_vgic3_update_vi();
         sysop("isb");
         hv_watchdog_snapshot_tick(ctx);
         snapshot_sampled = true;

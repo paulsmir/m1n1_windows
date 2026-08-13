@@ -69,6 +69,9 @@ endif
 ifeq ($(RUNTIME_DIAG_VERBOSE),1)
 CFG += HV_RUNTIME_DIAG_VERBOSE
 endif
+ifeq ($(APPLE_INPUT),0)
+CFG += HV_DISABLE_APPLE_INPUT
+endif
 
 # Required for no_std + alloc for now
 export RUSTC_BOOTSTRAP=1

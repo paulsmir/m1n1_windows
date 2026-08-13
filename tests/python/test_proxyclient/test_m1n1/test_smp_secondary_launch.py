@@ -3,6 +3,7 @@ import unittest
 
 
 HV_C = pathlib.Path(__file__).resolve().parents[4] / "src" / "hv.c"
+SMP_C = pathlib.Path(__file__).resolve().parents[4] / "src" / "smp.c"
 
 
 def function_body(source, signature):
@@ -20,6 +21,54 @@ def function_body(source, signature):
 
 
 class SecondaryLaunchContractTest(unittest.TestCase):
+    def test_mailbox_publication_and_completion_use_explicit_barriers(self):
+        source = SMP_C.read_text()
+        call = function_body(source, "void smp_call4(int cpu")
+        wait = function_body(source, "u64 smp_wait(int cpu)")
+        secondary = function_body(source, "void smp_secondary_entry(void)")
+
+        self.assertIn('sysop("dsb sy")', call)
+        self.assertIn("target->target = (u64)func", call)
+        self.assertIn("while (target->flag == flag)", call)
+        self.assertIn("while (!(target = me->target))", secondary)
+        self.assertIn("me->target = 0", secondary)
+        self.assertIn("while (target->target)", wait)
+
+    def test_secondary_completion_does_not_require_lse_rmw(self):
+        source = SMP_C.read_text()
+        secondary = function_body(source, "void smp_secondary_entry(void)")
+
+        # This path executes before the secondary has completed its first MMU
+        # setup callback.  Keep it on ordinary load/store plus the existing
+        # barrier protocol; an atomic RMW lets Clang emit LDADD here.
+        self.assertNotIn("__atomic_add_fetch(&me->flag", secondary)
+        self.assertIn("me->flag++", secondary)
+
+    def test_wfe_transition_wakes_existing_wfi_waiters(self):
+        source = SMP_C.read_text()
+        transition = function_body(source, "void smp_set_wfe_mode(bool new_mode)")
+
+        self.assertIn("wfe_mode = new_mode", transition)
+        self.assertIn('sysop("dsb sy")', transition)
+        self.assertIn("smp_send_ipi(cpu)", transition)
+        self.assertLess(transition.index("wfe_mode = new_mode"),
+                        transition.index("smp_send_ipi(cpu)"))
+
+    def test_every_mailbox_wakes_both_wfi_and_wfe_waiters(self):
+        source = SMP_C.read_text()
+        call = function_body(source, "void smp_call4(int cpu")
+        secondary = function_body(source, "void smp_secondary_entry(void)")
+
+        self.assertIn("smp_send_ipi(cpu)", call)
+        self.assertIn('sysop("sev")', call)
+        self.assertLess(call.index("smp_send_ipi(cpu)"), call.index('sysop("sev")'))
+        # A target may see the mailbox before sleeping at all.  The physical
+        # IPI therefore has to be acknowledged after the wait loop, not only
+        # inside its WFI branch.
+        wait_end = secondary.index('sysop("dmb sy")')
+        ack = secondary.index("SYS_IMP_APL_IPI_SR_EL1")
+        self.assertLess(wait_end, ack)
+
     def test_hv_init_returns_secondary_cpu_readiness(self):
         source = HV_C.read_text()
         primary = function_body(source, "bool hv_init(void)")
