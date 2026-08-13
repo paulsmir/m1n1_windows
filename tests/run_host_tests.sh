@@ -43,6 +43,7 @@ hv_runtime_diag_verbose_test
 hv_runtime_diag_release_test
 hv_watchdog_snapshot_test
 hv_wfx_policy_test
+hv_apple_input_contract_test
 hv_sgi_pending_test
 hv_sgi_diag_test
 hv_vgic_diag_test
@@ -180,6 +181,10 @@ for name in "$@"; do
             ;;
         hv_wfx_policy_test)
             definitions="-DHV_WFX_POLICY_HOST_TEST"
+            ;;
+        hv_apple_input_contract_test)
+            definitions="-DHV_APPLE_INPUT_HOST_TEST"
+            sources="$sources src/hv_apple_input.c"
             ;;
         hv_sgi_pending_test)
             definitions="-DHV_SGI_PENDING_HOST_TEST"
