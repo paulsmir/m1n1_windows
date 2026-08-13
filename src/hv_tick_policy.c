@@ -2,7 +2,7 @@
 #include "hv_tick_policy.h"
 
 #define HV_ECV_SECONDARY_TICK_RATE 1
-#define HV_FALLBACK_SECONDARY_TICK_RATE 1000
+#define HV_FALLBACK_SECONDARY_TICK_RATE 100
 
 uint32_t hv_boot_tick_rate(void)
 {
@@ -21,12 +21,12 @@ uint32_t hv_secondary_tick_rate(bool has_ecv)
     /*
      * ECV lets secondaries run with an almost idle EL2 housekeeping tick. T8103
      * has no ECV. Its guest timer normally arrives on its own FIQ route, but
-     * hardware snapshots have repeatedly shown P-cluster timer LRs stuck
-     * active+pending with the physical route masked. The housekeeping tick is the
-     * bounded recovery path for that lost progress. Use a 1 ms recovery bound: the
-     * previous 10 ms bound allowed CPU4/CPU6 to remain stalled until Windows fired
-     * CLOCK_WATCHDOG_TIMEOUT. This is still one fifth of the old 5 kHz cadence and
-     * avoids restoring the pathological all-core polling overhead.
+     * hardware snapshots have shown P-cluster timer LRs stuck active+pending with
+     * the physical route masked. The housekeeping tick remains a bounded recovery
+     * path, but it is not the guest architectural timer. Running it at 1 kHz on
+     * every secondary causes seven thousand extra EL2 entries and vGIC
+     * resynchronisations per second. Keep the 10 ms recovery bound used by the
+     * accepted responsive baseline; normal timer delivery remains event driven.
      */
     return has_ecv ? HV_ECV_SECONDARY_TICK_RATE : HV_FALLBACK_SECONDARY_TICK_RATE;
 }
