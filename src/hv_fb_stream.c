@@ -77,8 +77,9 @@ void hv_fb_stream_tick(struct hv_fb_stream *stream)
             .payload_size = payload_size,
         };
         const void *payload = (const void *)(uintptr_t)(stream->pa + stream->offset);
+        memcpy(stream->payload_snapshot, payload, payload_size);
 
-        if (!stream->send(stream->send_opaque, &header, payload)) {
+        if (!stream->send(stream->send_opaque, &header, stream->payload_snapshot)) {
             stream->stats.backpressure_skips++;
             break;
         }

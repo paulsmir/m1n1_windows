@@ -14,6 +14,7 @@
 //
 
 #include "hv.h"
+#include "hv_runtime_diag.h"
 #include "hv_pci_state.h"
 #include "iodev.h"
 #include "types.h"
@@ -160,8 +161,8 @@ static bool handle_pci_cfg(struct exc_info *ctx, u64 addr, u64 *val, bool write,
     }
     // Trace every access to our device so the enumerator's walk is visible.
     if (bus == 0 && dev == 0 && fn == 0)
-        printf("HV: PCI cfg 00:00.0 reg=0x%03x w=%d width=%d val=0x%lx\n", reg, write, bytes,
-               write ? *val : 0);
+        HV_RUNTIME_TRACE("HV: PCI cfg 00:00.0 reg=0x%03x w=%d width=%d val=0x%lx\n", reg,
+                         write, bytes, write ? *val : 0);
 
     // Only 00:00.0 exists. Any other BDF reads as all-ones ("no device present"); a missing
     // all-ones default here makes the enumerator probe empty space forever.

@@ -5,6 +5,7 @@
 // file owns the BAR register model, Apple ANS backend connection, and virtual INTx line.
 
 #include "hv.h"
+#include "hv_runtime_diag.h"
 #include "hv_nvme_fast_path.h"
 #include "hv_nvme_queue.h"
 #include "hv_vgic.h"
@@ -67,6 +68,8 @@ static struct {
 
 static bool nvme_trace_take(void)
 {
+    if (!hv_runtime_diag_enabled())
+        return false;
     if (!nvme_trace_budget)
         return false;
     nvme_trace_budget--;
@@ -215,16 +218,16 @@ void hv_nvme_get_diag_snapshot(struct vnvme_snapshot *out, bool *ready)
 static void backend_irq(void *opaque, bool asserted)
 {
     UNUSED(opaque);
-    if (nvme_trace_take())
-        printf("HV: NVMe INTx logical=%d masked=0x%x injected=%d\n", asserted, regs.intms,
-               irq_delivery.outstanding);
+    if (hv_runtime_diag_verbose_enabled() && nvme_trace_take())
+        HV_RUNTIME_VERBOSE_TRACE("HV: NVMe INTx logical=%d masked=0x%x injected=%d\n", asserted,
+                                 regs.intms, irq_delivery.outstanding);
     try_raise_intx();
 }
 
 static void backend_trace(void *opaque, const struct vnvme_trace_event *event)
 {
     UNUSED(opaque);
-    if (!nvme_trace_take())
+    if (!hv_runtime_diag_verbose_enabled() || !nvme_trace_take())
         return;
 
     if (event->type == VNVME_TRACE_SUBMISSION) {
@@ -389,15 +392,15 @@ static void reg_write(u32 off, int width, u64 value)
     u32 merged = merge_write(register_value(base), byte_offset, width, value);
     switch (base) {
         case NVME_INTMS:
-            if (nvme_trace_take())
-                printf("HV: NVMe INTMS old=0x%x set=0x%x new=0x%x\n", regs.intms, merged,
-                       regs.intms | merged);
+            if (hv_runtime_diag_verbose_enabled() && nvme_trace_take())
+                HV_RUNTIME_VERBOSE_TRACE("HV: NVMe INTMS old=0x%x set=0x%x new=0x%x\n",
+                                         regs.intms, merged, regs.intms | merged);
             regs.intms |= merged;
             break;
         case NVME_INTMC:
-            if (nvme_trace_take())
-                printf("HV: NVMe INTMC old=0x%x clear=0x%x new=0x%x\n", regs.intms, merged,
-                       regs.intms & ~merged);
+            if (hv_runtime_diag_verbose_enabled() && nvme_trace_take())
+                HV_RUNTIME_VERBOSE_TRACE("HV: NVMe INTMC old=0x%x clear=0x%x new=0x%x\n",
+                                         regs.intms, merged, regs.intms & ~merged);
             regs.intms &= ~merged;
             try_raise_intx();
             break;
@@ -417,11 +420,11 @@ static bool doorbell_write(u32 index, u32 value)
     if (!(regs.csts & CSTS_RDY))
         return true;
     u16 qid = index / 2;
-    if (nvme_trace_take())
-        printf("HV: NVMe doorbell q=%u %s=%u irq=%d injected=%d masked=0x%x\n", qid,
-               (index & 1) ? "CQH" : "SQT", value, queue_ctrl.irq_asserted,
-               irq_delivery.outstanding,
-               regs.intms);
+    if (hv_runtime_diag_verbose_enabled() && nvme_trace_take())
+        HV_RUNTIME_VERBOSE_TRACE(
+            "HV: NVMe doorbell q=%u %s=%u irq=%d injected=%d masked=0x%x\n", qid,
+            (index & 1) ? "CQH" : "SQT", value, queue_ctrl.irq_asserted,
+            irq_delivery.outstanding, regs.intms);
     bool ok;
     if (index & 1) {
         ok = vnvme_cq_doorbell(&queue_ctrl, qid, value);

@@ -14,7 +14,9 @@
  * waiting for the legacy, global hypervisor lock.  The interruptible CPU and
  * explicit proxy CPU switches still use the serialized path.
  */
-bool hv_fiq_secondary_fast_eligible(int cpu, int interruptible_cpu, int want_cpu);
-bool hv_fiq_secondary_fast_complete(bool eligible, bool fiq_pending_after_local_sources);
+bool hv_fiq_secondary_fast_eligible(int cpu, int interruptible_cpu, int want_cpu,
+                                    bool host_rendezvous_active);
+bool hv_fiq_secondary_fast_complete(bool eligible, bool fiq_pending_after_local_sources,
+                                    bool virtual_irq_pending);
 
 #endif

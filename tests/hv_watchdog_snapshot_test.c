@@ -11,6 +11,10 @@ static void test_publish_exposes_one_complete_generation(void)
         .pc = 0xfffff802ee276998ULL,
         .cntpct = 0x589afab31ULL,
         .cntvoff = 0x123456789abcdef0ULL,
+        .hcr = 0x80000081ULL,
+        .ich_hcr = 0x1405ULL,
+        .ich_vmcr = 0xf8000003ULL,
+        .isr = 0x40ULL,
         .sgi_iar = 18288,
         .sgi_eoi = 18287,
     };
@@ -22,6 +26,10 @@ static void test_publish_exposes_one_complete_generation(void)
     assert(out.pc == 0xfffff802ee276998ULL);
     assert(out.cntpct == 0x589afab31ULL);
     assert(out.cntvoff == 0x123456789abcdef0ULL);
+    assert(out.hcr == 0x80000081ULL);
+    assert(out.ich_hcr == 0x1405ULL);
+    assert(out.ich_vmcr == 0xf8000003ULL);
+    assert(out.isr == 0x40ULL);
     assert(out.sgi_iar == 18288);
     assert(out.sgi_eoi == 18287);
 }
@@ -36,9 +44,9 @@ static void test_reader_rejects_an_in_progress_generation(void)
 
 static void test_sparse_capture_cadence(void)
 {
-    assert(!hv_watchdog_snapshot_due(4095));
-    assert(hv_watchdog_snapshot_due(4096));
-    assert(!hv_watchdog_snapshot_due(4097));
+    assert(!hv_watchdog_snapshot_due(63));
+    assert(hv_watchdog_snapshot_due(64));
+    assert(!hv_watchdog_snapshot_due(65));
 }
 
 static void test_periodic_dump_cadence_handles_skipped_ticks(void)

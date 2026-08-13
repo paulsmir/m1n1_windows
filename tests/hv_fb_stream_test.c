@@ -13,6 +13,8 @@ struct sent_event {
 
 struct fake_sender {
     bool accept;
+    uint8_t *mutate_source;
+    size_t mutate_size;
     unsigned count;
     struct sent_event events[8];
 };
@@ -45,6 +47,14 @@ static bool fake_send(void *opaque, const struct hv_fb_chunk_header *header,
     if (!sender->accept)
         return false;
 
+    /*
+     * The real framebuffer is live guest memory.  Model Windows changing it
+     * after the stream has prepared an event but before the USB backend copies
+     * the iovecs.  The payload handed to send() must be a stable snapshot.
+     */
+    if (sender->mutate_source)
+        memset(sender->mutate_source, 0xee, sender->mutate_size);
+
     assert(sender->count < 8);
     assert(header->payload_size <= sizeof(sender->events[0].payload));
     sender->events[sender->count].header = *header;
@@ -65,14 +75,21 @@ int main(void)
     assert(hv_fb_stream_configure(&stream, (uint64_t)frame, sizeof(frame), 1, 1, 11,
                                   translate_identity, fake_send, &sender));
 
+    uint8_t first_chunk[4];
+    memcpy(first_chunk, frame, sizeof(first_chunk));
+    sender.mutate_source = frame;
+    sender.mutate_size = sizeof(first_chunk);
+
     hv_fb_stream_tick(&stream);
     assert(sender.count == 1);
     assert(sender.events[0].header.magic == HV_FB_STREAM_MAGIC);
     assert(sender.events[0].header.frame_id == 0);
     assert(sender.events[0].header.offset == 0);
     assert(sender.events[0].header.payload_size == 4);
-    assert(memcmp(sender.events[0].payload, frame, 4) == 0);
+    assert(memcmp(sender.events[0].payload, first_chunk, 4) == 0);
     assert(stream.offset == 4);
+
+    sender.mutate_source = NULL;
 
     hv_fb_stream_tick(&stream);
     assert(sender.count == 2);

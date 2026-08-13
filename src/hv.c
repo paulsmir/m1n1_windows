@@ -3,6 +3,7 @@
 #include "hv.h"
 #include "hv_tick_policy.h"
 #include "hv_runtime_diag.h"
+#include "hv_wfx_policy.h"
 #include "assert.h"
 #include "cpu_regs.h"
 #include "display.h"
@@ -42,6 +43,7 @@ static bool hv_has_ecv;
 static bool hv_should_exit[MAX_CPUS];
 bool hv_started_cpus[MAX_CPUS];
 u64 hv_cpus_in_guest;
+bool hv_rendezvous_active;
 u64 hv_saved_sp[MAX_CPUS];
 static struct hv_fb_stream hv_framebuffer_stream;
 
@@ -188,6 +190,10 @@ void hv_init(void)
                  HCR_AMO | // Trap SError exceptions
                  HCR_IMO | // Trap IRQ exceptions (for now)
                  HCR_FMO | // Trap FIQ exceptions (effectively required for now)
+#ifdef HV_DIAG_TRAP_WFX
+                 /* Diagnostic A/B mode: prevent physical guest WFI/WFE sleep. */
+                 HCR_TWI | HCR_TWE |
+#endif
 #ifdef ENABLE_VGIC_MODULE
                  //
                  // Trap EL1 reads of the ID registers. Without this the "advertise GIC"
@@ -296,6 +302,19 @@ static void hv_set_gxf_vbar(void)
     msr(SYS_IMP_APL_VBAR_GL1, _hv_vectors_start);
 }
 
+#ifdef HV_DIAG_TRAP_WFX
+static void hv_enable_diag_wfx_traps(void)
+{
+    reg_set(HCR_EL2, hv_wfx_hcr_mask());
+    sysop("isb");
+}
+
+static u64 hv_read_diag_hcr(void)
+{
+    return mrs(HCR_EL2);
+}
+#endif
+
 void hv_start(void *entry, u64 regs[4])
 {
     if (boot_cpu_idx == -1) {
@@ -313,7 +332,25 @@ void hv_start(void *entry, u64 regs[4])
     if (gxf_enabled())
         gl2_call(hv_set_gxf_vbar, 0, 0, 0, 0);
 
+#ifdef HV_DIAG_TRAP_WFX
+    /* GXF has a guarded HCR bank; set and verify the bits in that bank. */
+    u64 diag_hcr;
+    if (gxf_enabled()) {
+        gl2_call(hv_enable_diag_wfx_traps, 0, 0, 0, 0);
+        diag_hcr = gl2_call(hv_read_diag_hcr, 0, 0, 0, 0);
+    } else {
+        hv_enable_diag_wfx_traps();
+        diag_hcr = mrs(HCR_EL2);
+    }
+    if ((diag_hcr & hv_wfx_hcr_mask()) != hv_wfx_hcr_mask())
+        hv_panic("HV: diagnostic WFI/WFE traps did not survive guest preflight\n");
+    printf("HV: diagnostic WFI/WFE traps active HCR=0x%lx\n", diag_hcr);
+#endif
+
     hv_secondary_info.hcr = mrs(HCR_EL2);
+#ifdef HV_DIAG_TRAP_WFX
+    hv_secondary_info.hcr = diag_hcr;
+#endif
     hv_secondary_info.hacr = mrs(HACR_EL2);
     hv_secondary_info.vtcr = mrs(VTCR_EL2);
     hv_secondary_info.vttbr = mrs(VTTBR_EL2);
@@ -401,7 +438,11 @@ static void hv_init_secondary(struct hv_secondary_info_t *info)
 
     msr(VBAR_EL1, _hv_vectors_start);
 
+#ifdef HV_DIAG_TRAP_WFX
+    msr(HCR_EL2, hv_wfx_apply_hcr(info->hcr));
+#else
     msr(HCR_EL2, info->hcr);
+#endif
     msr(HACR_EL2, info->hacr);
     msr(VTCR_EL2, info->vtcr);
     msr(VTTBR_EL2, info->vttbr);
@@ -420,6 +461,17 @@ static void hv_init_secondary(struct hv_secondary_info_t *info)
     msr(CNTVOFF_EL2, info->cntvoff);
     msr(SYS_IMP_APL_SPRR_CONFIG_EL1, info->sprr_config);
     msr(SYS_IMP_APL_GXF_CONFIG_EL1, info->gxf_config);
+
+    /*
+     * VM_TMR_FIQ_ENA_EL2 is per-CPU.  The boot CPU is configured in hv_init(),
+     * but an SMP secondary does not inherit that value.  Leaving either route
+     * disabled makes Windows lose that processor's architectural clock PPI;
+     * the observed failure is CLOCK_WATCHDOG_TIMEOUT with CPU1 named as the
+     * hung processor.  Program both physical and virtual guest timer routes
+     * before the core enters Windows or arms the EL2 heartbeat.
+     */
+    msr(SYS_IMP_APL_VM_TMR_FIQ_ENA_EL2,
+        VM_TMR_FIQ_ENA_ENA_P | VM_TMR_FIQ_ENA_ENA_V);
     sysop("isb");
 
 #ifdef ENABLE_VGIC_MODULE
@@ -499,6 +551,13 @@ void hv_rendezvous(void)
     if (!__atomic_load_n(&hv_cpus_in_guest, __ATOMIC_ACQUIRE))
         return;
 
+    /*
+     * Publish this before the physical IPIs.  A secondary FIQ must not consume
+     * a rendezvous IPI in its local fast path: it has to enter hv_exc_entry(),
+     * which clears that CPU's hv_cpus_in_guest bit for the waiter below.
+     */
+    __atomic_store_n(&hv_rendezvous_active, true, __ATOMIC_RELEASE);
+
     /* IPI all CPUs. This might result in spurious IPIs to the guest... */
     for (int i = 0; i < MAX_CPUS; i++) {
         if (i != smp_id() && hv_started_cpus[i]) {
@@ -507,8 +566,10 @@ void hv_rendezvous(void)
     }
 
     while (timeout--) {
-        if (!__atomic_load_n(&hv_cpus_in_guest, __ATOMIC_ACQUIRE))
+        if (!__atomic_load_n(&hv_cpus_in_guest, __ATOMIC_ACQUIRE)) {
+            __atomic_store_n(&hv_rendezvous_active, false, __ATOMIC_RELEASE);
             return;
+        }
     }
 
     hv_panic("HV: Failed to rendezvous, missing CPUs: 0x%lx (current: %d)\n",
@@ -534,6 +595,14 @@ void hv_pin_cpu(int cpu)
 
 void hv_write_hcr(u64 val)
 {
+#ifdef HV_DIAG_TRAP_WFX
+    /*
+     * Callers can read the unguarded HCR bank and then ask this helper to
+     * update VI/VF in the guarded GL2 bank.  Never allow that read/modify/write
+     * sequence to erase the diagnostic WFI/WFE trap policy.
+     */
+    val = hv_wfx_apply_hcr(val);
+#endif
     if (gxf_enabled() && !in_gl12())
         gl2_call(hv_write_hcr, val, 0, 0, 0);
     else
@@ -661,8 +730,22 @@ void hv_percpu_diag_tick(struct exc_info *ctx)
     d->fiq_count++;
     d->sample_count++;
 
+#ifdef HV_DIAG_TRAP_WFX
+    /*
+     * This diagnostic build exists specifically to prove that no later vGIC
+     * read/modify/write can erase TWI/TWE.  Check sparsely to avoid changing
+     * guest timing; panic immediately with the owning CPU and exact HCR if the
+     * invariant is ever broken again.
+     */
+    if ((d->sample_count & 0x3fff) == 0) {
+        u64 hcr = mrs(HCR_EL2);
+        if (!hv_wfx_policy_satisfied(hcr))
+            hv_panic("HV: WFI/WFE HCR policy lost cpu=%d hcr=0x%lx\n", cpu, hcr);
+    }
+#endif
+
     u64 x18 = ctx->regs[18];
-    if (hv_runtime_diag_enabled() && (!d->x18_seen || x18 != d->last_x18) &&
+    if (hv_runtime_diag_verbose_enabled() && (!d->x18_seen || x18 != d->last_x18) &&
         d->x18_reports < HV_DIAG_X18_REPORT_LIMIT) {
         printf("HV DIAG X18: cpu=%d sample=%lu pc=0x%lx x18=0x%lx x0=0x%lx sp0=0x%lx "
                "sp1=0x%lx spsr=0x%lx\n",
@@ -688,7 +771,7 @@ void hv_percpu_diag_tick(struct exc_info *ctx)
     }
 
     // Sparse on purpose: flooding the UART from here would itself change SMP timing.
-    if (hv_runtime_diag_enabled() && (d->sample_count & 0x3fff) == 0)
+    if (hv_runtime_diag_verbose_enabled() && (d->sample_count & 0x3fff) == 0)
         printf("HV DIAG: cpu=%d pc=0x%lx same=%lu spsr=0x%lx\n", cpu, ctx->elr,
                d->same_pc_ticks, ctx->spsr);
 
@@ -1225,7 +1308,13 @@ void hv_tick(struct exc_info *ctx)
     hv_sample_pc(ctx);
     iodev_handle_events(uartproxy_iodev);
     if (iodev_can_read(uartproxy_iodev)) {
-        printf("HV: User interrupt\n");
+        /*
+         * Publish diagnostics before entering uartproxy.  A wedged secondary
+         * may make the later time-stealing rendezvous fail, but these records
+         * are lockless and remain readable from the interruptible CPU.
+         */
+        printf("HV: User interrupt; pre-rendezvous watchdog snapshot\n");
+        hv_watchdog_snapshot_dump();
         iodev_console_flush();
         if (hv_pinned_cpu == -1 || hv_pinned_cpu == smp_id())
             hv_exc_proxy(ctx, START_HV, HV_USER_INTERRUPT, NULL);

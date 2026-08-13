@@ -35,7 +35,8 @@ bool hv_watchdog_snapshot_read(const struct hv_watchdog_cpu_record *record,
 
 bool hv_watchdog_snapshot_due(u64 per_cpu_sample_tick)
 {
-    return per_cpu_sample_tick && !(per_cpu_sample_tick & 0xfff);
+    /* 64 ticks is 640 ms at the 100 Hz T8103 secondary cadence. */
+    return per_cpu_sample_tick && !(per_cpu_sample_tick & 0x3f);
 }
 
 bool hv_watchdog_snapshot_dump_due(u64 current_tick, u64 previous_tick, u64 interval)

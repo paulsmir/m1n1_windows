@@ -64,6 +64,13 @@ struct hv_fb_stream {
     u32 frame_id;
     u32 offset;
     u32 cooldown_ticks;
+    /*
+     * Guest pixels are mutable. uartproxy computes its checksum before the
+     * USB ring copies the payload, so passing the live framebuffer directly
+     * can put bytes on the wire that do not match that checksum.  Keep one
+     * bounded chunk stable for the complete send operation.
+     */
+    u8 payload_snapshot[HV_FB_STREAM_PAYLOAD_SIZE];
     hv_fb_send_fn send;
     void *send_opaque;
     struct hv_fb_stream_stats stats;

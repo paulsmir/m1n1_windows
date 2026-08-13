@@ -55,6 +55,14 @@ class SecondaryLaunchContractTest(unittest.TestCase):
         self.assertIn("hv_configure_guest_wfi()", secondary)
         self.assertNotIn("CYC_OVRD_WFI_MODE(0)", source)
 
+    def test_every_secondary_enables_both_guest_timer_fiq_routes(self):
+        source = HV_C.read_text()
+        secondary = function_body(source, "static void hv_init_secondary(")
+        self.assertIn("SYS_IMP_APL_VM_TMR_FIQ_ENA_EL2", secondary)
+        self.assertIn("VM_TMR_FIQ_ENA_ENA_P | VM_TMR_FIQ_ENA_ENA_V", secondary)
+        self.assertLess(secondary.index("SYS_IMP_APL_VM_TMR_FIQ_ENA_EL2"),
+                        secondary.index("hv_arm_tick(true)"))
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -18,11 +18,16 @@ struct hv_irq_route {
     bool level;
 };
 
+#define HV_IRQ_DYNAMIC_ROUTE_CAPACITY 8u
+#define HV_IRQ_SYNTHETIC_NVME_VINTID 64u
+
 const struct hv_irq_route *hv_irq_route_from_hw(u32 hw_irq);
 const struct hv_irq_route *hv_irq_route_from_vintid(u32 vintid);
 size_t hv_irq_route_count(void);
 const struct hv_irq_route *hv_irq_route_at(size_t index);
 bool hv_irq_route_resolve_incoming(u32 hw_irq, u32 reserved_vintid, u32 *vintid);
 bool hv_irq_route_level_eoi_target(u32 vintid, bool enabled, u32 *hw_irq);
+bool hv_irq_route_register(u32 hw_irq, u32 vintid, bool level);
+void hv_irq_routes_reset_dynamic(void);
 
 #endif

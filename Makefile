@@ -63,6 +63,12 @@ CFG :=
 ifeq ($(RELEASE),1)
 CFG += RELEASE
 endif
+ifeq ($(DIAG_TRAP_WFX),1)
+CFG += HV_DIAG_TRAP_WFX
+endif
+ifeq ($(RUNTIME_DIAG_VERBOSE),1)
+CFG += HV_RUNTIME_DIAG_VERBOSE
+endif
 
 # Required for no_std + alloc for now
 export RUSTC_BOOTSTRAP=1
@@ -193,7 +199,7 @@ TARGET_RAW := m1n1.bin
 
 DEPDIR := build/.deps
 
-.PHONY: all clean format host-tests invoke_cc always_rebuild
+.PHONY: all clean format host-tests invoke_cc always_rebuild FORCE
 all: build/$(TARGET) build/$(TARGET_RAW)
 host-tests:
 	./tests/run_host_tests.sh
@@ -227,7 +233,7 @@ $(BUILD_FP_OBJS): build/%.o: src/%.c
 	$(QUIET)mkdir -p "$(dir $@)"
 	$(QUIET)$(CC) -c $(BASE_CFLAGS) -MMD -MF $(DEPDIR)/$(*F).d -MQ "$@" -MP -o $@ $<
 
-build/%.o: src/%.c build-tag build-cfg
+build/%.o: src/%.c build/build_tag.h build/build_cfg.h
 	$(QUIET)echo "  CC    $@"
 	$(QUIET)mkdir -p $(DEPDIR)
 	$(QUIET)mkdir -p "$(dir $@)"
@@ -264,18 +270,28 @@ build/$(NAME).bin: build/$(NAME)-asahi.bin build/$(LOGO).logo
 	$(QUIET)cat $^ > $@
 endif
 
-.INTERMEDIATE: build-tag build-cfg
-build-tag src/../build/build_tag.h &:
+FORCE:
+
+# These generated headers depend on command-line build options and the Git state,
+# neither of which make can represent as an ordinary file prerequisite.  Run the
+# cheap compare on every invocation; only replace the header when its contents
+# changed so dependent objects are rebuilt exactly when required.  Do not use GNU
+# make grouped targets (`&:`): the default make shipped by macOS parses them as an
+# unrelated target named `&`, which previously allowed stale diagnostic objects to
+# leak into release images.
+build/build_tag.h: FORCE
 	$(QUIET)mkdir -p build
 	$(QUIET)./version.sh > build/build_tag.tmp
 	$(QUIET)cmp -s build/build_tag.h build/build_tag.tmp 2>/dev/null || \
 	( mv -f build/build_tag.tmp build/build_tag.h && echo "  TAG   build/build_tag.h" )
+	$(QUIET)rm -f build/build_tag.tmp
 
-build-cfg src/../build/build_cfg.h &:
+build/build_cfg.h: FORCE
 	$(QUIET)mkdir -p build
 	$(QUIET)for i in $(CFG); do echo "#define $$i"; done > build/build_cfg.tmp
 	$(QUIET)cmp -s build/build_cfg.h build/build_cfg.tmp 2>/dev/null || \
 	( mv -f build/build_cfg.tmp build/build_cfg.h && echo "  CFG   build/build_cfg.h" )
+	$(QUIET)rm -f build/build_cfg.tmp
 
 build/%.bin: data/%.bin
 	$(QUIET)echo "  IMG   $@"

@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: MIT */
 
 #include "hv.h"
+#include "hv_runtime_diag.h"
 #include "aic.h"
 #include "iodev.h"
 #include "uart.h"
@@ -54,6 +55,9 @@ static void update_irq(void)
 
 static void handle_vuart_passthrough(uint8_t b)
 {
+    if (!hv_runtime_diag_enabled())
+        return;
+
     // Firmware S5L console -> m1n1 console (…41 / hv.log), kept off the kd channel. Each
     // line is prefixed so it is distinguishable from m1n1's own log output.
     static bool sol = true;

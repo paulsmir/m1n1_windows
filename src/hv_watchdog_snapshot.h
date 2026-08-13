@@ -26,6 +26,10 @@ struct hv_watchdog_cpu_sample {
     u64 cntv_ctl;
     u64 cntv_cval;
     u64 vm_tmr_fiq_ena;
+    u64 hcr;
+    u64 ich_hcr;
+    u64 ich_vmcr;
+    u64 isr;
     u64 timer_p_injected;
     u64 timer_v_injected;
     u64 timer_queue_depth;

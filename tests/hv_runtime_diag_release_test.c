@@ -6,6 +6,7 @@
 int main(void)
 {
     assert(!hv_runtime_diag_enabled());
+    assert(!hv_runtime_diag_verbose_enabled());
     puts("hv_runtime_diag_release_test: ok");
     return 0;
 }

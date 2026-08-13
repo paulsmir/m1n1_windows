@@ -203,10 +203,10 @@ static bool handle_j313_xhci_mmio(struct exc_info *ctx, u64 addr, u64 *val, bool
         }
 
         if (log)
-            printf("HV: xHCI guest W %s+0x%lx width=%u fragment=0x%lx guest=0x%lx "
-                   "hw=0x%lx\n",
-                   hv_xhci_dma_reg_name(reg), (u64)(offset - reg_offset), 1U << width, *val,
-                   guest_value, read64(J313_XHCI1_BASE + reg_offset));
+            HV_RUNTIME_VERBOSE_TRACE(
+                "HV: xHCI guest W %s+0x%lx width=%u fragment=0x%lx guest=0x%lx hw=0x%lx\n",
+                hv_xhci_dma_reg_name(reg), (u64)(offset - reg_offset), 1U << width, *val,
+                guest_value, read64(J313_XHCI1_BASE + reg_offset));
     }
 
     return true;
@@ -2137,16 +2137,17 @@ void hv_vgic3_inject_irq(u32 vintid, u8 priority, bool active, bool pending, boo
     hv_vgic3_update_vi();
     sysop("isb");
     u32 timer_count;
-    if (hv_runtime_diag_enabled() &&
+    if (hv_runtime_diag_verbose_enabled() &&
         timer_trace_count(vintid, timer_inject_count, &timer_count))
         printf("HV TIMER INJECT: cpu=%d intid=%u count=%u lr=%d prio=0x%x "
                "VMCR=0x%lx HCR=0x%lx\n",
                smp_id(), vintid, timer_count, free_lr, priority,
                mrs(ICH_VMCR_EL2), mrs(HCR_EL2));
-    if (hv_runtime_diag_enabled() && trace_take(vintid))
-        printf("HV: NVMe IRQ inject intid=%u prio=0x%x lr=%d value=0x%lx "
-               "ELRSR=0x%lx VMCR=0x%lx HCR=0x%lx\n",
-               vintid, priority, free_lr, val, elrsr, mrs(ICH_VMCR_EL2), mrs(HCR_EL2));
+    if (hv_runtime_diag_verbose_enabled() && trace_take(vintid))
+        HV_RUNTIME_VERBOSE_TRACE("HV: NVMe IRQ inject intid=%u prio=0x%x lr=%d value=0x%lx "
+                                 "ELRSR=0x%lx VMCR=0x%lx HCR=0x%lx\n",
+                                 vintid, priority, free_lr, val, elrsr, mrs(ICH_VMCR_EL2),
+                                 mrs(HCR_EL2));
 }
 
 //
@@ -2275,14 +2276,15 @@ int hv_vgic3_do_iar1(void){
     hv_vgic3_update_vi();
     sysop("isb");
     u32 timer_count;
-    if (hv_runtime_diag_enabled() &&
+    if (hv_runtime_diag_verbose_enabled() &&
         timer_trace_count(intid, timer_iar_count, &timer_count))
         printf("HV TIMER IAR: cpu=%d intid=%u count=%u lr=%d before=0x%lx "
                "after=0x%lx\n",
                smp_id(), intid, timer_count, found_lr, before, lr_val);
-    if (hv_runtime_diag_enabled() && trace_take(intid))
-        printf("HV: NVMe IRQ IAR intid=%u lr=%d before=0x%lx after=0x%lx HCR=0x%lx\n",
-               intid, found_lr, before, lr_val, mrs(HCR_EL2));
+    if (hv_runtime_diag_verbose_enabled() && trace_take(intid))
+        HV_RUNTIME_VERBOSE_TRACE(
+            "HV: NVMe IRQ IAR intid=%u lr=%d before=0x%lx after=0x%lx HCR=0x%lx\n", intid,
+            found_lr, before, lr_val, mrs(HCR_EL2));
 
     return intid;
 }
@@ -2324,13 +2326,14 @@ void hv_vgic3_do_eoir1(u64 reg){
     if (trace_lr >= 0 && intd < 16)
         hv_sgi_diag_vgic_event(HV_SGI_DIAG_EOI);
     u32 timer_count;
-    if (hv_runtime_diag_enabled() && trace_lr >= 0 &&
+    if (hv_runtime_diag_verbose_enabled() && trace_lr >= 0 &&
         timer_trace_count(intd, timer_eoi_count, &timer_count))
         printf("HV TIMER EOI: cpu=%d intid=%u count=%u lr=%d before=0x%lx\n",
                smp_id(), intd, timer_count, trace_lr, trace_before);
-    if (hv_runtime_diag_enabled() && trace_lr >= 0 && trace_take(intd))
-        printf("HV: NVMe IRQ EOI intid=%u lr=%d before=0x%lx after=0 HCR=0x%lx\n", intd,
-               trace_lr, trace_before, mrs(HCR_EL2));
+    if (hv_runtime_diag_verbose_enabled() && trace_lr >= 0 && trace_take(intd))
+        HV_RUNTIME_VERBOSE_TRACE(
+            "HV: NVMe IRQ EOI intid=%u lr=%d before=0x%lx after=0 HCR=0x%lx\n", intd,
+            trace_lr, trace_before, mrs(HCR_EL2));
 }
 
 void hv_vgic3_set_igrpen1(u64 reg){

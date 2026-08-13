@@ -39,8 +39,10 @@ hv_nvme_fast_path_test
 hv_fiq_fast_path_test
 hv_tick_policy_test
 hv_runtime_diag_debug_test
+hv_runtime_diag_verbose_test
 hv_runtime_diag_release_test
 hv_watchdog_snapshot_test
+hv_wfx_policy_test
 hv_sgi_pending_test
 hv_sgi_diag_test
 hv_vgic_diag_test
@@ -166,12 +168,18 @@ for name in "$@"; do
         hv_runtime_diag_debug_test)
             definitions="-DHV_RUNTIME_DIAG_HOST_TEST"
             ;;
+        hv_runtime_diag_verbose_test)
+            definitions="-DHV_RUNTIME_DIAG_HOST_TEST -DHV_RUNTIME_DIAG_VERBOSE"
+            ;;
         hv_runtime_diag_release_test)
             definitions="-DHV_RUNTIME_DIAG_HOST_TEST -DRELEASE"
             ;;
         hv_watchdog_snapshot_test)
             definitions="-DHV_WATCHDOG_SNAPSHOT_HOST_TEST"
             sources="$sources src/hv_watchdog_snapshot.c"
+            ;;
+        hv_wfx_policy_test)
+            definitions="-DHV_WFX_POLICY_HOST_TEST"
             ;;
         hv_sgi_pending_test)
             definitions="-DHV_SGI_PENDING_HOST_TEST"

@@ -2,7 +2,7 @@
 
 #include "hv_irq_routes.h"
 
-#define ROUTE_COUNT (sizeof(routes) / sizeof(routes[0]))
+#define STATIC_ROUTE_COUNT (sizeof(routes) / sizeof(routes[0]))
 
 /*
  * Physical AIC numbers and guest GIC INTIDs are separate namespaces. Keep the
@@ -13,24 +13,30 @@ static const struct hv_irq_route routes[] = {
     {.hw_irq = 857, .vintid = 857, .level = true},
 };
 
+static struct hv_irq_route dynamic_routes[HV_IRQ_DYNAMIC_ROUTE_CAPACITY];
+static size_t dynamic_route_count;
+
 size_t hv_irq_route_count(void)
 {
-    return ROUTE_COUNT;
+    return STATIC_ROUTE_COUNT + dynamic_route_count;
 }
 
 const struct hv_irq_route *hv_irq_route_at(size_t index)
 {
-    if (index >= ROUTE_COUNT)
+    if (index < STATIC_ROUTE_COUNT)
+        return &routes[index];
+    index -= STATIC_ROUTE_COUNT;
+    if (index >= dynamic_route_count)
         return NULL;
-
-    return &routes[index];
+    return &dynamic_routes[index];
 }
 
 const struct hv_irq_route *hv_irq_route_from_hw(u32 hw_irq)
 {
-    for (u32 i = 0; i < ROUTE_COUNT; i++) {
-        if (routes[i].hw_irq == hw_irq)
-            return &routes[i];
+    for (size_t i = 0; i < hv_irq_route_count(); i++) {
+        const struct hv_irq_route *route = hv_irq_route_at(i);
+        if (route->hw_irq == hw_irq)
+            return route;
     }
 
     return NULL;
@@ -38,9 +44,10 @@ const struct hv_irq_route *hv_irq_route_from_hw(u32 hw_irq)
 
 const struct hv_irq_route *hv_irq_route_from_vintid(u32 vintid)
 {
-    for (u32 i = 0; i < ROUTE_COUNT; i++) {
-        if (routes[i].vintid == vintid)
-            return &routes[i];
+    for (size_t i = 0; i < hv_irq_route_count(); i++) {
+        const struct hv_irq_route *route = hv_irq_route_at(i);
+        if (route->vintid == vintid)
+            return route;
     }
 
     return NULL;
@@ -67,4 +74,22 @@ bool hv_irq_route_level_eoi_target(u32 vintid, bool enabled, u32 *hw_irq)
 
     *hw_irq = route->hw_irq;
     return true;
+}
+
+bool hv_irq_route_register(u32 hw_irq, u32 vintid, bool level)
+{
+    if (hw_irq < 32 || hw_irq > 1019 || vintid < 32 || vintid > 1019 ||
+        vintid == HV_IRQ_SYNTHETIC_NVME_VINTID ||
+        dynamic_route_count >= HV_IRQ_DYNAMIC_ROUTE_CAPACITY ||
+        hv_irq_route_from_hw(hw_irq) || hv_irq_route_from_vintid(vintid))
+        return false;
+
+    dynamic_routes[dynamic_route_count++] =
+        (struct hv_irq_route){.hw_irq = hw_irq, .vintid = vintid, .level = level};
+    return true;
+}
+
+void hv_irq_routes_reset_dynamic(void)
+{
+    dynamic_route_count = 0;
 }

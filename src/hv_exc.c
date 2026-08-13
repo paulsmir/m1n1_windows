@@ -9,6 +9,7 @@
 #include "hv_sgi_diag.h"
 #include "hv_sgi_pending.h"
 #include "hv_watchdog_snapshot.h"
+#include "hv_wfx_policy.h"
 #include "assert.h"
 #include "cpu_regs.h"
 #include "exception.h"
@@ -79,6 +80,7 @@ static u64 exc_entry_time;
 static int num_cpus;
 
 extern u64 hv_cpus_in_guest;
+extern bool hv_rendezvous_active;
 extern int hv_pinned_cpu;
 extern int hv_want_cpu;
 
@@ -124,7 +126,7 @@ static void hv_vgic3_queue_sgi(int cpu, u32 intid)
     hv_sgi_diag_note(&PERCPU_N(cpu, sgi_diag), HV_SGI_DIAG_QUEUE);
     static u32 trace_budget = 32;
 
-    if (trace_budget) {
+    if (hv_runtime_diag_enabled() && trace_budget) {
         trace_budget--;
         printf("HV SGI QUEUE: from=%d to=%d intid=%u old=0x%x%s\n", smp_id(), cpu,
                intid, old, old & bit ? " coalesced" : "");
@@ -409,6 +411,10 @@ void hv_watchdog_snapshot_tick(struct exc_info *ctx)
         .cntv_ctl = mrs(CNTV_CTL_EL02),
         .cntv_cval = mrs(CNTV_CVAL_EL02),
         .vm_tmr_fiq_ena = mrs(SYS_IMP_APL_VM_TMR_FIQ_ENA_EL2),
+        .hcr = mrs(HCR_EL2),
+        .ich_hcr = mrs(ICH_HCR_EL2),
+        .ich_vmcr = mrs(ICH_VMCR_EL2),
+        .isr = mrs(ISR_EL1),
         .timer_p_injected = timer_p_injected[cpu],
         .timer_v_injected = timer_v_injected[cpu],
         .last_el2_marker = hv_wdt_get_breadcrumb(cpu),
@@ -462,7 +468,8 @@ void hv_watchdog_snapshot_dump(void)
 
         printf("HV WATCHDOG CPU: cpu=%lu pc=0x%lx spsr=0x%lx cntpct=0x%lx "
                "cntvct=0x%lx cntvoff=0x%lx pctl=0x%lx pcval=0x%lx "
-               "vctl=0x%lx vcval=0x%lx vm_tmr=0x%lx pinj=%lu vinj=%lu "
+               "vctl=0x%lx vcval=0x%lx vm_tmr=0x%lx hcr=0x%lx ich_hcr=0x%lx "
+               "ich_vmcr=0x%lx isr=0x%lx pinj=%lu vinj=%lu "
                "tq=%lu iq=%lu pend=0x%lx q=%lu ipi=%lu drain=%lu inj=%lu "
                "repend=%lu no_lr=%lu iar=%lu eoi=%lu ap_eoi=%lu "
                "last_sgi=%lu<-%lu last_iar=%lu@0x%lx last_eoi=%lu@0x%lx "
@@ -470,6 +477,7 @@ void hv_watchdog_snapshot_dump(void)
                "lr3=0x%lx lr4=0x%lx lr5=0x%lx lr6=0x%lx lr7=0x%lx\n",
                s.cpu, s.pc, s.spsr, s.cntpct, s.cntvct, s.cntvoff, s.cntp_ctl,
                s.cntp_cval, s.cntv_ctl, s.cntv_cval, s.vm_tmr_fiq_ena,
+               s.hcr, s.ich_hcr, s.ich_vmcr, s.isr,
                s.timer_p_injected, s.timer_v_injected, s.timer_queue_depth,
                s.irq_queue_depth, s.sgi_pending_mask, s.sgi_queued,
                s.sgi_ipi_received, s.sgi_drained, s.sgi_injected, s.sgi_repended,
@@ -607,6 +615,7 @@ static void hv_update_fiq(void)
 #endif
     } else {
         timer_p_injected[tcpu] = false;
+        /* CNTP is hv_arm_tick()'s heartbeat; keep its Apple FIQ route alive. */
         reg_set(SYS_IMP_APL_VM_TMR_FIQ_ENA_EL2, VM_TMR_FIQ_ENA_ENA_P);
     }
 
@@ -1097,7 +1106,7 @@ static bool hv_handle_msr_unlocked(struct exc_info *ctx, u64 iss)
                     calculated |= PMCR_FZO;
                 }
                 calculated |= ((BIT(6)) | (BIT(7)));
-                printf("HV PMUv3 Redirect: mrs x%ld, PMCR_EL0 = 0x%lx\n", rt, calculated);
+                HV_RUNTIME_TRACE("HV PMUv3 Redirect: mrs x%ld, PMCR_EL0 = 0x%lx\n", rt, calculated);
                 regs[rt] = calculated;
             }
             else {
@@ -1155,7 +1164,7 @@ static bool hv_handle_msr_unlocked(struct exc_info *ctx, u64 iss)
                     msr(SYS_IMP_APL_PMCR0, pmcr0_value);
                     sysop("isb");
                 }
-                printf("HV PMUv3 Redirect (OK): msr PMCR_EL0, x%ld = 0x%lx\n", rt, regs[rt]);
+                HV_RUNTIME_TRACE("HV PMUv3 Redirect (OK): msr PMCR_EL0, x%ld = 0x%lx\n", rt, regs[rt]);
             }
             return true;
         SYSREG_MAP(SYS_PMCCNTR_EL0, SYS_IMP_APL_PMC0)
@@ -1178,7 +1187,7 @@ static bool hv_handle_msr_unlocked(struct exc_info *ctx, u64 iss)
                 // (bit set to 1 in this case means disable filtering...not sure why it's backwards.)
                 //
                 calculated_value |= BIT(27);
-                printf("HV PMUv3 Redirect: mrs x%ld, PMCCFILTR_EL0 = 0x%lx\n", rt, calculated_value);
+                HV_RUNTIME_TRACE("HV PMUv3 Redirect: mrs x%ld, PMCCFILTR_EL0 = 0x%lx\n", rt, calculated_value);
                 regs[rt] = calculated_value;
             }
             else {
@@ -1202,7 +1211,7 @@ static bool hv_handle_msr_unlocked(struct exc_info *ctx, u64 iss)
                 sysop("isb");
                 msr(SYS_IMP_APL_PMCR1, pmcr1_value);
                 sysop("isb");
-                printf("HV PMUv3 Redirect (OK): msr PMCCFILTR_EL0, x%ld = 0x%lx\n", rt, regs[rt]);
+                HV_RUNTIME_TRACE("HV PMUv3 Redirect (OK): msr PMCCFILTR_EL0, x%ld = 0x%lx\n", rt, regs[rt]);
             }
             return true;
         case SYSREG_ISS(SYS_PMCEID0_EL0):
@@ -1211,13 +1220,13 @@ static bool hv_handle_msr_unlocked(struct exc_info *ctx, u64 iss)
             //
             if(is_read) {
                 regs[rt] = 0;
-                printf("HV PMUv3 Redirect: mrs x%ld, PMCEID0_EL0 = 0x%lx\n", rt, regs[rt]);
+                HV_RUNTIME_TRACE("HV PMUv3 Redirect: mrs x%ld, PMCEID0_EL0 = 0x%lx\n", rt, regs[rt]);
             }
             else {
                 //
                 // Do nothing here.
                 //
-                printf("HV PMUv3 Redirect (skipped write): msr PMCEID0_EL0, x%ld = 0x%lx\n", rt, regs[rt]);
+                HV_RUNTIME_TRACE("HV PMUv3 Redirect (skipped write): msr PMCEID0_EL0, x%ld = 0x%lx\n", rt, regs[rt]);
             }
             return true;
         case SYSREG_ISS(SYS_PMCEID1_EL0):
@@ -1226,10 +1235,10 @@ static bool hv_handle_msr_unlocked(struct exc_info *ctx, u64 iss)
             //
             if(is_read) {
                 regs[rt] = 0;
-                printf("HV PMUv3 Redirect: mrs x%ld, PMCEID1_EL0 = 0x%lx\n", rt, regs[rt]);
+                HV_RUNTIME_TRACE("HV PMUv3 Redirect: mrs x%ld, PMCEID1_EL0 = 0x%lx\n", rt, regs[rt]);
             }
             else {
-                printf("HV PMUv3 Redirect (skipped write): msr PMCEID1_EL0, x%ld = 0x%lx\n", rt, regs[rt]);
+                HV_RUNTIME_TRACE("HV PMUv3 Redirect (skipped write): msr PMCEID1_EL0, x%ld = 0x%lx\n", rt, regs[rt]);
             }
             return true;
         case SYSREG_ISS(SYS_PMCNTENCLR_EL0):
@@ -1242,7 +1251,7 @@ static bool hv_handle_msr_unlocked(struct exc_info *ctx, u64 iss)
                 if((pmcr0_value & BIT(0)) != 0) {
                     calculated_value |= BIT(31);
                 }
-                printf("HV PMUv3 Redirect: mrs x%ld, PMCNTENCLR_EL0 = 0x%lx\n", rt, calculated_value);
+                HV_RUNTIME_TRACE("HV PMUv3 Redirect: mrs x%ld, PMCNTENCLR_EL0 = 0x%lx\n", rt, calculated_value);
                 regs[rt] = calculated_value;
             }
             else {
@@ -1259,7 +1268,7 @@ static bool hv_handle_msr_unlocked(struct exc_info *ctx, u64 iss)
                     sysop("isb");
                     msr(SYS_IMP_APL_PMCR0, pmcr0_value);
                     sysop("isb");
-                    printf("HV PMUv3 Redirect (OK): msr PMCNTENCLR_EL0, x%ld = 0x%lx\n", rt, regs[rt]);
+                    HV_RUNTIME_TRACE("HV PMUv3 Redirect (OK): msr PMCNTENCLR_EL0, x%ld = 0x%lx\n", rt, regs[rt]);
                 }
             }
             return true;
@@ -1273,7 +1282,7 @@ static bool hv_handle_msr_unlocked(struct exc_info *ctx, u64 iss)
                 if((pmcr0_value & BIT(0)) != 0) {
                     calculated_value |= BIT(31);
                 }
-                printf("HV PMUv3 Redirect: mrs x%ld, PMCNTENSET_EL0 = 0x%lx\n", rt, calculated_value);
+                HV_RUNTIME_TRACE("HV PMUv3 Redirect: mrs x%ld, PMCNTENSET_EL0 = 0x%lx\n", rt, calculated_value);
                 regs[rt] = calculated_value;
             }
             else {
@@ -1290,7 +1299,7 @@ static bool hv_handle_msr_unlocked(struct exc_info *ctx, u64 iss)
                     sysop("isb");
                     msr(SYS_IMP_APL_PMCR0, pmcr0_value);
                     sysop("isb");
-                    printf("HV PMUv3 Redirect (OK): msr PMCNTENSET_EL0, x%ld = 0x%lx\n", rt, regs[rt]);
+                    HV_RUNTIME_TRACE("HV PMUv3 Redirect (OK): msr PMCNTENSET_EL0, x%ld = 0x%lx\n", rt, regs[rt]);
                 }
             }
             return true;
@@ -1333,7 +1342,7 @@ static bool hv_handle_msr_unlocked(struct exc_info *ctx, u64 iss)
                 if((pmcr0_value & BIT(12)) != 0) {
                     calculated_value |= BIT(31);
                 }
-                printf("HV PMUv3 Redirect: mrs x%ld, PMINTENCLR_EL1 = 0x%lx\n", rt, calculated_value);
+                HV_RUNTIME_TRACE("HV PMUv3 Redirect: mrs x%ld, PMINTENCLR_EL1 = 0x%lx\n", rt, calculated_value);
                 regs[rt] = calculated_value;
             }
             else {
@@ -1349,7 +1358,7 @@ static bool hv_handle_msr_unlocked(struct exc_info *ctx, u64 iss)
                     sysop("isb");
                     msr(SYS_IMP_APL_PMCR0, pmcr0_value);
                     sysop("isb");
-                    printf("HV PMUv3 Redirect (OK): msr PMINTENCLR_EL1, x%ld = 0x%lx\n", rt, regs[rt]);
+                    HV_RUNTIME_TRACE("HV PMUv3 Redirect (OK): msr PMINTENCLR_EL1, x%ld = 0x%lx\n", rt, regs[rt]);
                 }
 
             }
@@ -1364,7 +1373,7 @@ static bool hv_handle_msr_unlocked(struct exc_info *ctx, u64 iss)
                 if((pmcr0_value & BIT(12)) != 0) {
                     calculated_value |= BIT(31);
                 }
-                printf("HV PMUv3 Redirect: mrs x%ld, PMINTENSET_EL1 = 0x%lx\n", rt, calculated_value);
+                HV_RUNTIME_TRACE("HV PMUv3 Redirect: mrs x%ld, PMINTENSET_EL1 = 0x%lx\n", rt, calculated_value);
                 regs[rt] = calculated_value;
             }
             else {
@@ -1380,7 +1389,7 @@ static bool hv_handle_msr_unlocked(struct exc_info *ctx, u64 iss)
                     sysop("isb");
                     msr(SYS_IMP_APL_PMCR0, pmcr0_value);
                     sysop("isb");
-                    printf("HV PMUv3 Redirect (OK): msr PMINTENSET_EL1, x%ld = 0x%lx\n", rt, regs[rt]);
+                    HV_RUNTIME_TRACE("HV PMUv3 Redirect (OK): msr PMINTENSET_EL1, x%ld = 0x%lx\n", rt, regs[rt]);
                 }
             }
             return true;
@@ -1390,10 +1399,10 @@ static bool hv_handle_msr_unlocked(struct exc_info *ctx, u64 iss)
             //
             if(is_read) {
                 regs[rt] = 0;
-                printf("HV PMUv3 Redirect: mrs x%ld, PMMIR_EL1 = 0x%lx\n", rt, regs[rt]);
+                HV_RUNTIME_TRACE("HV PMUv3 Redirect: mrs x%ld, PMMIR_EL1 = 0x%lx\n", rt, regs[rt]);
             }
             else {
-                printf("HV PMUv3 Redirect (skipped write): msr PMMIR_EL1, x%ld = 0x%lx\n", rt, regs[rt]);
+                HV_RUNTIME_TRACE("HV PMUv3 Redirect (skipped write): msr PMMIR_EL1, x%ld = 0x%lx\n", rt, regs[rt]);
             }
             return true;
         case SYSREG_ISS(SYS_PMOVSCLR_EL0):
@@ -1413,7 +1422,7 @@ static bool hv_handle_msr_unlocked(struct exc_info *ctx, u64 iss)
                         calculated_value |= BIT(31);
                     }
                 }
-                printf("HV PMUv3 Redirect: mrs x%ld, PMOVSCLR_EL0 = 0x%lx\n", rt, calculated_value);
+                HV_RUNTIME_TRACE("HV PMUv3 Redirect: mrs x%ld, PMOVSCLR_EL0 = 0x%lx\n", rt, calculated_value);
                 regs[rt] = calculated_value;
             }
             else {
@@ -1439,7 +1448,7 @@ static bool hv_handle_msr_unlocked(struct exc_info *ctx, u64 iss)
                         msr(SYS_IMP_APL_PMCR0, pmcr0_value);
                         sysop("isb");
                     }
-                printf("HV PMUv3 Redirect (OK): msr PMOVSCLR_EL0, x%ld = 0x%lx\n", rt, regs[rt]);
+                HV_RUNTIME_TRACE("HV PMUv3 Redirect (OK): msr PMOVSCLR_EL0, x%ld = 0x%lx\n", rt, regs[rt]);
                 }
             }
             return true;
@@ -1460,7 +1469,7 @@ static bool hv_handle_msr_unlocked(struct exc_info *ctx, u64 iss)
                         calculated_value |= BIT(31);
                     }
                 }
-                printf("HV PMUv3 Redirect: mrs x%ld, PMOVSSET_EL0 = 0x%lx\n", rt, calculated_value);
+                HV_RUNTIME_TRACE("HV PMUv3 Redirect: mrs x%ld, PMOVSSET_EL0 = 0x%lx\n", rt, calculated_value);
                 regs[rt] = calculated_value;
             }
             else {
@@ -1473,20 +1482,20 @@ static bool hv_handle_msr_unlocked(struct exc_info *ctx, u64 iss)
             //for now hardcode to set the cycle counter, this will very likely need to change
             if(is_read) {
                 regs[rt] = 31;
-                printf("HV PMUv3 Redirect: mrs x%ld, PMSELR_EL0 = 0x%lx\n", rt, regs[rt]);
+                HV_RUNTIME_TRACE("HV PMUv3 Redirect: mrs x%ld, PMSELR_EL0 = 0x%lx\n", rt, regs[rt]);
             }
             else {
-                printf("HV PMUv3 Redirect (skipped write): msr PMSELR_EL0, x%ld = 0x%lx\n", rt, regs[rt]);
+                HV_RUNTIME_TRACE("HV PMUv3 Redirect (skipped write): msr PMSELR_EL0, x%ld = 0x%lx\n", rt, regs[rt]);
             }
             return true;
         //SYSREG_MAP(SYS_PMSWINC_EL0, SYS_IMP_APL_PMC3)
         case SYSREG_ISS(SYS_PMUSERENR_EL0):
             if(is_read) {
                 regs[rt] = 0;
-                printf("HV PMUv3 Redirect: mrs x%ld, PMUSERENR_EL0 = 0x%lx\n", rt, regs[rt]);
+                HV_RUNTIME_TRACE("HV PMUv3 Redirect: mrs x%ld, PMUSERENR_EL0 = 0x%lx\n", rt, regs[rt]);
             }
             else {
-                printf("HV PMUv3 Redirect (skipped write): msr PMUSERENR_EL0, x%ld = 0x%lx\n", rt, regs[rt]);
+                HV_RUNTIME_TRACE("HV PMUv3 Redirect (skipped write): msr PMUSERENR_EL0, x%ld = 0x%lx\n", rt, regs[rt]);
             }
            return true;
         // SYSREG_MAP(SYS_PMXEVCNTR_EL0, SYS_IMP_APL_PMC2)
@@ -1762,6 +1771,22 @@ void hv_exc_sync(struct exc_info *ctx)
     u32 ec = FIELD_GET(ESR_EC, ctx->esr);
 
     switch (ec) {
+#ifdef HV_DIAG_TRAP_WFX
+        case ESR_EC_WFI:
+            /*
+             * Diagnostic only.  HCR traps WFI/WFE so an idle vCPU cannot enter
+             * the undocumented physical sleep path.  Advancing ELR makes the
+             * guest idle loop poll until its normal reschedule test succeeds.
+             * This path deliberately avoids bhl and UART output.
+             */
+            if (hv_wfx_is_wfe(FIELD_GET(ESR_ISS, ctx->esr)))
+                sysop("sev");
+            ctx->elr = hv_wfx_resume_pc(ctx->elr);
+            hv_set_elr(ctx->elr);
+            hv_update_fiq();
+            hv_wdt_breadcrumb('w');
+            return;
+#endif
         case ESR_EC_DABORT_LOWER: {
             bool nvme_matched = false;
             handled = hv_nvme_try_handle_dabort(ctx, &nvme_matched);
@@ -1947,6 +1972,15 @@ void hv_exc_irq(struct exc_info *ctx)
         }
         hv_vgic3_drain_sgis();
         hv_vgic3_drain_irq_queue();
+        /*
+         * The maintenance path is the one LR mutation that does not pass
+         * through inject/IAR/EOI, all of which already update HCR.VI.  Recompute
+         * here after clearing EISR-selected LRs and draining deferred work.
+         * Doing this at every serialized exception exit scans all LRs for every
+         * trapped ICC access and causes cumulative Windows DPC latency.
+         */
+        hv_vgic3_update_vi();
+        sysop("isb");
         return;
     }
 
@@ -1963,8 +1997,9 @@ void hv_exc_irq(struct exc_info *ctx)
     if (route) {
         static u32 routed_irq_trace_count;
         if (routed_irq_trace_count < 16)
-            printf("HV: HW IRQ route AIC=%u vINTID=%u type=%u reason=0x%x count=%u\n",
-                   route->hw_irq, route->vintid, type, reason, routed_irq_trace_count + 1);
+            HV_RUNTIME_VERBOSE_TRACE(
+                "HV: HW IRQ route AIC=%u vINTID=%u type=%u reason=0x%x count=%u\n",
+                route->hw_irq, route->vintid, type, reason, routed_irq_trace_count + 1);
         routed_irq_trace_count++;
     }
     if (route && route->level)
@@ -2058,7 +2093,9 @@ void hv_exc_fiq(struct exc_info *ctx)
         interruptible_cpu = boot_cpu_idx;
 
     bool secondary_fast =
-        hv_fiq_secondary_fast_eligible(smp_id(), interruptible_cpu, hv_want_cpu);
+        hv_fiq_secondary_fast_eligible(
+            smp_id(), interruptible_cpu, hv_want_cpu,
+            __atomic_load_n(&hv_rendezvous_active, __ATOMIC_ACQUIRE));
     bool snapshot_sampled = false;
     if (secondary_fast) {
         /*
@@ -2073,7 +2110,15 @@ void hv_exc_fiq(struct exc_info *ctx)
         hv_watchdog_snapshot_tick(ctx);
         snapshot_sampled = true;
 
-        if (hv_fiq_secondary_fast_complete(true, !!(mrs(ISR_EL1) & 0x40))) {
+        /*
+         * HCR.VI is asserted after placing a guest IRQ in an LR.  Returning through the
+         * abbreviated secondary path at that point left Apple cores in the Windows idle
+         * loop with pending timer/SGI LRs but ISR_EL1 clear.  Use the normal exception
+         * exit whenever a virtual IRQ must be observed; the fast path remains available
+         * for genuinely completed local maintenance.
+         */
+        if (hv_fiq_secondary_fast_complete(true, !!(mrs(ISR_EL1) & 0x40),
+                                           !!(mrs(HCR_EL2) & HCR_VI))) {
             hv_arm_tick(true);
             return;
         }
@@ -2093,7 +2138,7 @@ void hv_exc_fiq(struct exc_info *ctx)
     // the EL2 physical timer fired and this is the interruptible CPU. The counts separate
     // those, and the registers printed alongside decide between them.
     //
-    if (hv_runtime_diag_enabled() && (hv_fiq_count % 20000) == 0) {
+    if (hv_runtime_diag_verbose_enabled() && (hv_fiq_count % 20000) == 0) {
         printf("HV FIQ: total=%lu ticks=%lu cpu=%d boot=%d pinned=%d vm_tmr=0x%lx\n",
                hv_fiq_count, hv_fiq_ticks, smp_id(), boot_cpu_idx, hv_pinned_cpu,
                mrs(SYS_IMP_APL_VM_TMR_FIQ_ENA_EL2));
@@ -2171,7 +2216,7 @@ void hv_exc_fiq(struct exc_info *ctx)
      * latest lockless snapshot published by every vCPU.  The subtraction-based
      * cadence deliberately tolerates the shared FIQ counter skipping values.
      */
-    if (hv_runtime_diag_enabled() && smp_id() == interruptible_cpu &&
+    if (hv_runtime_diag_verbose_enabled() && smp_id() == interruptible_cpu &&
         hv_watchdog_snapshot_dump_due(hv_fiq_count, watchdog_last_periodic_dump,
                                       2000000)) {
         watchdog_last_periodic_dump = hv_fiq_count;
