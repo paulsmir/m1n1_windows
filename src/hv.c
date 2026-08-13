@@ -161,7 +161,7 @@ static void hv_configure_guest_wfi(void)
     sysop("isb");
 }
 
-void hv_init(void)
+bool hv_init(void)
 {
     hv_diag_reset();
     hv_diag_set_collector(hv_collect_diag, NULL);
@@ -172,7 +172,7 @@ void hv_init(void)
         display_shutdown(DCP_QUIESCED);
     // reenable hpm interrupts for the guest for unused iodevs
     usb_hpm_restore_irqs(0);
-    smp_start_secondaries();
+    bool secondaries_ready = smp_start_secondaries();
     smp_set_wfe_mode(true);
     hv_wdt_init();
 
@@ -277,7 +277,7 @@ void hv_init(void)
     sysop("tlbi alle1is");
     sysop("dsb ish");
     sysop("isb");
-
+    return secondaries_ready;
 }
 
 void hv_prepare_guest_cpu_state(void)

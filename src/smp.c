@@ -108,18 +108,19 @@ void smp_secondary_prep_el3(void)
     return;
 }
 
-static void smp_start_cpu(int index, int die, int cluster, int core, u64 impl, u64 cpu_start_base)
+static bool smp_start_cpu(int index, int die, int cluster, int core, u64 impl,
+                          u64 cpu_start_base)
 {
     int i;
 
     if (index >= MAX_CPUS)
-        return;
+        return false;
 
     if (has_el3() && index >= MAX_EL3_CPUS)
-        return;
+        return false;
 
     if (spin_table[index].flag)
-        return;
+        return true;
 
     printf("Starting CPU %d (%d:%d:%d)... ", index, die, cluster, core);
 
@@ -165,6 +166,7 @@ static void smp_start_cpu(int index, int die, int cluster, int core, u64 impl, u
 
     _reset_stack = dummy_stack + DUMMY_STACK_SIZE;
     _reset_stack_el1 = dummy_stack_el1 + DUMMY_STACK_SIZE;
+    return i < 100;
 }
 
 static void smp_stop_cpu(int index, int die, int cluster, int core, u64 impl, u64 cpu_start_base,
@@ -215,31 +217,32 @@ static void smp_stop_cpu(int index, int die, int cluster, int core, u64 impl, u6
     }
 }
 
-void smp_start_secondaries(void)
+bool smp_start_secondaries(void)
 {
     printf("Starting secondary CPUs...\n");
+    bool ready = true;
 
     int pmgr_path[8];
 
     if (adt_path_offset_trace(adt, "/arm-io/pmgr", pmgr_path) < 0) {
         printf("Error getting /arm-io/pmgr node\n");
-        return;
+        return false;
     }
     if (adt_get_reg(adt, pmgr_path, "reg", 0, &pmgr_reg, NULL) < 0) {
         printf("Error getting /arm-io/pmgr regs\n");
-        return;
+        return false;
     }
 
     int arm_io_node;
     if ((arm_io_node = adt_path_offset(adt, "/arm-io")) < 0) {
         printf("Error getting /arm-io node\n");
-        return;
+        return false;
     }
 
     int node = adt_path_offset(adt, "/cpus");
     if (node < 0) {
         printf("Error getting /cpus node\n");
-        return;
+        return false;
     }
 
     memset(cpu_nodes, 0, sizeof(cpu_nodes));
@@ -283,7 +286,7 @@ void smp_start_secondaries(void)
             break;
         default:
             printf("CPU start offset is unknown for this SoC!\n");
-            return;
+            return false;
     }
 
     ADT_FOREACH_CHILD(adt, node)
@@ -329,7 +332,7 @@ void smp_start_secondaries(void)
     if (boot_cpu_idx == -1) {
         printf(
             "Could not find currently running CPU in cpu table, can't start other processors!\n");
-        return;
+        return false;
     }
 
     spin_table[boot_cpu_idx].mpidr = mrs(MPIDR_EL1) & 0xFFFFFF;
@@ -371,8 +374,11 @@ void smp_start_secondaries(void)
         u8 cluster = FIELD_GET(CPU_REG_CLUSTER, reg);
         u8 die = FIELD_GET(CPU_REG_DIE, reg);
 
-        smp_start_cpu(i, die, cluster, core, cpu_impl_reg[0], pmgr_reg + cpu_start_off);
+        if (!smp_start_cpu(i, die, cluster, core, cpu_impl_reg[0],
+                           pmgr_reg + cpu_start_off))
+            ready = false;
     }
+    return ready;
 }
 
 void smp_stop_secondaries(bool deep_sleep)

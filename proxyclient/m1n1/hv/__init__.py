@@ -1735,7 +1735,8 @@ class HV(Reloadable):
                 self.p.iodev_set_usage(iodev, 0)
 
         print("Initializing hypervisor over iodev %s" % self.iodev)
-        self.p.hv_init()
+        if not self.p.hv_init():
+            raise RuntimeError("secondary CPU startup failed")
 
         self.iface.set_handler(START.EXCEPTION_LOWER, EXC.SYNC, self.handle_exception)
         self.iface.set_handler(START.EXCEPTION_LOWER, EXC.IRQ, self.handle_exception)
@@ -1846,7 +1847,8 @@ class HV(Reloadable):
         ecam = 0x690000000
         bar_window = 0x400000000
         irq = 64
-        self.p.hv_pci_init(ecam, bar_window, irq)
+        if not self.p.hv_pci_init(ecam, bar_window, irq):
+            raise RuntimeError("NVMe backend or PCI ECAM initialization failed")
         # hv_pci_init() installs a C stage-2 hook. Preserve it when pt_update() later
         # replays the broad /arm-io pass-through map over this address range, exactly as
         # map_vuart() does for its C hook.

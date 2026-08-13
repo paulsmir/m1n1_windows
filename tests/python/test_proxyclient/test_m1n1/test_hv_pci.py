@@ -29,6 +29,27 @@ class TestHVPci(unittest.TestCase):
         self.assertIsInstance(reserve.args[2], ast.Attribute)
         self.assertEqual(reserve.args[2].attr, "RESERVED")
 
+    def test_map_pci_rejects_an_unready_nvme_backend(self):
+        root = Path(__file__).resolve().parents[4]
+        source = (root / "proxyclient/m1n1/hv/__init__.py").read_text()
+        tree = ast.parse(source)
+        map_pci = next(
+            node
+            for node in ast.walk(tree)
+            if isinstance(node, ast.FunctionDef) and node.name == "map_pci"
+        )
+
+        self.assertTrue(
+            any(
+                isinstance(node, ast.Raise)
+                and isinstance(node.exc, ast.Call)
+                and isinstance(node.exc.func, ast.Name)
+                and node.exc.func.id == "RuntimeError"
+                and "NVMe" in ast.literal_eval(node.exc.args[0])
+                for node in ast.walk(map_pci)
+            )
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

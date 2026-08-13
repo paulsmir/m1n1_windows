@@ -20,6 +20,13 @@ def function_body(source, signature):
 
 
 class SecondaryLaunchContractTest(unittest.TestCase):
+    def test_hv_init_returns_secondary_cpu_readiness(self):
+        source = HV_C.read_text()
+        primary = function_body(source, "bool hv_init(void)")
+
+        self.assertIn("secondaries_ready = smp_start_secondaries()", primary)
+        self.assertIn("return secondaries_ready", primary)
+
     def test_secondary_launch_uses_persistent_per_cpu_context(self):
         source = HV_C.read_text()
         start = function_body(source, "void hv_start_secondary(int cpu")
@@ -47,7 +54,7 @@ class SecondaryLaunchContractTest(unittest.TestCase):
     def test_guest_wfi_keeps_architectural_register_context(self):
         source = HV_C.read_text()
         configure = function_body(source, "static void hv_configure_guest_wfi(void)")
-        primary = function_body(source, "void hv_init(void)")
+        primary = function_body(source, "bool hv_init(void)")
         secondary = function_body(source, "static void hv_init_secondary(")
 
         self.assertIn("CYC_OVRD_WFI_MODE(2)", configure)

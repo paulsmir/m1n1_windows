@@ -475,7 +475,7 @@ int proxy_process(ProxyRequest *request, ProxyReply *reply)
             break;
 
         case P_HV_INIT:
-            hv_init();
+            reply->retval = hv_init();
             break;
         case P_HV_MAP:
             hv_map(request->args[0], request->args[1], request->args[2], request->args[3]);
@@ -497,7 +497,7 @@ int proxy_process(ProxyRequest *request, ProxyReply *reply)
             break;
         case P_HV_MAP_PCI:
             // Emulated PCIe ECAM + NVMe (hv_pci.c / hv_nvme.c). args: ecam, bar_window, intx_irq.
-            hv_pci_init(request->args[0], request->args[1], request->args[2]);
+            reply->retval = hv_pci_init(request->args[0], request->args[1], request->args[2]);
             break;
         case P_HV_FB_STREAM_CONFIG:
             reply->retval = hv_configure_fb_stream(

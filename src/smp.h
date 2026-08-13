@@ -16,7 +16,7 @@ extern u8 *secondary_stacks_el3[MAX_EL3_CPUS];
 void smp_secondary_entry(void);
 void smp_secondary_prep_el3(void);
 
-void smp_start_secondaries(void);
+bool smp_start_secondaries(void);
 void smp_stop_secondaries(bool deep_sleep);
 
 #define smp_call0(i, f)          smp_call4(i, f, 0, 0, 0, 0)

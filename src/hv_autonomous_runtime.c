@@ -305,7 +305,8 @@ static bool map_stage2(const struct hv_autonomous_runtime *runtime)
 {
     const struct hv_autonomous_layout *layout = &J313_AUTONOMOUS_LAYOUT;
 
-    hv_init();
+    if (!hv_init())
+        return false;
     /* Assisted HV.init() establishes the complete guest EL1 register image
      * before PCI and ADT setup. Waiting until hv_start() lets secondary/PSCI
      * bring-up observe host defaults and caused the standalone-only CPU1
