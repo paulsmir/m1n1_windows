@@ -32,7 +32,8 @@ static void fill_cpu(struct hv_contract_cpu *cpu, uint64_t mpidr, bool initializ
     };
 }
 
-static void fill_common(struct hv_contract_snapshot *snapshot, uint32_t checkpoint)
+static void fill_common(struct hv_contract_snapshot *snapshot, uint32_t checkpoint,
+                        bool apple_input_declared)
 {
     snapshot->identity = (struct hv_contract_identity){
         .target = GOLDEN_J313_TARGET,
@@ -72,7 +73,7 @@ static void fill_common(struct hv_contract_snapshot *snapshot, uint32_t checkpoi
     snapshot->irq_routes[0] = (struct hv_contract_irq_route){
         .physical_irq = 857, .vintid = 857, .flags = HV_CONTRACT_IRQ_LEVEL};
     snapshot->irq_route_count = 1;
-    if (checkpoint != HV_CONTRACT_PRE_HV_INIT) {
+    if (apple_input_declared && checkpoint != HV_CONTRACT_PRE_HV_INIT) {
         snapshot->irq_routes[1] = (struct hv_contract_irq_route){
             .physical_irq = HV_APPLE_INPUT_PHYSICAL_PARENT_IRQ,
             .vintid = HV_APPLE_INPUT_GUEST_VINTID,
@@ -93,7 +94,8 @@ static void fill_common(struct hv_contract_snapshot *snapshot, uint32_t checkpoi
 }
 
 bool hv_launch_golden_j313_init(
-    struct hv_contract_snapshot out[HV_LAUNCH_PREFLIGHT_BLOCKING_CHECKPOINTS])
+    struct hv_contract_snapshot out[HV_LAUNCH_PREFLIGHT_BLOCKING_CHECKPOINTS],
+    bool apple_input_declared)
 {
     if (!out)
         return false;
@@ -104,7 +106,7 @@ bool hv_launch_golden_j313_init(
         out[i].header.version = HV_CONTRACT_VERSION;
         out[i].header.checkpoint = i;
         out[i].header.sequence = i + 1;
-        fill_common(&out[i], i);
+        fill_common(&out[i], i, apple_input_declared);
         if (!hv_contract_finalize(&out[i]))
             return false;
     }

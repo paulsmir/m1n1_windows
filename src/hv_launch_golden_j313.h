@@ -9,6 +9,7 @@
  * This is intentionally structured data rather than a copied runtime blob so
  * reviewers can see every launch invariant that gates autonomous entry. */
 bool hv_launch_golden_j313_init(
-    struct hv_contract_snapshot out[HV_LAUNCH_PREFLIGHT_BLOCKING_CHECKPOINTS]);
+    struct hv_contract_snapshot out[HV_LAUNCH_PREFLIGHT_BLOCKING_CHECKPOINTS],
+    bool apple_input_declared);
 
 #endif

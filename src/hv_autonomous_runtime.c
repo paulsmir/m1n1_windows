@@ -369,7 +369,14 @@ static bool runtime_stage(enum hv_autonomous_stage stage,
             iodev_console_kick();
             printf("PREFLIGHT INIT step=golden begin\n");
             iodev_console_kick();
-            if (!hv_launch_golden_j313_init(runtime->golden)) {
+            /* Some J313 ADTs do not publish the SPI-HID child.  Only require
+             * its dynamic IRQ route when the device is actually declared.
+             * A declared but malformed device remains fail-closed: hv_init()
+             * will omit the route and POST_HV_INIT will reject the mismatch. */
+            bool apple_input_declared =
+                adt_path_offset(adt, "/arm-io/spi3/ipd") >= 0;
+            if (!hv_launch_golden_j313_init(runtime->golden,
+                                            apple_input_declared)) {
                 printf("PREFLIGHT FAIL checkpoint=PRE_HV_INIT reason=golden\n");
                 iodev_console_kick();
                 return false;

@@ -1,13 +1,14 @@
 #include <assert.h>
 #include <stdio.h>
 
+#include "../src/hv_apple_input.generated.h"
 #include "../src/hv_launch_golden_j313.h"
 
 int main(void)
 {
     struct hv_contract_snapshot golden[HV_LAUNCH_PREFLIGHT_BLOCKING_CHECKPOINTS];
 
-    assert(hv_launch_golden_j313_init(golden));
+    assert(hv_launch_golden_j313_init(golden, false));
     for (unsigned int i = 0; i < HV_LAUNCH_PREFLIGHT_BLOCKING_CHECKPOINTS; i++) {
         assert(golden[i].header.checkpoint == i);
         assert(golden[i].header.sequence == i + 1);
@@ -20,6 +21,15 @@ int main(void)
     assert(golden[1].cpus[1].actlr == 0x1c00);
     assert(golden[3].cpus[1].hacr == 0x317000000014000ULL);
     assert(golden[3].irq_routes[0].physical_irq == 857);
+    assert(golden[0].irq_route_count == 1);
+    assert(golden[1].irq_route_count == 1);
+
+    assert(hv_launch_golden_j313_init(golden, true));
+    assert(golden[0].irq_route_count == 1);
+    assert(golden[1].irq_route_count == 2);
+    assert(golden[1].irq_routes[1].physical_irq ==
+           HV_APPLE_INPUT_PHYSICAL_PARENT_IRQ);
+    assert(golden[1].irq_routes[1].vintid == HV_APPLE_INPUT_GUEST_VINTID);
 
     puts("hv_launch_golden_j313_test: ok");
     return 0;
