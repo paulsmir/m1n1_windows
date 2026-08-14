@@ -565,6 +565,29 @@ static bool timer_irq_outstanding(u32 intid)
     return false;
 }
 
+static bool timer_sync_live_irq(u32 intid, bool asserted)
+{
+    u64 lrs[HV_VGIC_DIAG_LR_COUNT] = {0};
+    int lr_count = hv_vgic3_num_lrs();
+    if (lr_count > HV_VGIC_DIAG_LR_COUNT)
+        lr_count = HV_VGIC_DIAG_LR_COUNT;
+    for (int lr = 0; lr < lr_count; lr++)
+        lrs[lr] = hv_vgic3_read_lr(lr);
+
+    int lr = hv_vgic_diag_find_live_intid(lrs, intid);
+    if (lr < 0)
+        return false;
+
+    struct hv_vgic_level_result next =
+        hv_vgic_diag_sync_level_lr(lrs[lr], asserted);
+    if (next.changed) {
+        hv_vgic3_write_lr(lr, next.lr);
+        hv_vgic3_update_vi();
+        sysop("isb");
+    }
+    return true;
+}
+
 static bool timer_repend_live_irq(u32 intid)
 {
     u64 lrs[HV_VGIC_DIAG_LR_COUNT] = {0};
@@ -651,7 +674,7 @@ static void hv_update_fiq(void)
 
 #ifdef ENABLE_VGIC_MODULE
         if (timer_v_injected[tcpu]) {
-            if (!timer_irq_outstanding(18)) {
+            if (!timer_sync_live_irq(18, true) && !timer_irq_outstanding(18)) {
                 timer_v_injected[tcpu] = false;
                 reg_set(SYS_IMP_APL_VM_TMR_FIQ_ENA_EL2, VM_TMR_FIQ_ENA_ENA_V);
             }
@@ -675,6 +698,10 @@ static void hv_update_fiq(void)
         }
 #endif
     } else {
+#ifdef ENABLE_VGIC_MODULE
+        if (timer_v_injected[tcpu])
+            timer_sync_live_irq(18, false);
+#endif
         timer_v_injected[tcpu] = false;
         reg_set(SYS_IMP_APL_VM_TMR_FIQ_ENA_EL2, VM_TMR_FIQ_ENA_ENA_V);
     }
