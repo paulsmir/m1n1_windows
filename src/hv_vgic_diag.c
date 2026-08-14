@@ -42,6 +42,23 @@ bool hv_vgic_diag_has_live_intid(const u64 lrs[HV_VGIC_DIAG_LR_COUNT], u32 intid
     return hv_vgic_diag_find_live_intid(lrs, intid) >= 0;
 }
 
+bool hv_vgic_diag_lr_needs_recovery_wake(u64 lr, u32 intid, u32 pmr,
+                                         u32 running_priority)
+{
+    const u32 state = (lr >> 62) & 3;
+    const u32 lr_intid = lr & 0xffffffff;
+    const u32 priority = (lr >> 48) & 0xff;
+
+    /*
+     * A physical recovery wake is useful only before the guest has acknowledged
+     * the timer.  Active and Active+Pending mean Windows is already inside the
+     * interrupt lifecycle; polling EL2 at 1 kHz there adds scheduler latency but
+     * cannot make that handler finish sooner.
+     */
+    return state == 1 && lr_intid == intid &&
+           hv_vgic_diag_priority_deliverable(priority, pmr, running_priority);
+}
+
 int hv_vgic_diag_repend_live_intid(u64 lrs[HV_VGIC_DIAG_LR_COUNT], u32 intid)
 {
     int lr = hv_vgic_diag_find_live_intid(lrs, intid);

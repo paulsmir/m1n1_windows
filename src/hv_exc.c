@@ -392,7 +392,23 @@ static bool hv_guest_timer_recovery_needed(int cpu)
 {
     if (cpu < 0 || cpu >= MAX_CPUS)
         return false;
-    return timer_p_injected[cpu] || timer_v_injected[cpu];
+    if (!(mrs(HCR_EL2) & HCR_VI))
+        return false;
+
+    u64 vmcr = mrs(ICH_VMCR_EL2);
+    u32 pmr = (vmcr >> 24) & 0xff;
+    u32 running_priority = hv_vgic3_running_priority();
+    int lr_count = hv_vgic3_num_lrs();
+
+    for (int lr = 0; lr < lr_count; lr++) {
+        u64 value = hv_vgic3_read_lr(lr);
+        if (hv_vgic_diag_lr_needs_recovery_wake(value, 17, pmr,
+                                                running_priority) ||
+            hv_vgic_diag_lr_needs_recovery_wake(value, 18, pmr,
+                                                running_priority))
+            return true;
+    }
+    return false;
 }
 
 void hv_watchdog_snapshot_tick(struct exc_info *ctx)

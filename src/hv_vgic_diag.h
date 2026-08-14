@@ -30,6 +30,8 @@ void hv_vgic_diag_classify_lrs(const u64 lrs[HV_VGIC_DIAG_LR_COUNT],
                                 struct hv_vgic_diag_snapshot *out);
 int hv_vgic_diag_find_live_intid(const u64 lrs[HV_VGIC_DIAG_LR_COUNT], u32 intid);
 bool hv_vgic_diag_has_live_intid(const u64 lrs[HV_VGIC_DIAG_LR_COUNT], u32 intid);
+bool hv_vgic_diag_lr_needs_recovery_wake(u64 lr, u32 intid, u32 pmr,
+                                         u32 running_priority);
 int hv_vgic_diag_repend_live_intid(u64 lrs[HV_VGIC_DIAG_LR_COUNT], u32 intid);
 struct hv_vgic_level_result hv_vgic_diag_sync_level_lr(u64 lr, bool asserted);
 u64 hv_vgic_diag_eoi_lr(u64 lr);

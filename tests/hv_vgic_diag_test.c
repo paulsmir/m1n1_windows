@@ -67,6 +67,20 @@ static void test_finds_only_live_intids(void)
     assert(!hv_vgic_diag_has_live_intid(NULL, 17));
 }
 
+static void test_recovery_wake_requires_pending_only_timer_lr(void)
+{
+    const uint64_t pending = 1ULL << 62;
+    const uint64_t active = 1ULL << 63;
+    const uint64_t timer = (0x20ULL << 48) | 18;
+
+    assert(hv_vgic_diag_lr_needs_recovery_wake(pending | timer, 18, 0xf8, 0xff));
+    assert(!hv_vgic_diag_lr_needs_recovery_wake(active | timer, 18, 0xf8, 0xff));
+    assert(!hv_vgic_diag_lr_needs_recovery_wake(active | pending | timer, 18,
+                                                0xf8, 0xff));
+    assert(!hv_vgic_diag_lr_needs_recovery_wake(pending | timer, 17, 0xf8, 0xff));
+    assert(!hv_vgic_diag_lr_needs_recovery_wake(pending | timer, 18, 0x20, 0xff));
+}
+
 static void test_finds_the_live_lr_for_sgi_repending(void)
 {
     const uint64_t pending = 1ULL << 62;
@@ -156,6 +170,7 @@ int main(void)
     test_pending_active_and_combined_states_are_counted();
     test_null_inputs_are_safe();
     test_finds_only_live_intids();
+    test_recovery_wake_requires_pending_only_timer_lr();
     test_finds_the_live_lr_for_sgi_repending();
     test_eoi_preserves_a_repending_interrupt();
     test_timer_reexpiry_coalesces_into_the_active_lr();
