@@ -2066,7 +2066,7 @@ void hv_exc_fiq(struct exc_info *ctx)
     u64 cntp_ctl = mrs(CNTP_CTL_EL0);
     if ((cntp_ctl & (CNTx_CTL_ISTATUS | CNTx_CTL_ENABLE)) ==
         (CNTx_CTL_ISTATUS | CNTx_CTL_ENABLE)) {
-        PERCPU(host_tick_fires)++;
+        HV_RUNTIME_DIAG_COUNT(PERCPU(host_tick_fires));
         //
         // Re-arm immediately instead of masking and deferring the re-arm to the end of the
         // handler. Masking first was the deadlock: any path that leaves before hv_arm_tick()

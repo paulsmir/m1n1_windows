@@ -843,7 +843,7 @@ void hv_arm_tick(bool secondary)
 {
     int cpu = smp_id();
     if (cpu >= 0 && cpu < MAX_CPUS)
-        __atomic_fetch_add(&hv_tick_arm_count[cpu], 1, __ATOMIC_RELAXED);
+        HV_RUNTIME_DIAG_COUNT(hv_tick_arm_count[cpu]);
     if (secondary)
         msr(CNTP_TVAL_EL0, hv_secondary_tick_interval);
     else
@@ -864,8 +864,7 @@ void hv_arm_guest_irq_recovery_tick(void)
 
     int cpu = smp_id();
     if (cpu >= 0 && cpu < MAX_CPUS)
-        __atomic_fetch_add(&hv_recovery_tick_arm_count[cpu], 1,
-                           __ATOMIC_RELAXED);
+        HV_RUNTIME_DIAG_COUNT(hv_recovery_tick_arm_count[cpu]);
     msr(CNTP_TVAL_EL0, hv_guest_irq_recovery_tick_interval);
     msr(CNTP_CTL_EL0, CNTx_CTL_ENABLE);
 }

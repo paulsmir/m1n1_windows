@@ -48,6 +48,13 @@ static inline bool hv_runtime_diag_verbose_enabled(void)
 #endif
 }
 
+/* Diagnostic counters must not write from production interrupt hot paths. */
+#define HV_RUNTIME_DIAG_COUNT(counter)                                                          \
+    do {                                                                                         \
+        if (hv_runtime_diag_enabled())                                                           \
+            (counter)++;                                                                         \
+    } while (0)
+
 #define HV_RUNTIME_TRACE(...)                                                                    \
     do {                                                                                         \
         if (hv_runtime_trace_enabled())                                                          \
