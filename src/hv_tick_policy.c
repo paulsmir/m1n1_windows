@@ -3,19 +3,17 @@
 
 #define HV_ECV_SECONDARY_TICK_RATE 1
 #define HV_FALLBACK_SECONDARY_TICK_RATE 100
-#define HV_RUNTIME_TICK_RATE       100
+#define HV_RUNTIME_TICK_RATE       5000
 #define HV_GUEST_IRQ_RECOVERY_TICK_RATE 0
 
 uint32_t hv_boot_tick_rate(void)
 {
-    /*
-     * Guest architectural timers are delivered by their own FIQ routes.  The
-     * boot-CPU tick only services host-side proxy, UART and diagnostic work;
-     * polling all of that at 5 kHz steals a measurable fraction of CPU0 from
-     * Windows.  One millisecond keeps the debug transport responsive without
-     * turning the monitor itself into a scheduler load.
-     */
-    return 1000;
+    /* Preserve the accepted responsive baseline on the interruptible CPU.
+     * Hardware A/B testing showed that reducing this global service cadence to
+     * 100 Hz makes Windows progress in tens-of-seconds bursts even though all
+     * per-CPU heartbeats remain alive.  Only secondary housekeeping stays at
+     * the sparse 100-Hz fallback rate. */
+    return 5000;
 }
 
 uint32_t hv_runtime_tick_rate(void)
