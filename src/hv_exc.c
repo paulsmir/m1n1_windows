@@ -416,6 +416,12 @@ void hv_watchdog_snapshot_tick(struct exc_info *ctx)
 {
     (void)ctx;
 
+    /* RELEASE must not pay for monitor-only register/LR sampling on every
+     * guest tick.  This check precedes even the per-CPU sample counter so the
+     * production path compiles down to a constant false branch and return. */
+    if (!hv_runtime_diag_enabled())
+        return;
+
     int cpu = smp_id();
     if (cpu < 0 || cpu >= MAX_CPUS)
         return;
