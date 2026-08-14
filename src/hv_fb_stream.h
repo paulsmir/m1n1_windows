@@ -17,9 +17,12 @@ typedef uint64_t u64;
 #define HV_FB_STREAM_MAGIC 0x31424656u
 
 #ifndef HV_FB_STREAM_PAYLOAD_SIZE
-// Keep the complete UART proxy event within one 16 KiB DWC3 transfer:
+// Keep the complete UART proxy event below 4 KiB.  Hardware observation showed
+// that events close to the 16 KiB DWC3 transfer boundary can lose framing on
+// the CDC path even though they fit mathematically.  The smaller event leaves
+// margin for the shared console/proxy stream without changing frame contents.
 // 8-byte event header + 28-byte framebuffer header + payload + 4-byte checksum.
-#define HV_FB_STREAM_PAYLOAD_SIZE 0x3fc0u
+#define HV_FB_STREAM_PAYLOAD_SIZE 0x0fc0u
 #endif
 
 #define HV_FB_STREAM_CHUNKS_PER_TICK 1u

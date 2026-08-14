@@ -7,8 +7,9 @@
 #include "../src/uartproxy_event.h"
 
 #define DWC3_BULK_TRANSFER_SIZE 0x4000u
-#define FRAME_SIZE             0x5000u
-#define EVT_FRAMEBUFFER_TEST   0x100u
+#define DWC3_SAFE_EVENT_SIZE    0x1000u
+#define FRAME_SIZE              0x5000u
+#define EVT_FRAMEBUFFER_TEST    0x100u
 
 struct usb_sink {
     unsigned accepted_events;
@@ -61,6 +62,7 @@ int main(void)
 
     assert(sink.accepted_events == 1);
     assert(sink.last_event_size <= DWC3_BULK_TRANSFER_SIZE);
+    assert(sink.last_event_size <= DWC3_SAFE_EVENT_SIZE);
     assert(stream.offset > 0);
 
     puts("hv_fb_stream_usb_limit_test: ok");
