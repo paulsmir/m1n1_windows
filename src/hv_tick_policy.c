@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 #include "hv_tick_policy.h"
 
+#define HV_BOOT_TICK_RATE          100
 #define HV_ECV_SECONDARY_TICK_RATE 1
 #define HV_FALLBACK_SECONDARY_TICK_RATE 100
 
@@ -9,11 +10,12 @@ uint32_t hv_boot_tick_rate(void)
     /*
      * Guest architectural timers are delivered by their own FIQ routes.  The
      * boot-CPU tick only services host-side proxy, UART and diagnostic work;
-     * polling all of that at 5 kHz steals a measurable fraction of CPU0 from
-     * Windows.  One millisecond keeps the debug transport responsive without
-     * turning the monitor itself into a scheduler load.
+     * polling all of that at 1 kHz still creates measurable CPU0 scheduling
+     * gaps.  EXP-019 made guest timer delivery event-driven and authoritative,
+     * so the boot CPU can use the same sparse 10 ms recovery cadence as the
+     * other non-ECV CPUs without changing the guest architectural timer.
      */
-    return 1000;
+    return HV_BOOT_TICK_RATE;
 }
 
 uint32_t hv_secondary_tick_rate(bool has_ecv)
