@@ -661,6 +661,7 @@ static bool handle_vgic_dist_access(struct exc_info *ctx, u64 addr, u64 *val, bo
                             hv_prepare_j313_xhci_handoff();
                             hv_prepare_j313_xhci_darts();
                             j313_xhci_tick_trace_budget = 24;
+                            hv_mark_guest_runtime_ready();
                         }
                         aic_set_mask(route->hw_irq, false);
                         printf("HV: IRQ route enabled vINTID=%u AIC=%u\n", route->vintid,

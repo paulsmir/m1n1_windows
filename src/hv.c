@@ -36,6 +36,8 @@ void hv_exit_guest(void) __attribute__((noreturn));
 extern char _hv_vectors_start[0];
 
 u64 hv_tick_interval;
+static u64 hv_runtime_tick_interval;
+static bool hv_guest_runtime_ready;
 u64 hv_secondary_tick_interval;
 
 int hv_pinned_cpu;
@@ -258,6 +260,9 @@ bool hv_init(void)
 
     // Compute tick interval
     hv_tick_interval = hv_tick_interval_ticks(mrs(CNTFRQ_EL0), hv_boot_tick_rate());
+    hv_runtime_tick_interval =
+        hv_tick_interval_ticks(mrs(CNTFRQ_EL0), hv_runtime_tick_rate());
+    hv_guest_runtime_ready = false;
 
     hv_has_ecv = mrs(ID_AA64MMFR0_EL1) & (0xfULL << 60);
     u32 secondary_tick_rate = hv_secondary_tick_rate(hv_has_ecv);
@@ -834,8 +839,18 @@ void hv_arm_tick(bool secondary)
     if (secondary)
         msr(CNTP_TVAL_EL0, hv_secondary_tick_interval);
     else
-        msr(CNTP_TVAL_EL0, hv_tick_interval);
+        msr(CNTP_TVAL_EL0, __atomic_load_n(&hv_tick_interval, __ATOMIC_ACQUIRE));
     msr(CNTP_CTL_EL0, CNTx_CTL_ENABLE);
+}
+
+void hv_mark_guest_runtime_ready(void)
+{
+    if (__atomic_exchange_n(&hv_guest_runtime_ready, true, __ATOMIC_ACQ_REL))
+        return;
+
+    __atomic_store_n(&hv_tick_interval, hv_runtime_tick_interval, __ATOMIC_RELEASE);
+    printf("HV: guest runtime ready; boot tick %uHz -> %uHz\n",
+           hv_boot_tick_rate(), hv_runtime_tick_rate());
 }
 
 void hv_maybe_exit(void)
