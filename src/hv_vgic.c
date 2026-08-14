@@ -2315,7 +2315,6 @@ void hv_vgic3_do_eoir1(u64 reg){
      * remained physically masked forever (observed as xHCI IMAN.IP stuck at 1).
      */
     hv_vgic3_drain_irq_queue();
-    hv_vgic3_drain_timer_queue();
     hv_vgic3_update_vi();
     hv_nvme_irq_eoi(intd);
     u32 hw_irq;
