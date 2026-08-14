@@ -30,14 +30,17 @@ static inline u64 hv_wfx_hcr_mask(void)
     return HV_WFX_BIT(13) | HV_WFX_BIT(14);
 }
 
-static inline u64 hv_wfx_apply_hcr(u64 hcr)
+static inline u64 hv_wfx_apply_pending_hcr(u64 hcr, bool virtual_irq_pending)
 {
-    return hcr | hv_wfx_hcr_mask();
+    if (virtual_irq_pending)
+        return hcr | hv_wfx_hcr_mask();
+    return hcr & ~hv_wfx_hcr_mask();
 }
 
-static inline bool hv_wfx_policy_satisfied(u64 hcr)
+static inline bool hv_wfx_pending_hcr_satisfied(u64 hcr, bool virtual_irq_pending)
 {
-    return (hcr & hv_wfx_hcr_mask()) == hv_wfx_hcr_mask();
+    return (hcr & hv_wfx_hcr_mask()) ==
+           (virtual_irq_pending ? hv_wfx_hcr_mask() : 0);
 }
 
 #endif
