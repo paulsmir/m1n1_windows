@@ -145,6 +145,8 @@ void hv_maybe_exit(void);
 void hv_tick(struct exc_info *ctx);
 extern u64 hv_fiq_count;
 extern u64 hv_fiq_ticks;
+extern u64 hv_tick_arm_count[];
+extern u64 hv_recovery_tick_arm_count[];
 
 //
 // PSCI init

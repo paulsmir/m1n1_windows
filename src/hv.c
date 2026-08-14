@@ -38,6 +38,8 @@ extern char _hv_vectors_start[0];
 u64 hv_tick_interval;
 static u64 hv_runtime_tick_interval;
 static u64 hv_guest_irq_recovery_tick_interval;
+u64 hv_tick_arm_count[MAX_CPUS];
+u64 hv_recovery_tick_arm_count[MAX_CPUS];
 static bool hv_guest_runtime_ready;
 u64 hv_secondary_tick_interval;
 
@@ -839,6 +841,9 @@ void hv_percpu_diag_tick(struct exc_info *ctx)
 
 void hv_arm_tick(bool secondary)
 {
+    int cpu = smp_id();
+    if (cpu >= 0 && cpu < MAX_CPUS)
+        __atomic_fetch_add(&hv_tick_arm_count[cpu], 1, __ATOMIC_RELAXED);
     if (secondary)
         msr(CNTP_TVAL_EL0, hv_secondary_tick_interval);
     else
@@ -854,6 +859,10 @@ void hv_arm_guest_irq_recovery_tick(void)
      * only while a guest timer delivery is outstanding; the normal sparse
      * cadence is restored as soon as Windows EOIs/rearms the timer.
      */
+    int cpu = smp_id();
+    if (cpu >= 0 && cpu < MAX_CPUS)
+        __atomic_fetch_add(&hv_recovery_tick_arm_count[cpu], 1,
+                           __ATOMIC_RELAXED);
     msr(CNTP_TVAL_EL0, hv_guest_irq_recovery_tick_interval);
     msr(CNTP_CTL_EL0, CNTx_CTL_ENABLE);
 }

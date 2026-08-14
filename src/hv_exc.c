@@ -57,6 +57,7 @@ struct hv_pcpu_data {
     u64 pmc_irq_mode;
     u64 exc_entry_pmcr0_cnt;
     u64 watchdog_sample_ticks;
+    u64 host_tick_fires;
     struct hv_watchdog_cpu_record watchdog_record;
 #ifdef ENABLE_VGIC_MODULE
     virq_queue_t irq_queue;
@@ -90,6 +91,7 @@ static bool time_stealing = true;
 void init_vgic_irq_queues(void) {
     for (int i = 0; i < MAX_CPUS; i++) {
         PERCPU_N(i, watchdog_sample_ticks) = 0;
+        PERCPU_N(i, host_tick_fires) = 0;
         PERCPU_N(i, watchdog_record) = (struct hv_watchdog_cpu_record){0};
     }
 
@@ -430,6 +432,14 @@ void hv_watchdog_snapshot_tick(struct exc_info *ctx)
         .cntpct = mrs(CNTPCT_EL0),
         .cntvct = mrs(CNTVCT_EL0),
         .cntvoff = mrs(CNTVOFF_EL2),
+        .host_cntp_ctl = mrs(CNTP_CTL_EL0),
+        .host_cntp_cval = mrs(CNTP_CVAL_EL0),
+        .tick_arm_count = __atomic_load_n(&hv_tick_arm_count[cpu],
+                                          __ATOMIC_RELAXED),
+        .recovery_tick_arm_count =
+            __atomic_load_n(&hv_recovery_tick_arm_count[cpu],
+                            __ATOMIC_RELAXED),
+        .host_tick_fires = PERCPU(host_tick_fires),
         .cntp_ctl = mrs(CNTP_CTL_EL02),
         .cntp_cval = mrs(CNTP_CVAL_EL02),
         .cntv_ctl = mrs(CNTV_CTL_EL02),
@@ -500,7 +510,9 @@ void hv_watchdog_snapshot_dump(void)
             continue;
 
         printf("HV WATCHDOG CPU: cpu=%lu pc=0x%lx spsr=0x%lx cntpct=0x%lx "
-               "cntvct=0x%lx cntvoff=0x%lx pctl=0x%lx pcval=0x%lx "
+               "cntvct=0x%lx cntvoff=0x%lx host_pctl=0x%lx host_pcval=0x%lx "
+               "tick_arm=%lu recovery_arm=%lu tick_fire=%lu "
+               "pctl=0x%lx pcval=0x%lx "
                "vctl=0x%lx vcval=0x%lx vm_tmr=0x%lx hcr=0x%lx ich_hcr=0x%lx "
                "ich_vmcr=0x%lx isr=0x%lx pinj=%lu vinj=%lu "
                "tq=%lu iq=%lu pend=0x%lx q=%lu ipi=%lu drain=%lu inj=%lu "
@@ -508,7 +520,9 @@ void hv_watchdog_snapshot_dump(void)
                "last_sgi=%lu<-%lu last_iar=%lu@0x%lx last_eoi=%lu@0x%lx "
                "marker=0x%lx lrc=%lu lr0=0x%lx lr1=0x%lx lr2=0x%lx "
                "lr3=0x%lx lr4=0x%lx lr5=0x%lx lr6=0x%lx lr7=0x%lx\n",
-               s.cpu, s.pc, s.spsr, s.cntpct, s.cntvct, s.cntvoff, s.cntp_ctl,
+               s.cpu, s.pc, s.spsr, s.cntpct, s.cntvct, s.cntvoff,
+               s.host_cntp_ctl, s.host_cntp_cval, s.tick_arm_count,
+               s.recovery_tick_arm_count, s.host_tick_fires, s.cntp_ctl,
                s.cntp_cval, s.cntv_ctl, s.cntv_cval, s.vm_tmr_fiq_ena,
                s.hcr, s.ich_hcr, s.ich_vmcr, s.isr,
                s.timer_p_injected, s.timer_v_injected, s.timer_queue_depth,
@@ -2041,6 +2055,7 @@ void hv_exc_fiq(struct exc_info *ctx)
     u64 cntp_ctl = mrs(CNTP_CTL_EL0);
     if ((cntp_ctl & (CNTx_CTL_ISTATUS | CNTx_CTL_ENABLE)) ==
         (CNTx_CTL_ISTATUS | CNTx_CTL_ENABLE)) {
+        PERCPU(host_tick_fires)++;
         //
         // Re-arm immediately instead of masking and deferring the re-arm to the end of the
         // handler. Masking first was the deadlock: any path that leaves before hv_arm_tick()

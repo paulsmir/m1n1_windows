@@ -21,6 +21,11 @@ struct hv_watchdog_cpu_sample {
     u64 cntpct;
     u64 cntvct;
     u64 cntvoff;
+    u64 host_cntp_ctl;
+    u64 host_cntp_cval;
+    u64 tick_arm_count;
+    u64 recovery_tick_arm_count;
+    u64 host_tick_fires;
     u64 cntp_ctl;
     u64 cntp_cval;
     u64 cntv_ctl;
