@@ -2305,6 +2305,10 @@ void hv_exc_fiq(struct exc_info *ctx)
 
     // Handles guest timers
     hv_exc_exit(ctx);
+    /* Any timer VI edge discovered in this FIQ must become physical only after
+     * the final local-IPI drain.  Otherwise this handler consumes its own wake
+     * before the guest-facing ERET boundary. */
+    hv_vgic3_flush_timer_wake();
     hv_wdt_breadcrumb('f');
 }
 

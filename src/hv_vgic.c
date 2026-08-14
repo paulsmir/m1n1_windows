@@ -355,6 +355,12 @@ static u16 num_cpus;
 static bool vgic_inited;
 static u64 igrpen1;
 
+struct hv_vgic_timer_wake_state {
+    bool deferred;
+} ALIGNED(64);
+
+static struct hv_vgic_timer_wake_state timer_wake_state[MAX_CPUS];
+
 
 static bool handle_vgic_its_access(struct exc_info *ctx, u64 addr, u64 *val, bool write, int width)
 {
@@ -2186,6 +2192,26 @@ u8 hv_vgic3_running_priority(void){
     return rp;
 }
 
+static void hv_vgic3_defer_timer_wake(void)
+{
+    int cpu = smp_id();
+    if (cpu >= 0 && cpu < MAX_CPUS)
+        timer_wake_state[cpu].deferred = true;
+}
+
+void hv_vgic3_flush_timer_wake(void)
+{
+    int cpu = smp_id();
+    if (cpu < 0 || cpu >= MAX_CPUS || !timer_wake_state[cpu].deferred)
+        return;
+
+    timer_wake_state[cpu].deferred = false;
+    /* Publish VI before leaving the current FIQ, then leave the physical IPI
+     * pending across ERET instead of acknowledging it in the same handler. */
+    sysop("isb");
+    smp_send_ipi(cpu);
+}
+
 void hv_vgic3_update_vi(void){
     u64 vmcr = mrs(ICH_VMCR_EL2);
     u8 vpmr = (vmcr >> 24) & 0xff;
@@ -2220,17 +2246,8 @@ void hv_vgic3_update_vi(void){
 
     if(signal) {
         hv_write_hcr(hcr | HCR_VI);
-        if (timer_edge_wake) {
-            /*
-             * J313 hardware evidence shows that a synthetic VI can remain
-             * pending while the Apple core stays in the Windows WFI path.
-             * A single local physical IPI supplies the missing wake edge.
-             * Order it after VI so the follow-up FIQ returns to a guest that
-             * can immediately acknowledge the already-published timer LR.
-             */
-            sysop("isb");
-            smp_send_ipi(smp_id());
-        }
+        if (timer_edge_wake)
+            hv_vgic3_defer_timer_wake();
     } else {
         hv_write_hcr(hcr & ~HCR_VI);
     }
