@@ -164,13 +164,28 @@ static void test_priority_is_masked_only_by_pmr_until_bpr_is_emulated(void)
     assert(!hv_vgic_diag_priority_deliverable(0x20, 0x20, 0xff));
 }
 
-static void test_physical_timer_wake_occurs_only_on_the_deliverable_vi_edge(void)
+static void test_physical_timer_wake_occurs_once_per_deliverable_pending_interval(void)
 {
-    assert(hv_vgic_diag_needs_timer_edge_wake(false, true, true));
-    assert(!hv_vgic_diag_needs_timer_edge_wake(true, true, true));
-    assert(!hv_vgic_diag_needs_timer_edge_wake(false, false, true));
-    assert(!hv_vgic_diag_needs_timer_edge_wake(false, true, false));
-    assert(!hv_vgic_diag_needs_timer_edge_wake(true, false, true));
+    struct hv_vgic_timer_wake_transition next =
+        hv_vgic_diag_timer_wake_transition(false, true, true);
+    assert(next.deliverable_latched);
+    assert(next.defer_wake);
+
+    next = hv_vgic_diag_timer_wake_transition(true, true, true);
+    assert(next.deliverable_latched);
+    assert(!next.defer_wake);
+
+    next = hv_vgic_diag_timer_wake_transition(true, false, true);
+    assert(!next.deliverable_latched);
+    assert(!next.defer_wake);
+
+    next = hv_vgic_diag_timer_wake_transition(false, true, false);
+    assert(!next.deliverable_latched);
+    assert(!next.defer_wake);
+
+    next = hv_vgic_diag_timer_wake_transition(false, true, true);
+    assert(next.deliverable_latched);
+    assert(next.defer_wake);
 }
 
 int main(void)
@@ -185,7 +200,7 @@ int main(void)
     test_timer_reexpiry_coalesces_into_the_active_lr();
     test_level_sync_covers_every_lr_state();
     test_priority_is_masked_only_by_pmr_until_bpr_is_emulated();
-    test_physical_timer_wake_occurs_only_on_the_deliverable_vi_edge();
+    test_physical_timer_wake_occurs_once_per_deliverable_pending_interval();
     puts("hv_vgic_diag_test: ok");
     return 0;
 }

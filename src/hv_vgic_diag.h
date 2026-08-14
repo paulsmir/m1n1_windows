@@ -26,6 +26,11 @@ struct hv_vgic_level_result {
     bool newly_pending;
 };
 
+struct hv_vgic_timer_wake_transition {
+    bool deliverable_latched;
+    bool defer_wake;
+};
+
 void hv_vgic_diag_classify_lrs(const u64 lrs[HV_VGIC_DIAG_LR_COUNT],
                                 struct hv_vgic_diag_snapshot *out);
 int hv_vgic_diag_find_live_intid(const u64 lrs[HV_VGIC_DIAG_LR_COUNT], u32 intid);
@@ -36,7 +41,7 @@ int hv_vgic_diag_repend_live_intid(u64 lrs[HV_VGIC_DIAG_LR_COUNT], u32 intid);
 struct hv_vgic_level_result hv_vgic_diag_sync_level_lr(u64 lr, bool asserted);
 u64 hv_vgic_diag_eoi_lr(u64 lr);
 bool hv_vgic_diag_priority_deliverable(u32 priority, u32 pmr, u32 running_priority);
-bool hv_vgic_diag_needs_timer_edge_wake(bool vi_asserted, bool signal,
-                                         bool timer_signal);
+struct hv_vgic_timer_wake_transition hv_vgic_diag_timer_wake_transition(
+    bool deliverable_latched, bool signal, bool timer_signal);
 
 #endif

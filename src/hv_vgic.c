@@ -356,6 +356,7 @@ static bool vgic_inited;
 static u64 igrpen1;
 
 struct hv_vgic_timer_wake_state {
+    bool deliverable;
     bool deferred;
 } ALIGNED(64);
 
@@ -2240,13 +2241,24 @@ void hv_vgic3_update_vi(void){
         }
     }
 
+    int cpu = smp_id();
+    bool deliverable_latched = true;
+    if (cpu >= 0 && cpu < MAX_CPUS)
+        deliverable_latched = timer_wake_state[cpu].deliverable;
+    struct hv_vgic_timer_wake_transition next =
+        hv_vgic_diag_timer_wake_transition(deliverable_latched, signal,
+                                            timer_signal);
+    if (cpu >= 0 && cpu < MAX_CPUS) {
+        timer_wake_state[cpu].deliverable = next.deliverable_latched;
+        if (!next.deliverable_latched)
+            timer_wake_state[cpu].deferred = false;
+    }
+
     u64 hcr = mrs(HCR_EL2);
-    bool timer_edge_wake = hv_vgic_diag_needs_timer_edge_wake(
-        !!(hcr & HCR_VI), signal, timer_signal);
 
     if(signal) {
         hv_write_hcr(hcr | HCR_VI);
-        if (timer_edge_wake)
+        if (next.defer_wake)
             hv_vgic3_defer_timer_wake();
     } else {
         hv_write_hcr(hcr & ~HCR_VI);
