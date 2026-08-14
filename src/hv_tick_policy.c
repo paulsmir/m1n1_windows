@@ -4,6 +4,7 @@
 #define HV_ECV_SECONDARY_TICK_RATE 1
 #define HV_FALLBACK_SECONDARY_TICK_RATE 100
 #define HV_RUNTIME_TICK_RATE       100
+#define HV_GUEST_IRQ_RECOVERY_TICK_RATE 1000
 
 uint32_t hv_boot_tick_rate(void)
 {
@@ -20,6 +21,11 @@ uint32_t hv_boot_tick_rate(void)
 uint32_t hv_runtime_tick_rate(void)
 {
     return HV_RUNTIME_TICK_RATE;
+}
+
+uint32_t hv_guest_irq_recovery_tick_rate(void)
+{
+    return HV_GUEST_IRQ_RECOVERY_TICK_RATE;
 }
 
 uint32_t hv_secondary_tick_rate(bool has_ecv)

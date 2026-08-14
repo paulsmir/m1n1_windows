@@ -135,6 +135,7 @@ void hv_rendezvous(void);
 bool hv_switch_cpu(int cpu);
 void hv_pin_cpu(int cpu);
 void hv_arm_tick(bool secondary);
+void hv_arm_guest_irq_recovery_tick(void);
 void hv_mark_guest_runtime_ready(void);
 void hv_percpu_diag_tick(struct exc_info *ctx);
 void hv_watchdog_snapshot_tick(struct exc_info *ctx);

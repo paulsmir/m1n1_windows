@@ -388,6 +388,13 @@ static u64 watchdog_last_periodic_dump;
 static bool timer_p_injected[MAX_CPUS];
 static bool timer_v_injected[MAX_CPUS];
 
+static bool hv_guest_timer_recovery_needed(int cpu)
+{
+    if (cpu < 0 || cpu >= MAX_CPUS)
+        return false;
+    return timer_p_injected[cpu] || timer_v_injected[cpu];
+}
+
 void hv_watchdog_snapshot_tick(struct exc_info *ctx)
 {
     (void)ctx;
@@ -2086,6 +2093,8 @@ void hv_exc_fiq(struct exc_info *ctx)
         if (hv_fiq_secondary_fast_complete(true, !!(mrs(ISR_EL1) & 0x40),
                                            !!(mrs(HCR_EL2) & HCR_VI))) {
             hv_arm_tick(true);
+            if (hv_guest_timer_recovery_needed(smp_id()))
+                hv_arm_guest_irq_recovery_tick();
             return;
         }
     }
@@ -2232,6 +2241,9 @@ void hv_exc_fiq(struct exc_info *ctx)
     hv_handle_local_ipi();
 
     hv_maybe_switch_cpu(ctx, START_HV, HV_CPU_SWITCH, NULL);
+
+    if (hv_guest_timer_recovery_needed(smp_id()))
+        hv_arm_guest_irq_recovery_tick();
 
     // Handles guest timers
     hv_exc_exit(ctx);
