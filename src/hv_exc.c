@@ -524,8 +524,7 @@ void hv_watchdog_snapshot_dump(void)
                "tq=%lu iq=%lu pend=0x%lx q=%lu ipi=%lu drain=%lu inj=%lu "
                "repend=%lu no_lr=%lu iar=%lu eoi=%lu ap_eoi=%lu "
                "last_sgi=%lu<-%lu last_iar=%lu@0x%lx last_eoi=%lu@0x%lx "
-               "marker=0x%lx lrc=%lu lr0=0x%lx lr1=0x%lx lr2=0x%lx "
-               "lr3=0x%lx lr4=0x%lx lr5=0x%lx lr6=0x%lx lr7=0x%lx\n",
+               "marker=0x%lx ",
                s.cpu, s.pc, s.spsr, s.cntpct, s.cntvct, s.cntvoff,
                s.host_cntp_ctl, s.host_cntp_cval, s.tick_arm_count,
                s.recovery_tick_arm_count, s.host_tick_fires, s.cntp_ctl,
@@ -537,7 +536,10 @@ void hv_watchdog_snapshot_dump(void)
                s.sgi_no_lr, s.sgi_iar, s.sgi_eoi, s.sgi_eoi_active_pending,
                s.last_sgi_intid, s.last_sgi_from, s.last_iar_intid,
                s.last_iar_tick, s.last_eoi_intid, s.last_eoi_tick,
-               s.last_el2_marker, s.lr_count, s.lrs[0], s.lrs[1], s.lrs[2],
+               s.last_el2_marker);
+        printf("lrc=%lu lr0=0x%lx lr1=0x%lx lr2=0x%lx "
+               "lr3=0x%lx lr4=0x%lx lr5=0x%lx lr6=0x%lx lr7=0x%lx\n",
+               s.lr_count, s.lrs[0], s.lrs[1], s.lrs[2],
                s.lrs[3], s.lrs[4], s.lrs[5], s.lrs[6], s.lrs[7]);
     }
 }
