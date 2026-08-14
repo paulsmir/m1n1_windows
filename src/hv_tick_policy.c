@@ -4,7 +4,7 @@
 #define HV_ECV_SECONDARY_TICK_RATE 1
 #define HV_FALLBACK_SECONDARY_TICK_RATE 100
 #define HV_RUNTIME_TICK_RATE       100
-#define HV_GUEST_IRQ_RECOVERY_TICK_RATE 1000
+#define HV_GUEST_IRQ_RECOVERY_TICK_RATE 0
 
 uint32_t hv_boot_tick_rate(void)
 {
@@ -25,6 +25,13 @@ uint32_t hv_runtime_tick_rate(void)
 
 uint32_t hv_guest_irq_recovery_tick_rate(void)
 {
+    /*
+     * The separate 1 ms recovery source was added after the accepted responsive
+     * baseline.  Hardware proved that it fires, but not that it repairs guest
+     * timer delivery; instead it caused near-continuous EL2/vGIC work.  Keep the
+     * API for launch-contract compatibility while disabling that source.  The
+     * ordinary 100 Hz secondary heartbeat remains the bounded fallback.
+     */
     return HV_GUEST_IRQ_RECOVERY_TICK_RATE;
 }
 

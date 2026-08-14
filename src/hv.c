@@ -859,6 +859,9 @@ void hv_arm_guest_irq_recovery_tick(void)
      * only while a guest timer delivery is outstanding; the normal sparse
      * cadence is restored as soon as Windows EOIs/rearms the timer.
      */
+    if (!hv_guest_irq_recovery_tick_interval)
+        return;
+
     int cpu = smp_id();
     if (cpu >= 0 && cpu < MAX_CPUS)
         __atomic_fetch_add(&hv_recovery_tick_arm_count[cpu], 1,

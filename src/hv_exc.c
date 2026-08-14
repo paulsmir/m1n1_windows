@@ -2100,33 +2100,17 @@ void hv_exc_fiq(struct exc_info *ctx)
          */
         hv_update_fiq();
         hv_handle_local_ipi();
-        /*
-         * Both helpers above may create or repend an LR.  HCR.VI is only a cached
-         * output line; reading it without recomputing from the live LR/VMCR state can
-         * therefore observe the value from before this FIQ.  A secondary that returns
-         * with a Pending timer LR and VI clear remains asleep indefinitely and Windows
-         * eventually reports a clock watchdog.  Resynchronise only at this early-return
-         * boundary rather than on every serialized exception exit (which measurably
-         * increases guest DPC latency).
-         */
-        hv_vgic3_update_vi();
         sysop("isb");
         hv_watchdog_snapshot_tick(ctx);
         snapshot_sampled = true;
 
-        /*
-         * The timer/IPI sources and HCR.VI have already been synchronized from
-         * the live LR state above.  A Pending virtual IRQ is therefore completed
-         * local work, not a reason to take the legacy global lock.  Serializing
-         * it made the 1-ms recovery wake enter bhl on several vCPUs thousands of
-         * times per second, starving Windows runtime-power workers.  A physical
-         * FIQ still selects the slow path, and the short recovery wake remains a
-         * safety net until the guest acknowledges/rearms its timer.
-         */
-        if (hv_fiq_secondary_fast_complete(true, !!(mrs(ISR_EL1) & 0x40))) {
+        /* Preserve the accepted baseline exit rule: a secondary may use the
+         * abbreviated path only when neither a physical FIQ nor HCR.VI remains.
+         * This prevents returning to an idle guest before its clock IRQ is
+         * observed, without adding another LR scan or recovery timer. */
+        if (hv_fiq_secondary_fast_complete(true, !!(mrs(ISR_EL1) & 0x40),
+                                           !!(mrs(HCR_EL2) & HCR_VI))) {
             hv_arm_tick(true);
-            if (hv_guest_timer_recovery_needed(smp_id()))
-                hv_arm_guest_irq_recovery_tick();
             return;
         }
     }
@@ -2273,9 +2257,6 @@ void hv_exc_fiq(struct exc_info *ctx)
     hv_handle_local_ipi();
 
     hv_maybe_switch_cpu(ctx, START_HV, HV_CPU_SWITCH, NULL);
-
-    if (hv_guest_timer_recovery_needed(smp_id()))
-        hv_arm_guest_irq_recovery_tick();
 
     // Handles guest timers
     hv_exc_exit(ctx);
