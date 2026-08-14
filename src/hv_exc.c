@@ -2111,6 +2111,11 @@ void hv_exc_fiq(struct exc_info *ctx)
          */
         hv_update_fiq();
         hv_handle_local_ipi();
+        /* HCR.VI is a software-cached output.  The accepted timer latch may
+         * retain a live Pending LR without passing through an inject/repend
+         * helper, so rebuild VI from the final local LR/VMCR state before the
+         * fast-return decision can put an idle vCPU back to sleep. */
+        hv_vgic3_update_vi();
         sysop("isb");
         hv_watchdog_snapshot_tick(ctx);
         snapshot_sampled = true;
