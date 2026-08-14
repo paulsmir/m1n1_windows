@@ -101,3 +101,9 @@ bool hv_vgic_diag_priority_deliverable(u32 priority, u32 pmr, u32 running_priori
     (void)running_priority;
     return priority < pmr;
 }
+
+bool hv_vgic_diag_needs_timer_edge_wake(bool vi_asserted, bool signal,
+                                         bool timer_signal)
+{
+    return !vi_asserted && signal && timer_signal;
+}

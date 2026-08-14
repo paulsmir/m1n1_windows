@@ -164,6 +164,15 @@ static void test_priority_is_masked_only_by_pmr_until_bpr_is_emulated(void)
     assert(!hv_vgic_diag_priority_deliverable(0x20, 0x20, 0xff));
 }
 
+static void test_physical_timer_wake_occurs_only_on_the_deliverable_vi_edge(void)
+{
+    assert(hv_vgic_diag_needs_timer_edge_wake(false, true, true));
+    assert(!hv_vgic_diag_needs_timer_edge_wake(true, true, true));
+    assert(!hv_vgic_diag_needs_timer_edge_wake(false, false, true));
+    assert(!hv_vgic_diag_needs_timer_edge_wake(false, true, false));
+    assert(!hv_vgic_diag_needs_timer_edge_wake(true, false, true));
+}
+
 int main(void)
 {
     test_empty_lrs_are_not_occupied();
@@ -176,6 +185,7 @@ int main(void)
     test_timer_reexpiry_coalesces_into_the_active_lr();
     test_level_sync_covers_every_lr_state();
     test_priority_is_masked_only_by_pmr_until_bpr_is_emulated();
+    test_physical_timer_wake_occurs_only_on_the_deliverable_vi_edge();
     puts("hv_vgic_diag_test: ok");
     return 0;
 }

@@ -2192,6 +2192,7 @@ void hv_vgic3_update_vi(void){
     u8 running_priority = hv_vgic3_running_priority();
     bool veng1 = vmcr & BIT(1);
     bool signal = false;
+    bool timer_signal = false;
 
     if(veng1){
         for(int lr = 0; lr < hv_vgic3_num_lrs(); lr++){
@@ -2203,15 +2204,36 @@ void hv_vgic3_update_vi(void){
             u8 priority = (lr_val >> ICH_LR_PRIORITY_SHIFT) & ICH_LR_PRIORITY_MASK;
             if(hv_vgic_diag_priority_deliverable(priority, vpmr, running_priority)){
                 signal = true;
-                break;
+                u32 intid =
+                    (lr_val >> ICH_LR_VIRTUAL_SHIFT) & ICH_LR_VIRTUAL_MASK;
+                if (intid == 17 || intid == 18) {
+                    timer_signal = true;
+                    break;
+                }
             }
         }
     }
 
-    if(signal)
-        hv_write_hcr(mrs(HCR_EL2) | HCR_VI);
-    else
-        hv_write_hcr(mrs(HCR_EL2) & ~HCR_VI);
+    u64 hcr = mrs(HCR_EL2);
+    bool timer_edge_wake = hv_vgic_diag_needs_timer_edge_wake(
+        !!(hcr & HCR_VI), signal, timer_signal);
+
+    if(signal) {
+        hv_write_hcr(hcr | HCR_VI);
+        if (timer_edge_wake) {
+            /*
+             * J313 hardware evidence shows that a synthetic VI can remain
+             * pending while the Apple core stays in the Windows WFI path.
+             * A single local physical IPI supplies the missing wake edge.
+             * Order it after VI so the follow-up FIQ returns to a guest that
+             * can immediately acknowledge the already-published timer LR.
+             */
+            sysop("isb");
+            smp_send_ipi(smp_id());
+        }
+    } else {
+        hv_write_hcr(hcr & ~HCR_VI);
+    }
 }
 
 int hv_vgic3_do_iar1(void){
