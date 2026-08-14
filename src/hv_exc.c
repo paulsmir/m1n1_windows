@@ -461,6 +461,16 @@ void hv_watchdog_snapshot_tick(struct exc_info *ctx)
 
 void hv_watchdog_snapshot_dump(void)
 {
+    /*
+     * A CPU that stops immediately after the `X` breadcrumb is waiting in
+     * hv_exc_entry() for the hypervisor-wide lock.  Publish the lock word
+     * before the per-CPU records so a snapshot can identify the owner without
+     * acquiring that same potentially wedged lock.
+     */
+    s64 bhl_owner = __atomic_load_n(&bhl.lock, __ATOMIC_ACQUIRE);
+    int bhl_count = __atomic_load_n(&bhl.count, __ATOMIC_RELAXED);
+    printf("HV WATCHDOG BHL: owner=%ld count=%d\n", bhl_owner, bhl_count);
+
     for (int cpu = 0; cpu < MAX_CPUS; cpu++) {
         struct hv_watchdog_cpu_sample s = {0};
         if (!hv_watchdog_snapshot_read(&PERCPU_N(cpu, watchdog_record), &s))
