@@ -2115,14 +2115,15 @@ void hv_exc_fiq(struct exc_info *ctx)
         snapshot_sampled = true;
 
         /*
-         * HCR.VI is asserted after placing a guest IRQ in an LR.  Returning through the
-         * abbreviated secondary path at that point left Apple cores in the Windows idle
-         * loop with pending timer/SGI LRs but ISR_EL1 clear.  Use the normal exception
-         * exit whenever a virtual IRQ must be observed; the fast path remains available
-         * for genuinely completed local maintenance.
+         * The timer/IPI sources and HCR.VI have already been synchronized from
+         * the live LR state above.  A Pending virtual IRQ is therefore completed
+         * local work, not a reason to take the legacy global lock.  Serializing
+         * it made the 1-ms recovery wake enter bhl on several vCPUs thousands of
+         * times per second, starving Windows runtime-power workers.  A physical
+         * FIQ still selects the slow path, and the short recovery wake remains a
+         * safety net until the guest acknowledges/rearms its timer.
          */
-        if (hv_fiq_secondary_fast_complete(true, !!(mrs(ISR_EL1) & 0x40),
-                                           !!(mrs(HCR_EL2) & HCR_VI))) {
+        if (hv_fiq_secondary_fast_complete(true, !!(mrs(ISR_EL1) & 0x40))) {
             hv_arm_tick(true);
             if (hv_guest_timer_recovery_needed(smp_id()))
                 hv_arm_guest_irq_recovery_tick();
