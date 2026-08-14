@@ -63,9 +63,6 @@ CFG :=
 ifeq ($(RELEASE),1)
 CFG += RELEASE
 endif
-ifeq ($(DIAG_TRAP_WFX),1)
-CFG += HV_DIAG_TRAP_WFX
-endif
 ifeq ($(RUNTIME_DIAG_VERBOSE),1)
 CFG += HV_RUNTIME_DIAG_VERBOSE
 endif

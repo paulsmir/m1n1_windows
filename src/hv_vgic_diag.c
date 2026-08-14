@@ -101,13 +101,3 @@ bool hv_vgic_diag_priority_deliverable(u32 priority, u32 pmr, u32 running_priori
     (void)running_priority;
     return priority < pmr;
 }
-
-struct hv_vgic_timer_wake_transition hv_vgic_diag_timer_wake_transition(
-    bool deliverable_latched, bool signal, bool timer_signal)
-{
-    bool deliverable = signal && timer_signal;
-    return (struct hv_vgic_timer_wake_transition){
-        .deliverable_latched = deliverable,
-        .defer_wake = deliverable && !deliverable_latched,
-    };
-}

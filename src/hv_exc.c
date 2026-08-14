@@ -1809,13 +1809,12 @@ void hv_exc_sync(struct exc_info *ctx)
     u32 ec = FIELD_GET(ESR_EC, ctx->esr);
 
     switch (ec) {
-#ifdef HV_DIAG_TRAP_WFX
         case ESR_EC_WFI:
             /*
-             * Diagnostic only.  HCR traps WFI/WFE so an idle vCPU cannot enter
-             * the undocumented physical sleep path.  Advancing ELR makes the
-             * guest idle loop poll until its normal reschedule test succeeds.
-             * This path deliberately avoids bhl and UART output.
+             * Keep idle vCPUs in the hypervisor until the asserted architectural
+             * timer level has been synchronized into their live LR. Advancing ELR
+             * resumes the guest's normal idle-loop scheduling test. This path
+             * deliberately avoids bhl and UART output.
              */
             if (hv_wfx_is_wfe(FIELD_GET(ESR_ISS, ctx->esr)))
                 sysop("sev");
@@ -1824,7 +1823,6 @@ void hv_exc_sync(struct exc_info *ctx)
             hv_update_fiq();
             hv_wdt_breadcrumb('w');
             return;
-#endif
         case ESR_EC_DABORT_LOWER: {
             bool nvme_matched = false;
             handled = hv_nvme_try_handle_dabort(ctx, &nvme_matched);
@@ -2305,10 +2303,6 @@ void hv_exc_fiq(struct exc_info *ctx)
 
     // Handles guest timers
     hv_exc_exit(ctx);
-    /* Any timer VI edge discovered in this FIQ must become physical only after
-     * the final local-IPI drain.  Otherwise this handler consumes its own wake
-     * before the guest-facing ERET boundary. */
-    hv_vgic3_flush_timer_wake();
     hv_wdt_breadcrumb('f');
 }
 

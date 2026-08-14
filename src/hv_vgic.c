@@ -355,14 +355,6 @@ static u16 num_cpus;
 static bool vgic_inited;
 static u64 igrpen1;
 
-struct hv_vgic_timer_wake_state {
-    bool deliverable;
-    bool deferred;
-} ALIGNED(64);
-
-static struct hv_vgic_timer_wake_state timer_wake_state[MAX_CPUS];
-
-
 static bool handle_vgic_its_access(struct exc_info *ctx, u64 addr, u64 *val, bool write, int width)
 {
     u64 relative_addr;
@@ -2193,33 +2185,12 @@ u8 hv_vgic3_running_priority(void){
     return rp;
 }
 
-static void hv_vgic3_defer_timer_wake(void)
-{
-    int cpu = smp_id();
-    if (cpu >= 0 && cpu < MAX_CPUS)
-        timer_wake_state[cpu].deferred = true;
-}
-
-void hv_vgic3_flush_timer_wake(void)
-{
-    int cpu = smp_id();
-    if (cpu < 0 || cpu >= MAX_CPUS || !timer_wake_state[cpu].deferred)
-        return;
-
-    timer_wake_state[cpu].deferred = false;
-    /* Publish VI before leaving the current FIQ, then leave the physical IPI
-     * pending across ERET instead of acknowledging it in the same handler. */
-    sysop("isb");
-    smp_send_ipi(cpu);
-}
-
 void hv_vgic3_update_vi(void){
     u64 vmcr = mrs(ICH_VMCR_EL2);
     u8 vpmr = (vmcr >> 24) & 0xff;
     u8 running_priority = hv_vgic3_running_priority();
     bool veng1 = vmcr & BIT(1);
     bool signal = false;
-    bool timer_signal = false;
 
     if(veng1){
         for(int lr = 0; lr < hv_vgic3_num_lrs(); lr++){
@@ -2231,38 +2202,15 @@ void hv_vgic3_update_vi(void){
             u8 priority = (lr_val >> ICH_LR_PRIORITY_SHIFT) & ICH_LR_PRIORITY_MASK;
             if(hv_vgic_diag_priority_deliverable(priority, vpmr, running_priority)){
                 signal = true;
-                u32 intid =
-                    (lr_val >> ICH_LR_VIRTUAL_SHIFT) & ICH_LR_VIRTUAL_MASK;
-                if (intid == 17 || intid == 18) {
-                    timer_signal = true;
-                    break;
-                }
+                break;
             }
         }
     }
 
-    int cpu = smp_id();
-    bool deliverable_latched = true;
-    if (cpu >= 0 && cpu < MAX_CPUS)
-        deliverable_latched = timer_wake_state[cpu].deliverable;
-    struct hv_vgic_timer_wake_transition next =
-        hv_vgic_diag_timer_wake_transition(deliverable_latched, signal,
-                                            timer_signal);
-    if (cpu >= 0 && cpu < MAX_CPUS) {
-        timer_wake_state[cpu].deliverable = next.deliverable_latched;
-        if (!next.deliverable_latched)
-            timer_wake_state[cpu].deferred = false;
-    }
-
-    u64 hcr = mrs(HCR_EL2);
-
-    if(signal) {
-        hv_write_hcr(hcr | HCR_VI);
-        if (next.defer_wake)
-            hv_vgic3_defer_timer_wake();
-    } else {
-        hv_write_hcr(hcr & ~HCR_VI);
-    }
+    if(signal)
+        hv_write_hcr(mrs(HCR_EL2) | HCR_VI);
+    else
+        hv_write_hcr(mrs(HCR_EL2) & ~HCR_VI);
 }
 
 int hv_vgic3_do_iar1(void){

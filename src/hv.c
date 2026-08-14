@@ -216,10 +216,9 @@ bool hv_init(void)
                  HCR_AMO | // Trap SError exceptions
                  HCR_IMO | // Trap IRQ exceptions (for now)
                  HCR_FMO | // Trap FIQ exceptions (effectively required for now)
-#ifdef HV_DIAG_TRAP_WFX
-                 /* Diagnostic A/B mode: prevent physical guest WFI/WFE sleep. */
+                 /* Keep idle vCPUs at EL2 so asserted virtual timer levels can
+                  * be synchronized into their live list registers. */
                  HCR_TWI | HCR_TWE |
-#endif
 #ifdef ENABLE_VGIC_MODULE
                  //
                  // Trap EL1 reads of the ID registers. Without this the "advertise GIC"
@@ -333,18 +332,16 @@ static void hv_set_gxf_vbar(void)
     msr(SYS_IMP_APL_VBAR_GL1, _hv_vectors_start);
 }
 
-#ifdef HV_DIAG_TRAP_WFX
-static void hv_enable_diag_wfx_traps(void)
+static void hv_enable_guest_wfx_traps(void)
 {
     reg_set(HCR_EL2, hv_wfx_hcr_mask());
     sysop("isb");
 }
 
-static u64 hv_read_diag_hcr(void)
+static u64 hv_read_guest_hcr(void)
 {
     return mrs(HCR_EL2);
 }
-#endif
 
 void hv_start(void *entry, u64 regs[4])
 {
@@ -363,25 +360,20 @@ void hv_start(void *entry, u64 regs[4])
     if (gxf_enabled())
         gl2_call(hv_set_gxf_vbar, 0, 0, 0, 0);
 
-#ifdef HV_DIAG_TRAP_WFX
     /* GXF has a guarded HCR bank; set and verify the bits in that bank. */
-    u64 diag_hcr;
+    u64 guest_hcr;
     if (gxf_enabled()) {
-        gl2_call(hv_enable_diag_wfx_traps, 0, 0, 0, 0);
-        diag_hcr = gl2_call(hv_read_diag_hcr, 0, 0, 0, 0);
+        gl2_call(hv_enable_guest_wfx_traps, 0, 0, 0, 0);
+        guest_hcr = gl2_call(hv_read_guest_hcr, 0, 0, 0, 0);
     } else {
-        hv_enable_diag_wfx_traps();
-        diag_hcr = mrs(HCR_EL2);
+        hv_enable_guest_wfx_traps();
+        guest_hcr = mrs(HCR_EL2);
     }
-    if ((diag_hcr & hv_wfx_hcr_mask()) != hv_wfx_hcr_mask())
-        hv_panic("HV: diagnostic WFI/WFE traps did not survive guest preflight\n");
-    printf("HV: diagnostic WFI/WFE traps active HCR=0x%lx\n", diag_hcr);
-#endif
+    if ((guest_hcr & hv_wfx_hcr_mask()) != hv_wfx_hcr_mask())
+        hv_panic("HV: guest WFI/WFE traps did not survive guest preflight\n");
+    printf("HV: guest WFI/WFE traps active HCR=0x%lx\n", guest_hcr);
 
-    hv_secondary_info.hcr = mrs(HCR_EL2);
-#ifdef HV_DIAG_TRAP_WFX
-    hv_secondary_info.hcr = diag_hcr;
-#endif
+    hv_secondary_info.hcr = guest_hcr;
     hv_secondary_info.hacr = mrs(HACR_EL2);
     hv_secondary_info.vtcr = mrs(VTCR_EL2);
     hv_secondary_info.vttbr = mrs(VTTBR_EL2);
@@ -469,11 +461,7 @@ static void hv_init_secondary(struct hv_secondary_info_t *info)
 
     msr(VBAR_EL1, _hv_vectors_start);
 
-#ifdef HV_DIAG_TRAP_WFX
     msr(HCR_EL2, hv_wfx_apply_hcr(info->hcr));
-#else
-    msr(HCR_EL2, info->hcr);
-#endif
     msr(HACR_EL2, info->hacr);
     msr(VTCR_EL2, info->vtcr);
     msr(VTTBR_EL2, info->vttbr);
@@ -626,14 +614,12 @@ void hv_pin_cpu(int cpu)
 
 void hv_write_hcr(u64 val)
 {
-#ifdef HV_DIAG_TRAP_WFX
     /*
      * Callers can read the unguarded HCR bank and then ask this helper to
      * update VI/VF in the guarded GL2 bank.  Never allow that read/modify/write
-     * sequence to erase the diagnostic WFI/WFE trap policy.
+     * sequence to erase the guest WFI/WFE trap policy.
      */
     val = hv_wfx_apply_hcr(val);
-#endif
     if (gxf_enabled() && !in_gl12())
         gl2_call(hv_write_hcr, val, 0, 0, 0);
     else
@@ -761,10 +747,8 @@ void hv_percpu_diag_tick(struct exc_info *ctx)
     d->fiq_count++;
     d->sample_count++;
 
-#ifdef HV_DIAG_TRAP_WFX
     /*
-     * This diagnostic build exists specifically to prove that no later vGIC
-     * read/modify/write can erase TWI/TWE.  Check sparsely to avoid changing
+     * No later vGIC read/modify/write may erase TWI/TWE. Check sparsely to avoid changing
      * guest timing; panic immediately with the owning CPU and exact HCR if the
      * invariant is ever broken again.
      */
@@ -773,7 +757,6 @@ void hv_percpu_diag_tick(struct exc_info *ctx)
         if (!hv_wfx_policy_satisfied(hcr))
             hv_panic("HV: WFI/WFE HCR policy lost cpu=%d hcr=0x%lx\n", cpu, hcr);
     }
-#endif
 
     u64 x18 = ctx->regs[18];
     if (hv_runtime_diag_verbose_enabled() && (!d->x18_seen || x18 != d->last_x18) &&
