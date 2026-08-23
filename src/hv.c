@@ -53,6 +53,7 @@ u64 hv_cpus_in_guest;
 bool hv_rendezvous_active;
 u64 hv_saved_sp[MAX_CPUS];
 static struct hv_fb_stream hv_framebuffer_stream;
+static struct hv_diag_delivery hv_diag_event_delivery;
 
 static void hv_collect_diag(void *opaque, const struct exc_info *ctx,
                             struct hv_diag_sample_v1 *sample)
@@ -107,6 +108,12 @@ static bool hv_send_fb_chunk(void *opaque, const struct hv_fb_chunk_header *head
     (void)opaque;
     return uartproxy_try_send_eventv(EVT_FRAMEBUFFER, header, sizeof(*header), payload,
                                      header->payload_size);
+}
+
+static bool hv_send_diag_sample(void *opaque, const struct hv_diag_sample_v1 *sample)
+{
+    UNUSED(opaque);
+    return uartproxy_try_send_eventv(EVT_TELEMETRY, NULL, 0, sample, sizeof(*sample));
 }
 
 bool hv_configure_fb_stream(u64 ipa, u64 size, u64 width, u64 height, u64 stride)
@@ -1341,8 +1348,9 @@ void hv_tick(struct exc_info *ctx)
     hv_wdt_pet();
     struct hv_diag_sample_v1 diag_sample;
     if (hv_diag_tick(ctx, &diag_sample) && hv_runtime_diag_enabled())
-        uartproxy_try_send_eventv(EVT_TELEMETRY, NULL, 0, &diag_sample,
-                                  sizeof(diag_sample));
+        hv_diag_delivery_offer(&hv_diag_event_delivery, &diag_sample);
+    if (hv_runtime_diag_enabled())
+        hv_diag_delivery_flush(&hv_diag_event_delivery, hv_send_diag_sample, NULL);
     hv_sample_pc(ctx);
     iodev_handle_events(uartproxy_iodev);
     if (iodev_can_read(uartproxy_iodev)) {

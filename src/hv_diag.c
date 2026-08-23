@@ -140,6 +140,29 @@ bool hv_diag_tick(const struct exc_info *ctx, struct hv_diag_sample_v1 *publishe
     return true;
 }
 
+bool hv_diag_delivery_offer(struct hv_diag_delivery *delivery,
+                            const struct hv_diag_sample_v1 *sample)
+{
+    if (!delivery || !sample || delivery->pending)
+        return false;
+
+    delivery->sample = *sample;
+    delivery->pending = true;
+    return true;
+}
+
+bool hv_diag_delivery_flush(struct hv_diag_delivery *delivery,
+                            hv_diag_delivery_fn send, void *opaque)
+{
+    if (!delivery || !send || !delivery->pending)
+        return false;
+    if (!send(opaque, &delivery->sample))
+        return false;
+
+    delivery->pending = false;
+    return true;
+}
+
 bool hv_diag_copy_status(void *destination, u64 size)
 {
     if (size != sizeof(struct hv_diag_status_v1))

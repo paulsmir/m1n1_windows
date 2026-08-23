@@ -12,6 +12,17 @@ struct exc_info {
 };
 
 static unsigned collector_calls;
+static unsigned delivery_attempts;
+static struct hv_diag_sample_v1 delivered_sample;
+
+static bool flaky_delivery(void *opaque, const struct hv_diag_sample_v1 *sample)
+{
+    const unsigned failures = *(const unsigned *)opaque;
+
+    delivery_attempts++;
+    delivered_sample = *sample;
+    return delivery_attempts > failures;
+}
 
 static void fake_collector(void *opaque, const struct exc_info *ctx,
                            struct hv_diag_sample_v1 *sample)
@@ -293,6 +304,35 @@ static void test_proxy_copyout_requires_exact_sizes_and_retained_sequence(void)
     assert(memcmp(&sample, sentinel, sizeof(sample)) == 0);
 }
 
+static void test_async_delivery_retries_one_sample_without_blocking_or_reordering(void)
+{
+    const unsigned failures = 2;
+    struct hv_diag_delivery delivery = {0};
+    struct hv_diag_sample_v1 first = sample_with_pc(0x1111);
+    struct hv_diag_sample_v1 later = sample_with_pc(0x2222);
+
+    first.sequence = 7;
+    later.sequence = 8;
+    delivery_attempts = 0;
+    memset(&delivered_sample, 0, sizeof(delivered_sample));
+
+    assert(hv_diag_delivery_offer(&delivery, &first));
+    assert(!hv_diag_delivery_offer(&delivery, &later));
+    assert(!hv_diag_delivery_flush(&delivery, flaky_delivery, (void *)&failures));
+    assert(delivery.pending);
+    assert(delivered_sample.sequence == 7 && delivered_sample.guest_pc == 0x1111);
+    assert(!hv_diag_delivery_flush(&delivery, flaky_delivery, (void *)&failures));
+    assert(delivery.pending);
+    assert(hv_diag_delivery_flush(&delivery, flaky_delivery, (void *)&failures));
+    assert(!delivery.pending);
+    assert(delivery_attempts == 3);
+
+    assert(hv_diag_delivery_offer(&delivery, &later));
+    assert(hv_diag_delivery_flush(&delivery, flaky_delivery, (void *)&failures));
+    assert(!delivery.pending);
+    assert(delivered_sample.sequence == 8 && delivered_sample.guest_pc == 0x2222);
+}
+
 int main(void)
 {
     _Static_assert((HV_DIAG_RING_CAPACITY & (HV_DIAG_RING_CAPACITY - 1)) == 0,
@@ -308,6 +348,7 @@ int main(void)
     test_irq_sources_and_lifecycle_stages_map_to_distinct_counters();
     test_tick_publishes_one_composed_sample_every_five_seconds();
     test_proxy_copyout_requires_exact_sizes_and_retained_sequence();
+    test_async_delivery_retries_one_sample_without_blocking_or_reordering();
     puts("hv_diag_test: ok");
     return 0;
 }
