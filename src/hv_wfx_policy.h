@@ -17,7 +17,6 @@ typedef uint64_t u64;
 
 enum hv_wfx_action {
     HV_WFX_WAIT_WFI,
-    HV_WFX_WAIT_WFE,
     HV_WFX_RESUME_GUEST,
 };
 
@@ -33,7 +32,8 @@ static inline u64 hv_wfx_resume_pc(u64 trapped_pc)
 
 static inline u64 hv_wfx_hcr_mask(void)
 {
-    return HV_WFX_BIT(13) | HV_WFX_BIT(14);
+    /* Trap WFI only.  Guest WFE/SEV is part of the synchronization protocol. */
+    return HV_WFX_BIT(13);
 }
 
 static inline u64 hv_wfx_apply_hcr(u64 hcr)
@@ -51,7 +51,7 @@ static inline enum hv_wfx_action hv_wfx_trap_action(u64 iss,
 {
     if (virtual_irq_pending)
         return HV_WFX_RESUME_GUEST;
-    return hv_wfx_is_wfe(iss) ? HV_WFX_WAIT_WFE : HV_WFX_WAIT_WFI;
+    return hv_wfx_is_wfe(iss) ? HV_WFX_RESUME_GUEST : HV_WFX_WAIT_WFI;
 }
 
 #endif

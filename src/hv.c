@@ -216,7 +216,7 @@ bool hv_init(void)
                  HCR_AMO | // Trap SError exceptions
                  HCR_IMO | // Trap IRQ exceptions (for now)
                  HCR_FMO | // Trap FIQ exceptions (effectively required for now)
-                 HCR_TWI | HCR_TWE | // Virtualize guest idle in the lock-free EL2 path
+                 HCR_TWI | // Halt guest WFI in lock-free EL2; preserve native WFE/SEV
 #ifdef ENABLE_VGIC_MODULE
                  //
                  // Trap EL1 reads of the ID registers. Without this the "advertise GIC"

@@ -1812,19 +1812,19 @@ void hv_exc_sync(struct exc_info *ctx)
         case ESR_EC_WFI:
             /*
              * Virtualize idle without holding bhl.  Let EL2 perform the real
-             * physical wait while no virtual IRQ is deliverable; a hardware
-             * timer/IPI/event wakes this core, after which the guest resumes at
-             * the instruction following WFI/WFE.  If VI is already set, never
-             * sleep: Windows must observe the pending virtual interrupt first.
+             * physical WFI while no virtual IRQ is deliverable; a hardware
+             * timer or IPI wakes this core, after which the guest resumes at
+             * the following instruction.  Guest WFE remains untrapped because
+             * Windows uses WFE/SEV as a synchronization primitive, not as a
+             * vCPU halt.  If a WFE trap is nevertheless observed, resume it
+             * defensively instead of sleeping in EL2.  If VI is already set,
+             * never sleep: Windows must observe the pending interrupt first.
              */
             hv_update_fiq();
             switch (hv_wfx_trap_action(FIELD_GET(ESR_ISS, ctx->esr),
                                        !!(mrs(HCR_EL2) & HCR_VI))) {
                 case HV_WFX_WAIT_WFI:
                     sysop("wfi");
-                    break;
-                case HV_WFX_WAIT_WFE:
-                    sysop("wfe");
                     break;
                 case HV_WFX_RESUME_GUEST:
                     break;
