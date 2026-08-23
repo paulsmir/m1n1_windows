@@ -166,12 +166,25 @@ int main(void)
     assert(vnvme_intx_can_inject(true, 0, false, true, 0));
 
     /*
-     * A level line may deassert and reassert while its old LR is still Active on another
-     * vCPU.  Delivery ownership lasts until EOI, not until the temporary deassert.
+     * One continuously asserted completion source is one notification generation.  An
+     * early guest EOI must not immediately inject the same CQE again before its DPC can
+     * acknowledge the CQ head.  A real deassert/reassert transition starts a new generation;
+     * if that transition happens while the old LR is Active, the new generation waits for
+     * the old EOI and is then deliverable.
      */
+    vnvme_intx_delivery_update_line(&delivery, true);
     assert(vnvme_intx_delivery_can_inject(&delivery, true, 0, true, 0));
     vnvme_intx_delivery_mark_injected(&delivery);
     assert(!vnvme_intx_delivery_can_inject(&delivery, false, 0, true, 0));
+    assert(!vnvme_intx_delivery_can_inject(&delivery, true, 0, true, 0));
+    vnvme_intx_delivery_eoi(&delivery);
+    assert(!vnvme_intx_delivery_can_inject(&delivery, true, 0, true, 0));
+    vnvme_intx_delivery_update_line(&delivery, false);
+    vnvme_intx_delivery_update_line(&delivery, true);
+    assert(vnvme_intx_delivery_can_inject(&delivery, true, 0, true, 0));
+    vnvme_intx_delivery_mark_injected(&delivery);
+    vnvme_intx_delivery_update_line(&delivery, false);
+    vnvme_intx_delivery_update_line(&delivery, true);
     assert(!vnvme_intx_delivery_can_inject(&delivery, true, 0, true, 0));
     vnvme_intx_delivery_eoi(&delivery);
     assert(vnvme_intx_delivery_can_inject(&delivery, true, 0, true, 0));

@@ -58,14 +58,22 @@ bool vnvme_intx_can_inject(bool asserted, u32 intms, bool injected, bool gic_ena
 bool vnvme_intx_delivery_can_inject(const struct vnvme_intx_delivery *delivery, bool asserted,
                                     u32 intms, bool gic_enabled, int free_lr)
 {
-    return delivery &&
+    return delivery && !delivery->assertion_notified &&
            vnvme_intx_can_inject(asserted, intms, delivery->outstanding, gic_enabled, free_lr);
+}
+
+void vnvme_intx_delivery_update_line(struct vnvme_intx_delivery *delivery, bool asserted)
+{
+    if (delivery && !asserted)
+        delivery->assertion_notified = false;
 }
 
 void vnvme_intx_delivery_mark_injected(struct vnvme_intx_delivery *delivery)
 {
-    if (delivery)
+    if (delivery) {
         delivery->outstanding = true;
+        delivery->assertion_notified = true;
+    }
 }
 
 void vnvme_intx_delivery_eoi(struct vnvme_intx_delivery *delivery)

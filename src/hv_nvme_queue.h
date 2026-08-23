@@ -156,6 +156,7 @@ struct vnvme_snapshot {
 
 struct vnvme_intx_delivery {
     bool outstanding;
+    bool assertion_notified;
 };
 
 struct vnvme_ctrl {
@@ -180,6 +181,7 @@ bool vnvme_cq_doorbell(struct vnvme_ctrl *ctrl, u16 qid, u16 new_head);
 bool vnvme_intx_can_inject(bool asserted, u32 intms, bool injected, bool gic_enabled, int free_lr);
 bool vnvme_intx_delivery_can_inject(const struct vnvme_intx_delivery *delivery, bool asserted,
                                     u32 intms, bool gic_enabled, int free_lr);
+void vnvme_intx_delivery_update_line(struct vnvme_intx_delivery *delivery, bool asserted);
 void vnvme_intx_delivery_mark_injected(struct vnvme_intx_delivery *delivery);
 void vnvme_intx_delivery_eoi(struct vnvme_intx_delivery *delivery);
 void vnvme_get_snapshot(const struct vnvme_ctrl *ctrl, struct vnvme_snapshot *out);

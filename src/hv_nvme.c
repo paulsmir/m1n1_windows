@@ -218,6 +218,8 @@ void hv_nvme_get_diag_snapshot(struct vnvme_snapshot *out, bool *ready)
 static void backend_irq(void *opaque, bool asserted)
 {
     UNUSED(opaque);
+    /* Track the effective wire level, including the controller's INTM mask. */
+    vnvme_intx_delivery_update_line(&irq_delivery, asserted && !regs.intms);
     if (hv_runtime_diag_verbose_enabled() && nvme_trace_take())
         HV_RUNTIME_VERBOSE_TRACE("HV: NVMe INTx logical=%d masked=0x%x injected=%d\n", asserted,
                                  regs.intms, irq_delivery.outstanding);
@@ -396,12 +398,16 @@ static void reg_write(u32 off, int width, u64 value)
                 HV_RUNTIME_VERBOSE_TRACE("HV: NVMe INTMS old=0x%x set=0x%x new=0x%x\n",
                                          regs.intms, merged, regs.intms | merged);
             regs.intms |= merged;
+            vnvme_intx_delivery_update_line(&irq_delivery,
+                                             queue_ctrl.irq_asserted && !regs.intms);
             break;
         case NVME_INTMC:
             if (hv_runtime_diag_verbose_enabled() && nvme_trace_take())
                 HV_RUNTIME_VERBOSE_TRACE("HV: NVMe INTMC old=0x%x clear=0x%x new=0x%x\n",
                                          regs.intms, merged, regs.intms & ~merged);
             regs.intms &= ~merged;
+            vnvme_intx_delivery_update_line(&irq_delivery,
+                                             queue_ctrl.irq_asserted && !regs.intms);
             try_raise_intx();
             break;
         case NVME_CC:
