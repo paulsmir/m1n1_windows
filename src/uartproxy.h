@@ -31,6 +31,7 @@ typedef enum _uartproxy_event_type_t {
     EVT_MMIOTRACE = 1,
     EVT_IRQTRACE = 2,
     EVT_FRAMEBUFFER = 3,
+    EVT_TELEMETRY = 4,
 } uartproxy_event_type_t;
 
 struct uartproxy_msg_start {

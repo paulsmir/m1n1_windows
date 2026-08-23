@@ -113,13 +113,13 @@ void hv_diag_set_collector(hv_diag_collect_fn collect, void *opaque)
     collector_opaque = opaque;
 }
 
-void hv_diag_tick(const struct exc_info *ctx)
+bool hv_diag_tick(const struct exc_info *ctx, struct hv_diag_sample_v1 *published)
 {
     if (++ring.ticks < HV_DIAG_SAMPLE_TICKS)
-        return;
+        return false;
     ring.ticks = 0;
     if (!collector)
-        return;
+        return false;
 
     struct hv_diag_sample_v1 sample = {0};
     u64 counters[HV_DIAG_COUNTER_COUNT];
@@ -133,7 +133,11 @@ void hv_diag_tick(const struct exc_info *ctx)
     sample.xhci_irq_injects = counters[HV_DIAG_XHCI_IRQ_INJECT];
     sample.xhci_irq_iars = counters[HV_DIAG_XHCI_IRQ_IAR];
     sample.xhci_irq_eois = counters[HV_DIAG_XHCI_IRQ_EOI];
+    u64 sequence = ring.next_sequence;
     hv_diag_publish(&sample);
+    if (published)
+        hv_diag_get_sample(sequence, published);
+    return true;
 }
 
 bool hv_diag_copy_status(void *destination, u64 size)

@@ -105,7 +105,7 @@ void hv_diag_get_counters(u64 out[HV_DIAG_COUNTER_COUNT]);
 void hv_diag_count_hw_irq(u32 hw_irq);
 void hv_diag_count_vgic_irq(enum hv_diag_irq_stage stage, u32 vintid, u32 nvme_vintid);
 void hv_diag_set_collector(hv_diag_collect_fn collect, void *opaque);
-void hv_diag_tick(const struct exc_info *ctx);
+bool hv_diag_tick(const struct exc_info *ctx, struct hv_diag_sample_v1 *published);
 bool hv_diag_copy_status(void *destination, u64 size);
 bool hv_diag_copy_sample(u64 sequence, void *destination, u64 size);
 

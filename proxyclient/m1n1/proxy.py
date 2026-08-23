@@ -60,6 +60,7 @@ class EVENT(IntEnum):
     MMIOTRACE = 1
     IRQTRACE = 2
     FRAMEBUFFER = 3
+    TELEMETRY = 4
 
 class EXC_RET(IntEnum):
     UNHANDLED = 1

@@ -1339,7 +1339,10 @@ static void hv_sample_pc(struct exc_info *ctx)
 void hv_tick(struct exc_info *ctx)
 {
     hv_wdt_pet();
-    hv_diag_tick(ctx);
+    struct hv_diag_sample_v1 diag_sample;
+    if (hv_diag_tick(ctx, &diag_sample) && hv_runtime_diag_enabled())
+        uartproxy_try_send_eventv(EVT_TELEMETRY, NULL, 0, &diag_sample,
+                                  sizeof(diag_sample));
     hv_sample_pc(ctx);
     iodev_handle_events(uartproxy_iodev);
     if (iodev_can_read(uartproxy_iodev)) {

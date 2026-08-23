@@ -212,13 +212,14 @@ static void test_tick_publishes_one_composed_sample_every_five_seconds(void)
     hv_diag_count(HV_DIAG_XHCI_IRQ_IAR);
     hv_diag_count(HV_DIAG_XHCI_IRQ_EOI);
 
+    struct hv_diag_sample_v1 emitted = {0};
     for (unsigned tick = 1; tick < HV_DIAG_SAMPLE_TICKS; tick++)
-        hv_diag_tick(&ctx);
+        assert(!hv_diag_tick(&ctx, &emitted));
     assert(hv_diag_get_status(&status));
     assert(status.count == 0);
     assert(collector_calls == 0);
 
-    hv_diag_tick(&ctx);
+    assert(hv_diag_tick(&ctx, &emitted));
     assert(hv_diag_get_status(&status));
     assert(status.count == 1);
     assert(collector_calls == 1);
@@ -244,12 +245,14 @@ static void test_tick_publishes_one_composed_sample_every_five_seconds(void)
     assert(sample.vgic_active_lrs == 3);
     assert(sample.vgic_occupied_lrs == 2);
     assert(sample.flags == (HV_DIAG_FLAG_NVME_READY | HV_DIAG_FLAG_FB_ENABLED));
+    assert(memcmp(&emitted, &sample, sizeof(sample)) == 0);
     assert(sample.queues[0].sq_head == 1 && sample.queues[0].cq_tail == 4);
     assert(sample.queues[1].sq_head == 5 && sample.queues[1].cq_tail == 8);
 
     ctx.elr += 4;
-    for (unsigned tick = 0; tick < HV_DIAG_SAMPLE_TICKS; tick++)
-        hv_diag_tick(&ctx);
+    for (unsigned tick = 0; tick < HV_DIAG_SAMPLE_TICKS - 1; tick++)
+        assert(!hv_diag_tick(&ctx, NULL));
+    assert(hv_diag_tick(&ctx, &emitted));
     assert(hv_diag_get_status(&status));
     assert(status.count == 2);
     assert(collector_calls == 2);
