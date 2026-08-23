@@ -216,6 +216,7 @@ bool hv_init(void)
                  HCR_AMO | // Trap SError exceptions
                  HCR_IMO | // Trap IRQ exceptions (for now)
                  HCR_FMO | // Trap FIQ exceptions (effectively required for now)
+                 HCR_TWI | HCR_TWE | // Virtualize guest idle in the lock-free EL2 path
 #ifdef ENABLE_VGIC_MODULE
                  //
                  // Trap EL1 reads of the ID registers. Without this the "advertise GIC"
@@ -351,15 +352,15 @@ void hv_start(void *entry, u64 regs[4])
     if (gxf_enabled())
         gl2_call(hv_set_gxf_vbar, 0, 0, 0, 0);
 
-    /* GXF has a guarded HCR bank; verify the dynamic idle policy there. */
+    /* GXF has a guarded HCR bank; verify the EL2 idle policy there. */
     u64 guest_hcr;
     if (gxf_enabled())
         guest_hcr = gl2_call(hv_read_guest_hcr, 0, 0, 0, 0);
     else
         guest_hcr = mrs(HCR_EL2);
-    if (!hv_wfx_pending_hcr_satisfied(guest_hcr, !!(guest_hcr & HCR_VI)))
-        hv_panic("HV: dynamic WFI/WFE trap policy failed guest preflight\n");
-    printf("HV: dynamic WFI/WFE trap policy active HCR=0x%lx\n", guest_hcr);
+    if (!hv_wfx_policy_satisfied(guest_hcr))
+        hv_panic("HV: EL2 WFI/WFE policy failed guest preflight\n");
+    printf("HV: EL2 WFI/WFE idle policy active HCR=0x%lx\n", guest_hcr);
 
     hv_secondary_info.hcr = guest_hcr;
     hv_secondary_info.hacr = mrs(HACR_EL2);
@@ -449,7 +450,7 @@ static void hv_init_secondary(struct hv_secondary_info_t *info)
 
     msr(VBAR_EL1, _hv_vectors_start);
 
-    msr(HCR_EL2, hv_wfx_apply_pending_hcr(info->hcr, !!(info->hcr & HCR_VI)));
+    msr(HCR_EL2, hv_wfx_apply_hcr(info->hcr));
     msr(HACR_EL2, info->hacr);
     msr(VTCR_EL2, info->vtcr);
     msr(VTTBR_EL2, info->vttbr);
@@ -604,11 +605,10 @@ void hv_write_hcr(u64 val)
 {
     /*
      * Callers can read the unguarded HCR bank and then ask this helper to
-     * update VI/VF in the guarded GL2 bank. Couple TWI/TWE to VI: preserve
-     * architectural idle normally, but reject a new sleep while a virtual IRQ
-     * is already deliverable.
+     * update VI/VF in the guarded GL2 bank. Guest idle is always trapped and
+     * emulated by a real wait in the lock-free EL2 exception path.
      */
-    val = hv_wfx_apply_pending_hcr(val, !!(val & HCR_VI));
+    val = hv_wfx_apply_hcr(val);
     if (gxf_enabled() && !in_gl12())
         gl2_call(hv_write_hcr, val, 0, 0, 0);
     else
@@ -737,15 +737,15 @@ void hv_percpu_diag_tick(struct exc_info *ctx)
     d->sample_count++;
 
     /*
-     * No later vGIC read/modify/write may decouple TWI/TWE from VI. Check
+     * No later vGIC read/modify/write may erase TWI/TWE. Check
      * sparsely to avoid changing guest timing; panic immediately with the
      * owning CPU and exact HCR if the invariant is ever broken again.
      */
     if ((d->sample_count & 0x3fff) == 0) {
         u64 hcr = mrs(HCR_EL2);
-        if (!hv_wfx_pending_hcr_satisfied(hcr, !!(hcr & HCR_VI)))
-            hv_panic("HV: dynamic WFI/WFE HCR policy lost cpu=%d hcr=0x%lx\n",
-                     cpu, hcr);
+        if (!hv_wfx_policy_satisfied(hcr))
+            hv_panic("HV: EL2 WFI/WFE HCR policy lost cpu=%d hcr=0x%lx\n", cpu,
+                     hcr);
     }
 
     u64 x18 = ctx->regs[18];

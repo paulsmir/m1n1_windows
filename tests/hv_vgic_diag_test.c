@@ -81,21 +81,6 @@ static void test_recovery_wake_requires_pending_only_timer_lr(void)
     assert(!hv_vgic_diag_lr_needs_recovery_wake(pending | timer, 18, 0x20, 0xff));
 }
 
-static void test_timer_wake_is_requested_once_per_continuous_deliverable_interval(void)
-{
-    struct hv_vgic_timer_wake_state state = {0};
-
-    assert(hv_vgic_diag_timer_wake_transition(&state, true));
-    assert(state.interval_active);
-    assert(!hv_vgic_diag_timer_wake_transition(&state, true));
-    assert(state.interval_active);
-
-    assert(!hv_vgic_diag_timer_wake_transition(&state, false));
-    assert(!state.interval_active);
-    assert(hv_vgic_diag_timer_wake_transition(&state, true));
-    assert(state.interval_active);
-}
-
 static void test_finds_the_live_lr_for_sgi_repending(void)
 {
     const uint64_t pending = 1ULL << 62;
@@ -186,7 +171,6 @@ int main(void)
     test_null_inputs_are_safe();
     test_finds_only_live_intids();
     test_recovery_wake_requires_pending_only_timer_lr();
-    test_timer_wake_is_requested_once_per_continuous_deliverable_interval();
     test_finds_the_live_lr_for_sgi_repending();
     test_eoi_preserves_a_repending_interrupt();
     test_timer_reexpiry_coalesces_into_the_active_lr();

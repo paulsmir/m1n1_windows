@@ -1811,15 +1811,27 @@ void hv_exc_sync(struct exc_info *ctx)
     switch (ec) {
         case ESR_EC_WFI:
             /*
-             * Keep idle vCPUs in the hypervisor until the asserted architectural
-             * timer level has been synchronized into their live LR. Advancing ELR
-             * resumes the guest's normal idle-loop scheduling test. This path
-             * deliberately avoids bhl and UART output.
+             * Virtualize idle without holding bhl.  Let EL2 perform the real
+             * physical wait while no virtual IRQ is deliverable; a hardware
+             * timer/IPI/event wakes this core, after which the guest resumes at
+             * the instruction following WFI/WFE.  If VI is already set, never
+             * sleep: Windows must observe the pending virtual interrupt first.
              */
-            if (hv_wfx_is_wfe(FIELD_GET(ESR_ISS, ctx->esr)))
-                sysop("sev");
+            hv_update_fiq();
+            switch (hv_wfx_trap_action(FIELD_GET(ESR_ISS, ctx->esr),
+                                       !!(mrs(HCR_EL2) & HCR_VI))) {
+                case HV_WFX_WAIT_WFI:
+                    sysop("wfi");
+                    break;
+                case HV_WFX_WAIT_WFE:
+                    sysop("wfe");
+                    break;
+                case HV_WFX_RESUME_GUEST:
+                    break;
+            }
             ctx->elr = hv_wfx_resume_pc(ctx->elr);
             hv_set_elr(ctx->elr);
+            /* Close the wait-to-return race before the guest can idle again. */
             hv_update_fiq();
             hv_wdt_breadcrumb('w');
             return;
@@ -2303,9 +2315,6 @@ void hv_exc_fiq(struct exc_info *ctx)
 
     // Handles guest timers
     hv_exc_exit(ctx);
-    /* Send a timer wake only after the final local-IPI drain and context exit.
-     * Sending it earlier lets this same FIQ consume its own doorbell. */
-    hv_vgic3_flush_timer_wake();
     hv_wdt_breadcrumb('f');
 }
 
