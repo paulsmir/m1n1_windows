@@ -101,3 +101,21 @@ bool hv_vgic_diag_priority_deliverable(u32 priority, u32 pmr, u32 running_priori
     (void)running_priority;
     return priority < pmr;
 }
+
+bool hv_vgic_diag_timer_wake_transition(struct hv_vgic_timer_wake_state *state,
+                                        bool deliverable)
+{
+    if (!state)
+        return false;
+
+    if (!deliverable) {
+        state->interval_active = false;
+        return false;
+    }
+
+    if (state->interval_active)
+        return false;
+
+    state->interval_active = true;
+    return true;
+}

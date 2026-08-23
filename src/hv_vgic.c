@@ -355,6 +355,13 @@ static u16 num_cpus;
 static bool vgic_inited;
 static u64 igrpen1;
 
+struct hv_vgic_timer_wake_cpu_state {
+    struct hv_vgic_timer_wake_state timer_wake_state;
+    bool timer_wake_deferred;
+} ALIGNED(64);
+
+static struct hv_vgic_timer_wake_cpu_state timer_wake_state[MAX_CPUS];
+
 static bool handle_vgic_its_access(struct exc_info *ctx, u64 addr, u64 *val, bool write, int width)
 {
     u64 relative_addr;
@@ -2185,12 +2192,26 @@ u8 hv_vgic3_running_priority(void){
     return rp;
 }
 
+void hv_vgic3_flush_timer_wake(void)
+{
+    int cpu = smp_id();
+    if (cpu < 0 || cpu >= MAX_CPUS || !timer_wake_state[cpu].timer_wake_deferred)
+        return;
+
+    timer_wake_state[cpu].timer_wake_deferred = false;
+    /* VI and the timer LR are already published.  Leave this physical IPI
+     * pending across ERET; the next FIQ is only the missing wake boundary. */
+    sysop("isb");
+    smp_send_ipi(cpu);
+}
+
 void hv_vgic3_update_vi(void){
     u64 vmcr = mrs(ICH_VMCR_EL2);
     u8 vpmr = (vmcr >> 24) & 0xff;
     u8 running_priority = hv_vgic3_running_priority();
     bool veng1 = vmcr & BIT(1);
     bool signal = false;
+    bool timer_signal = false;
 
     if(veng1){
         for(int lr = 0; lr < hv_vgic3_num_lrs(); lr++){
@@ -2202,9 +2223,22 @@ void hv_vgic3_update_vi(void){
             u8 priority = (lr_val >> ICH_LR_PRIORITY_SHIFT) & ICH_LR_PRIORITY_MASK;
             if(hv_vgic_diag_priority_deliverable(priority, vpmr, running_priority)){
                 signal = true;
-                break;
+                u32 intid =
+                    (lr_val >> ICH_LR_VIRTUAL_SHIFT) & ICH_LR_VIRTUAL_MASK;
+                if (intid == 17 || intid == 18)
+                    timer_signal = true;
             }
         }
+    }
+
+    int cpu = smp_id();
+    if (cpu >= 0 && cpu < MAX_CPUS) {
+        bool defer = hv_vgic_diag_timer_wake_transition(
+            &timer_wake_state[cpu].timer_wake_state, timer_signal);
+        if (!timer_wake_state[cpu].timer_wake_state.interval_active)
+            timer_wake_state[cpu].timer_wake_deferred = false;
+        else if (defer)
+            timer_wake_state[cpu].timer_wake_deferred = true;
     }
 
     if(signal)

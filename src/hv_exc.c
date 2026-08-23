@@ -2303,6 +2303,9 @@ void hv_exc_fiq(struct exc_info *ctx)
 
     // Handles guest timers
     hv_exc_exit(ctx);
+    /* Send a timer wake only after the final local-IPI drain and context exit.
+     * Sending it earlier lets this same FIQ consume its own doorbell. */
+    hv_vgic3_flush_timer_wake();
     hv_wdt_breadcrumb('f');
 }
 

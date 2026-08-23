@@ -614,6 +614,7 @@ void hv_vgic3_trace_intid(u32 intid, u32 budget);
 void hv_trace_j313_xhci_tick(void);
 void hv_vgic3_inject_irq(u32 vintid, u8 priority, bool active, bool pending, bool hw_status, u64 hw_irq);
 void hv_vgic3_update_vi(void);
+void hv_vgic3_flush_timer_wake(void);
 
 int hv_vgic3_do_iar1(void);
 
