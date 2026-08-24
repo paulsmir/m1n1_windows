@@ -321,8 +321,18 @@ void iodev_handle_events(iodev_id_t id)
     if (do_lock)
         spin_unlock(&console_lock);
 
+    /*
+     * DWC3 event handling consumes the same CDC rings that queue/write fill.
+     * Every other ring access is protected by the per-device lock; leaving
+     * this callback unlocked lets another CPU update the ring indices while
+     * a transfer completion drains them, dropping words from framed proxy
+     * events. The lock is recursive on target, which also covers the queue
+     * slow path calling handle_events while it already owns the device.
+     */
+    iodev_lock(id);
     if (iodevs[id]->ops->handle_events)
         iodevs[id]->ops->handle_events(iodevs[id]->opaque);
+    iodev_unlock(id);
 
     if (do_lock)
         spin_lock(&console_lock);

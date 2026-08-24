@@ -108,6 +108,7 @@ struct fake_device {
     size_t bytes_written;
     unsigned event_calls;
     bool print_from_event;
+    bool lock_held_during_event;
 };
 
 static bool fake_can_write(void *opaque)
@@ -150,6 +151,7 @@ static void fake_handle_events(void *opaque)
 {
     struct fake_device *fake = opaque;
     fake->event_calls++;
+    fake->lock_held_during_event = iodevs[IODEV_USB0]->lock.count == 1;
     if (fake->print_from_event)
         iodev_console_write("event", 5);
 }
@@ -187,6 +189,8 @@ int main(void)
     fake.print_from_event = true;
     iodev_handle_events(IODEV_USB0);
     assert(fake.event_calls == 1);
+    /* Ring consumption must serialize with queue/write on other CPUs. */
+    assert(fake.lock_held_during_event);
 
     puts("iodev_console_backpressure_test: ok");
     return 0;
