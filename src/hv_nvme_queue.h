@@ -157,6 +157,7 @@ struct vnvme_snapshot {
 struct vnvme_intx_delivery {
     bool outstanding;
     bool assertion_notified;
+    bool owner_kick_pending;
 };
 
 struct vnvme_ctrl {
@@ -184,6 +185,9 @@ bool vnvme_intx_delivery_can_inject(const struct vnvme_intx_delivery *delivery, 
 void vnvme_intx_delivery_update_line(struct vnvme_intx_delivery *delivery, bool asserted);
 void vnvme_intx_delivery_mark_injected(struct vnvme_intx_delivery *delivery);
 void vnvme_intx_delivery_eoi(struct vnvme_intx_delivery *delivery);
+bool vnvme_intx_delivery_should_kick_owner(struct vnvme_intx_delivery *delivery, bool asserted,
+                                           u32 intms, int current_cpu, int owner_cpu);
+void vnvme_intx_delivery_owner_polled(struct vnvme_intx_delivery *delivery);
 void vnvme_get_snapshot(const struct vnvme_ctrl *ctrl, struct vnvme_snapshot *out);
 
 #endif

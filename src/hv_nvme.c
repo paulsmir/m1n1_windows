@@ -56,6 +56,8 @@ static struct vnvme_intx_delivery irq_delivery;
 static u32 nvme_trace_budget;
 static struct vnvme_ctrl queue_ctrl;
 static bool irq_eoi_pending;
+static u64 irq_owner_kicks;
+static u64 irq_owner_polls;
 
 static struct {
     u32 intms;
@@ -115,8 +117,28 @@ static void backend_publish(void *opaque)
 static void try_raise_intx(void)
 {
     /* Until vGIC affinity routing is implemented, keep this INTx and its LR on CPU0. */
-    if (smp_id() != boot_cpu_idx)
+    int current_cpu = smp_id();
+    if (current_cpu != boot_cpu_idx) {
+        /*
+         * The CQ doorbell that publishes the next synchronous completion can trap on any
+         * guest CPU.  The synthetic INTx LR, however, belongs to the boot vCPU.  Wake that
+         * owner explicitly instead of waiting for an unrelated CPU0 exit from the guest;
+         * otherwise a completed read can sit unnoticed until stornvme's ten-second reset.
+         */
+        if (vnvme_intx_delivery_should_kick_owner(&irq_delivery, queue_ctrl.irq_asserted,
+                                                   regs.intms, current_cpu, boot_cpu_idx)) {
+            irq_owner_kicks++;
+            if (hv_runtime_diag_verbose_enabled() && nvme_trace_take())
+                HV_RUNTIME_VERBOSE_TRACE(
+                    "HV: NVMe INTx owner kick source=%d owner=%d count=%lu\n", current_cpu,
+                    boot_cpu_idx, irq_owner_kicks);
+            smp_send_ipi(boot_cpu_idx);
+        }
         return;
+    }
+
+    vnvme_intx_delivery_owner_polled(&irq_delivery);
+    irq_owner_polls++;
 
     int irq = hv_pci_intx_irq();
     bool enabled = hv_vgic3_irq_enabled(irq);

@@ -64,8 +64,10 @@ bool vnvme_intx_delivery_can_inject(const struct vnvme_intx_delivery *delivery, 
 
 void vnvme_intx_delivery_update_line(struct vnvme_intx_delivery *delivery, bool asserted)
 {
-    if (delivery && !asserted)
+    if (delivery && !asserted) {
         delivery->assertion_notified = false;
+        delivery->owner_kick_pending = false;
+    }
 }
 
 void vnvme_intx_delivery_mark_injected(struct vnvme_intx_delivery *delivery)
@@ -73,6 +75,7 @@ void vnvme_intx_delivery_mark_injected(struct vnvme_intx_delivery *delivery)
     if (delivery) {
         delivery->outstanding = true;
         delivery->assertion_notified = true;
+        delivery->owner_kick_pending = false;
     }
 }
 
@@ -80,6 +83,23 @@ void vnvme_intx_delivery_eoi(struct vnvme_intx_delivery *delivery)
 {
     if (delivery)
         delivery->outstanding = false;
+}
+
+bool vnvme_intx_delivery_should_kick_owner(struct vnvme_intx_delivery *delivery, bool asserted,
+                                           u32 intms, int current_cpu, int owner_cpu)
+{
+    if (!delivery || current_cpu == owner_cpu || !asserted || intms || delivery->outstanding ||
+        delivery->assertion_notified || delivery->owner_kick_pending)
+        return false;
+
+    delivery->owner_kick_pending = true;
+    return true;
+}
+
+void vnvme_intx_delivery_owner_polled(struct vnvme_intx_delivery *delivery)
+{
+    if (delivery)
+        delivery->owner_kick_pending = false;
 }
 
 static void update_irq(struct vnvme_ctrl *ctrl)

@@ -189,6 +189,24 @@ int main(void)
     vnvme_intx_delivery_eoi(&delivery);
     assert(vnvme_intx_delivery_can_inject(&delivery, true, 0, true, 0));
 
+    /*
+     * A completion produced while another physical CPU owns the EL2 trap must wake the
+     * vCPU that owns the synthetic INTx LR.  Only one host IPI is needed per pending
+     * assertion; owner polling or a line deassertion opens the next kick generation.
+     */
+    delivery = (struct vnvme_intx_delivery){0};
+    assert(!vnvme_intx_delivery_should_kick_owner(&delivery, false, 0, 4, 0));
+    assert(!vnvme_intx_delivery_should_kick_owner(&delivery, true, 1, 4, 0));
+    assert(!vnvme_intx_delivery_should_kick_owner(&delivery, true, 0, 0, 0));
+    assert(vnvme_intx_delivery_should_kick_owner(&delivery, true, 0, 4, 0));
+    assert(!vnvme_intx_delivery_should_kick_owner(&delivery, true, 0, 4, 0));
+    vnvme_intx_delivery_owner_polled(&delivery);
+    assert(vnvme_intx_delivery_should_kick_owner(&delivery, true, 0, 4, 0));
+    vnvme_intx_delivery_update_line(&delivery, false);
+    assert(vnvme_intx_delivery_should_kick_owner(&delivery, true, 0, 4, 0));
+    vnvme_intx_delivery_mark_injected(&delivery);
+    assert(!vnvme_intx_delivery_should_kick_owner(&delivery, true, 0, 4, 0));
+
     vnvme_init(&ctrl, BLOCKS, &ops, NULL);
     struct vnvme_snapshot state = snapshot(&ctrl);
     assert(state.stats.sq_doorbells == 0);
