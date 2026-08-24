@@ -51,7 +51,7 @@
 #define TRBS_PER_EP              (TRB_BUFFER_SIZE / (MAX_ENDPOINTS * sizeof(struct dwc3_trb)))
 #define XFER_BUFFER_BYTES_PER_EP (XFER_BUFFER_SIZE / MAX_ENDPOINTS)
 
-#define XFER_SIZE SZ_16K
+#define XFER_SIZE USB_DWC3_BULK_TRANSFER_SIZE
 
 #define SCRATCHPAD_IOVA   0xbeef0000
 #define EVENT_BUFFER_IOVA 0xdead0000
@@ -113,6 +113,8 @@ typedef struct dwc3_dev {
     struct {
         bool xfer_in_progress;
         bool zlp_pending;
+        u32 xfer_offset;
+        u32 xfer_submitted;
 
         void *xfer_buffer;
         uintptr_t xfer_buffer_iova;
@@ -948,8 +950,58 @@ static void usb_dwc3_cdc_start_bulk_in_xfer(dwc3_dev_t *dev, u8 endpoint_number)
     trb->size = DWC3_TRB_SIZE_LENGTH(len);
 
     usb_dwc3_ep_start_transfer(dev, endpoint_number, trb_iova);
-    dev->endpoints[endpoint_number].xfer_in_progress = true;
+    dev->endpoints[endpoint_number].xfer_offset = 0;
+    dev->endpoints[endpoint_number].xfer_submitted = len;
     dev->endpoints[endpoint_number].zlp_pending = usb_dwc3_bulk_zlp_pending_after_submit(len);
+}
+
+static void usb_dwc3_cdc_handle_bulk_in_xfer_done(dwc3_dev_t *dev,
+                                                  const struct dwc3_event_depevt event)
+{
+    u8 ep = event.endpoint_number;
+    u32 submitted = dev->endpoints[ep].xfer_submitted;
+    u32 remaining = dev->endpoints[ep].trb->size & DWC3_TRB_SIZE_MASK;
+    size_t retry_delta;
+
+    if (!usb_dwc3_bulk_in_retry(submitted, remaining, &retry_delta)) {
+        if (remaining > submitted)
+            usb_debug_printf("invalid bulk IN residual ep=%u submitted=%u remaining=%u\n",
+                             ep, submitted, remaining);
+        dev->endpoints[ep].xfer_offset = 0;
+        dev->endpoints[ep].xfer_submitted = 0;
+        return;
+    }
+
+    u32 retry_offset = dev->endpoints[ep].xfer_offset + retry_delta;
+    if ((u64)retry_offset + remaining > XFER_BUFFER_BYTES_PER_EP) {
+        usb_debug_printf("bulk IN retry exceeds endpoint buffer ep=%u offset=%u length=%u\n",
+                         ep, retry_offset, remaining);
+        dev->endpoints[ep].xfer_offset = 0;
+        dev->endpoints[ep].xfer_submitted = 0;
+        return;
+    }
+
+    /*
+     * The bytes were removed from device2host before the original TRB was
+     * submitted.  A short host read leaves TRB.size bytes physically unsent;
+     * retry that exact tail before dequeuing newer ring data or the UART proxy
+     * stream permanently loses framing.
+     */
+    struct dwc3_trb *trb;
+    uintptr_t trb_iova = usb_dwc3_init_trb(dev, ep, &trb);
+    uintptr_t payload_iova = dev->endpoints[ep].xfer_buffer_iova + retry_offset;
+    trb->bpl = (u32)payload_iova;
+    trb->bph = payload_iova >> 32;
+    trb->ctrl |= DWC3_TRBCTL_NORMAL;
+    trb->size = DWC3_TRB_SIZE_LENGTH(remaining);
+
+    if (usb_dwc3_ep_start_transfer(dev, ep, trb_iova)) {
+        dev->endpoints[ep].xfer_offset = 0;
+        dev->endpoints[ep].xfer_submitted = 0;
+        return;
+    }
+    dev->endpoints[ep].xfer_offset = retry_offset;
+    dev->endpoints[ep].xfer_submitted = remaining;
 }
 
 static void usb_dwc3_cdc_handle_bulk_out_xfer_done(dwc3_dev_t *dev,
@@ -977,7 +1029,7 @@ static void usb_dwc3_handle_event_ep(dwc3_dev_t *dev, const struct dwc3_event_de
                 return;
             case USB_LEP_CDC_BULK_IN: // [[fallthrough]]
             case USB_LEP_CDC_BULK_IN_2:
-                return;
+                return usb_dwc3_cdc_handle_bulk_in_xfer_done(dev, event);
             case USB_LEP_CDC_BULK_OUT: // [[fallthrough]]
             case USB_LEP_CDC_BULK_OUT_2:
                 return usb_dwc3_cdc_handle_bulk_out_xfer_done(dev, event);
