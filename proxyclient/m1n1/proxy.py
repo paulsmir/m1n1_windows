@@ -266,6 +266,16 @@ class UartInterface(Reloadable):
                 continue
             reply += self.readfull(1)
             cmdin = struct.unpack("<I", reply)[0]
+            # While recovering from a corrupt asynchronous event, arbitrary
+            # framebuffer pixels can contain the three-byte framing prefix.
+            # Only consume a fixed-size reply after the complete command word
+            # identifies the reply currently awaited (or the asynchronous boot
+            # notification).  Treat every other candidate as ordinary console
+            # data and keep scanning; otherwise a false pixel marker turns one
+            # disposable display frame into a fatal proxy checksum error.
+            if cmdin not in (self.REQ_EVENT, self.REQ_BOOT, cmd):
+                self.unkhandler(reply)
+                continue
             if cmdin == self.REQ_EVENT:
                 reply += self.readfull(self.EVENT_HDR_LEN - 4)
                 data_len, event_type = struct.unpack("<HH", reply[4:])
