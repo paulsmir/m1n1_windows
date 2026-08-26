@@ -7,6 +7,7 @@
 
 #include "adt.h"
 #include "aic.h"
+#include "boot_options.h"
 #include "cpufreq.h"
 #include "display.h"
 #include "exception.h"
@@ -40,6 +41,19 @@ const char version_tag[] = "##m1n1_ver##" BUILD_TAG;
 const char *const m1n1_version = version_tag + 12;
 
 u32 board_id = ~0, chip_id = ~0;
+static bool boot_display_initialized;
+
+static const char *boot_cmdline(void)
+{
+    switch (cur_boot_args.revision) {
+        case 1:
+            return cur_boot_args.rv1.cmdline;
+        case 2:
+            return cur_boot_args.rv2.cmdline;
+        default:
+            return cur_boot_args.rv3.cmdline;
+    }
+}
 
 void get_device_info(void)
 {
@@ -187,18 +201,23 @@ void m1n1_main(void)
 #ifndef BRINGUP
     pmgr_init();
 #ifdef USE_FB
-    display_init();
-    // Kick DCP to sleep, so dodgy monitors which cause reconnect cycles don't cause us to lose the
-    // framebuffer.
-    display_shutdown(DCP_SLEEP_IF_EXTERNAL);
-    // On idevice we need to always clear, because otherwise it looks scuffed on white devices
-    fb_init(!is_mac);
-    fb_display_logo();
+    if (boot_option_skip_display(boot_cmdline())) {
+        printf("display: Device initialization explicitly disabled by boot option\n");
+    } else {
+        display_init();
+        boot_display_initialized = true;
+        // Kick DCP to sleep, so dodgy monitors which cause reconnect cycles don't cause us to lose
+        // the framebuffer.
+        display_shutdown(DCP_SLEEP_IF_EXTERNAL);
+        // On idevice we need to always clear, because otherwise it looks scuffed on white devices
+        fb_init(!is_mac);
+        fb_display_logo();
 #ifdef FB_SILENT_MODE
-    fb_set_active(!cur_boot_args.video.display);
+        fb_set_active(!cur_boot_args.video.display);
 #else
-    fb_set_active(true);
+        fb_set_active(true);
 #endif
+    }
 #endif
 
     cpufreq_fixup();
@@ -219,9 +238,11 @@ void m1n1_main(void)
     exception_shutdown();
 #ifndef BRINGUP
     usb_iodev_shutdown();
-    display_shutdown(DCP_SLEEP_IF_EXTERNAL);
 #ifdef USE_FB
-    fb_shutdown(next_stage.restore_logo);
+    if (boot_display_initialized) {
+        display_shutdown(DCP_SLEEP_IF_EXTERNAL);
+        fb_shutdown(next_stage.restore_logo);
+    }
 #endif
     mmu_shutdown();
 #endif

@@ -112,6 +112,7 @@ OBJECTS := \
 	aic.o \
 	asc.o \
 	bootlogo_48.o bootlogo_128.o bootlogo_256.o \
+	boot_options.o \
 	chainload.o \
 	chainload_layout.o \
 	chainload_asm.o \

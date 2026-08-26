@@ -7,6 +7,7 @@ trap 'rm -rf "$build_dir"' EXIT HUP INT TERM
 cc=${CC:-cc}
 
 all_tests="
+boot_options_test
 chainload_layout_test
 hv_assisted_layout_test
 display_guest_test
@@ -66,6 +67,10 @@ for name in "$@"; do
     definitions=""
     sources="tests/$name.c"
     case "$name" in
+        boot_options_test)
+            definitions="-DBOOT_OPTIONS_HOST_TEST"
+            sources="$sources src/boot_options.c"
+            ;;
         chainload_layout_test)
             sources="$sources src/chainload_layout.c"
             ;;
