@@ -17,6 +17,14 @@ u64 hv_ipa_to_pa(u64 ipa);
 #define NVME_FID_IRQ_VECTOR_CONFIG 0x09
 #define NVME_FID_ASYNC_EVENT       0x0b
 
+/*
+ * Bound synchronous ANS work in one guest MMIO trap, but publish enough CQEs that a
+ * saturated 256-entry Windows queue cannot age one request by an interrupt round trip per
+ * command.  Draining all 256 entries here previously starved guest timers; one entry made
+ * Storport requests exceed its ten-second timeout under sustained I/O.
+ */
+#define VNVME_COMPLETION_BATCH 8
+
 static void put_le16(u8 *p, u16 value)
 {
     p[0] = value;
@@ -487,14 +495,9 @@ static bool post_completion(struct vnvme_ctrl *ctrl, u16 cqid, u16 sqid, u16 sq_
 }
 
 /*
- * Execute pending submissions until exactly one completion has been published. A command
- * such as AER may deliberately remain outstanding without a CQE, so it does not consume the
- * completion budget and the following submission may still be considered.
- *
- * The old queue path drained every entry named by one SQ doorbell while still inside the MMIO
- * exception. A 256-entry Windows batch could therefore perform thousands of synchronous ANS
- * block operations before EL1 got a chance to acknowledge even the first CQE. Keeping one
- * unconsumed CQE per queue provides backpressure and returns to the guest after each command.
+ * Execute a bounded completion batch. A command such as AER may deliberately remain
+ * outstanding without a CQE, so it does not consume the completion budget and the following
+ * submission may still be considered.
  */
 static bool process_until_completion(struct vnvme_ctrl *ctrl, u16 qid)
 {
@@ -511,6 +514,7 @@ static bool process_until_completion(struct vnvme_ctrl *ctrl, u16 qid)
         return true;
 
     u16 walked = 0;
+    u16 completed = 0;
     while (sq->sq_head != sq->sq_tail) {
         u16 slot = sq->sq_head;
         struct vnvme_command cmd;
@@ -545,7 +549,8 @@ static bool process_until_completion(struct vnvme_ctrl *ctrl, u16 qid)
         if (complete) {
             if (!post_completion(ctrl, cqid, qid, sq->sq_head, cmd.cid, result, status))
                 return false;
-            return true;
+            if (++completed == VNVME_COMPLETION_BATCH)
+                return true;
         }
     }
     return true;

@@ -28,7 +28,7 @@ static uint8_t disk[BLOCKS][VNVME_LBA_SIZE];
 static unsigned irq_asserts;
 static unsigned irq_deasserts;
 static bool cqe_published;
-static struct vnvme_trace_event trace_events[16];
+static struct vnvme_trace_event trace_events[64];
 static unsigned trace_count;
 static unsigned read_commands;
 static unsigned write_commands;
@@ -101,7 +101,7 @@ static void backend_publish(void *opaque)
 static void backend_trace(void *opaque, const struct vnvme_trace_event *event)
 {
     (void)opaque;
-    assert(trace_count < 16);
+    assert(trace_count < sizeof(trace_events) / sizeof(trace_events[0]));
     trace_events[trace_count++] = *event;
 }
 
@@ -221,31 +221,37 @@ int main(void)
     assert(vnvme_set_admin_queue(&ctrl, (uint64_t)admin_sq, (uint64_t)admin_cq, 4, 4));
 
     /*
-     * A guest may publish a whole batch with one SQ tail write. The controller must not
-     * execute that entire batch synchronously in the MMIO trap: doing so prevents the guest
-     * from consuming completion interrupts and turns a busy queue into multi-second stalls.
-     * Keep one completion in flight and resume the queue as each CQ head is acknowledged.
+     * A saturated Windows queue must make bounded progress faster than one command per
+     * interrupt round trip.  The one-CQE policy lets the oldest request sit behind up to
+     * 255 guest exits and has been observed to exceed Storport's ten-second timeout.  A
+     * single trap must therefore publish more than one CQE, but still yield before draining
+     * the entire queue so synchronous ANS I/O cannot monopolize EL2.
      */
-    put_cmd(admin_sq, 0, 0xff, 0x401);
-    put_cmd(admin_sq, 1, 0xff, 0x402);
-    put_cmd(admin_sq, 2, 0xff, 0x403);
-    assert(vnvme_sq_doorbell(&ctrl, 0, 3));
+    vnvme_init(&ctrl, BLOCKS, &ops, NULL);
+    assert(vnvme_set_admin_queue(&ctrl, (uint64_t)max_admin_sq, (uint64_t)max_admin_cq, 256,
+                                 256));
+    for (unsigned i = 0; i < 16; i++)
+        put_cmd(max_admin_sq, i, 0xff, 0x400 + i);
+    assert(vnvme_sq_doorbell(&ctrl, 0, 16));
     state = snapshot(&ctrl);
-    assert(state.stats.commands == 1);
-    assert(state.stats.completions == 1);
-    assert(state.queues[0].sq_head == 1);
-    assert(state.queues[0].sq_tail == 3);
-    assert(vnvme_cq_doorbell(&ctrl, 0, 1));
-    state = snapshot(&ctrl);
-    assert(state.stats.commands == 2);
-    assert(state.stats.completions == 2);
-    assert(state.queues[0].sq_head == 2);
-    assert(vnvme_cq_doorbell(&ctrl, 0, 2));
-    state = snapshot(&ctrl);
-    assert(state.stats.commands == 3);
-    assert(state.stats.completions == 3);
-    assert(state.queues[0].sq_head == 3);
-    assert(vnvme_cq_doorbell(&ctrl, 0, 3));
+    assert(state.stats.commands > 1);
+    assert(state.stats.commands < 16);
+    assert(state.stats.completions == state.stats.commands);
+    assert(state.queues[0].sq_head == state.stats.commands);
+    assert(state.queues[0].sq_tail == 16);
+
+    unsigned batches = 1;
+    while (state.stats.completions < 16) {
+        uint64_t before = state.stats.completions;
+        assert(vnvme_cq_doorbell(&ctrl, 0, state.queues[0].cq_tail));
+        state = snapshot(&ctrl);
+        assert(state.stats.completions > before);
+        assert(++batches < 16);
+    }
+    assert(state.stats.commands == 16);
+    assert(state.queues[0].sq_head == 16);
+    assert(state.queues[0].sq_tail == 16);
+    assert(vnvme_cq_doorbell(&ctrl, 0, state.queues[0].cq_tail));
 
     /* Start the functional command tests with clean queue and trace state. */
     irq_asserts = 0;
