@@ -23,8 +23,8 @@ BootArgs_r1 = Struct(
     Padding(4),
     "devtree"               / Hex(Int64ul),
     "devtree_size"          / Hex(Int32ul),
-    "cmdline"               / PaddedString(256, "ascii"),
     Padding(4),
+    "cmdline"               / PaddedString(256, "ascii"),
     "boot_flags"            / Hex(Int64ul),
     "mem_size_actual"       / Hex(Int64ul),
 )
@@ -49,8 +49,8 @@ BootArgs_r2 = Struct(
     Padding(4),
     "devtree"               / Hex(Int64ul),
     "devtree_size"          / Hex(Int32ul),
-    "cmdline"               / PaddedString(608, "ascii"),
     Padding(4),
+    "cmdline"               / PaddedString(608, "ascii"),
     "boot_flags"            / Hex(Int64ul),
     "mem_size_actual"       / Hex(Int64ul),
 )
@@ -75,8 +75,8 @@ BootArgs_r3 = Struct(
     Padding(4),
     "devtree"               / Hex(Int64ul),
     "devtree_size"          / Hex(Int32ul),
-    "cmdline"               / PaddedString(1024, "ascii"),
     Padding(4),
+    "cmdline"               / PaddedString(1024, "ascii"),
     "boot_flags"            / Hex(Int64ul),
     "mem_size_actual"       / Hex(Int64ul),
 )
