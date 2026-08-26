@@ -11,6 +11,7 @@
 #include "gxf.h"
 #include "heapblock.h"
 #include "hv.h"
+#include "hv_agx_power_broker.h"
 #include "hv_diag.h"
 #include "hv_launch_j313.h"
 #include "iodev.h"
@@ -523,6 +524,9 @@ int proxy_process(ProxyRequest *request, ProxyReply *reply)
             reply->retval = request->args[3] == sizeof(struct hv_contract_snapshot) &&
                             hv_launch_j313_capture(request->args[0], request->args[1],
                                                    (void *)request->args[2]);
+            break;
+        case P_HV_MAP_AGX_POWER:
+            reply->retval = hv_agx_power_broker_map();
             break;
         case P_HV_MAP_VIRTIO:
             hv_map_virtio(request->args[0], (void *)request->args[1]);

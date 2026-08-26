@@ -1818,6 +1818,7 @@ class HV(Reloadable):
 
         self.map_vuart()
         self.map_pci()
+        self.map_agx_power_broker()
 
         # ACTLR depends on the CPU part
         part = MIDR(self.u.mrs(MIDR_EL1)).PART
@@ -1862,6 +1863,17 @@ class HV(Reloadable):
         # map_vuart() does for its C hook.
         self.add_tracer(irange(ecam, 0x100000), "PCI-ECAM", TraceMode.RESERVED)
         print(f"HV: emulated PCIe/NVMe: ECAM 0x{ecam:x}, BAR window 0x{bar_window:x}, INTx vSPI {irq}")
+
+    def map_agx_power_broker(self):
+        if os.environ.get("WOM1_AGX_G2_POWER_BROKER", "0") != "1":
+            return
+
+        base = 0x300000000
+        size = 0x1000
+        if not self.p.hv_map_agx_power_broker():
+            raise RuntimeError("AGX G2 power broker mapping failed")
+        self.add_tracer(irange(base, size), "AGX-POWER-BROKER", TraceMode.RESERVED)
+        print(f"HV: AGX G2 power broker: 0x{base:x}..0x{base + size:x}")
 
     def map_essential(self):
         # Things we always map/take over, for the hypervisor to work
