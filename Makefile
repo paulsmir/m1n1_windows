@@ -158,6 +158,7 @@ OBJECTS := \
 	pcie.o \
 	pmgr.o \
 	proxy.o \
+	proxy_boot_identity.o \
 	ringbuffer.o \
 	rtkit.o \
 	sart.o \

@@ -23,6 +23,7 @@
 #include "payload.h"
 #include "pcie.h"
 #include "pmgr.h"
+#include "proxy_boot_identity.h"
 #include "sep.h"
 #include "smp.h"
 #include "string.h"
@@ -162,6 +163,9 @@ proxy_fallback:
 
 void m1n1_main(void)
 {
+    /* Capture one immutable identity before host-visible proxy work starts. */
+    proxy_boot_identity_init(get_ticks());
+
     printf("\n\nm1n1 %s\n", m1n1_version);
     printf("Copyright The Asahi Linux Contributors\n");
     printf("Licensed under the MIT license\n\n");

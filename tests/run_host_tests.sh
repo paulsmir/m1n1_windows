@@ -38,6 +38,7 @@ hv_nvme_queue_test
 hv_nvme_fast_path_test
 hv_fiq_fast_path_test
 hv_tick_policy_test
+proxy_boot_identity_test
 hv_timer_delivery_test
 hv_runtime_diag_debug_test
 hv_runtime_diag_verbose_test
@@ -166,6 +167,10 @@ for name in "$@"; do
             ;;
         hv_tick_policy_test)
             sources="$sources src/hv_tick_policy.c"
+            ;;
+        proxy_boot_identity_test)
+            definitions="-DPROXY_BOOT_IDENTITY_HOST_TEST"
+            sources="$sources src/proxy_boot_identity.c"
             ;;
         hv_timer_delivery_test)
             definitions="-DHV_TIMER_DELIVERY_HOST_TEST"

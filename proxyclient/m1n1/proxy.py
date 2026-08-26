@@ -525,6 +525,7 @@ class M1N1Proxy(Reloadable):
     P_SLEEP = 0x011
     P_EL3_CALL = 0x012
     P_GET_CHIPID = 0x013
+    P_GET_BOOT_COOKIE = 0x014
 
     P_WRITE64 = 0x100
     P_WRITE32 = 0x101
@@ -820,6 +821,8 @@ class M1N1Proxy(Reloadable):
         return self.request(self.P_EL3_CALL, addr, *args)
     def get_chipid(self):
         return self.request(self.P_GET_CHIPID)
+    def get_boot_cookie(self):
+        return self.request(self.P_GET_BOOT_COOKIE)
 
     def write64(self, addr, data):
         '''write 8 byte value to given address'''

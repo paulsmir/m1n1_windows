@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: MIT */
 
 #include "proxy.h"
+#include "proxy_boot_identity.h"
 #include "cpufreq.h"
 #include "dapf.h"
 #include "dart.h"
@@ -125,6 +126,9 @@ int proxy_process(ProxyRequest *request, ProxyReply *reply)
             break;
         case P_GET_CHIPID:
             reply->retval = chip_id;
+            break;
+        case P_GET_BOOT_COOKIE:
+            reply->retval = proxy_boot_identity_get();
             break;
 
         case P_WRITE64:
