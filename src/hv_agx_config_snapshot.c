@@ -72,20 +72,14 @@ bool hv_agx_config_snapshot_from_adt(const void *tree,
     if (sgx < 0)
         return false;
 
-    if (ADT_GETPROP(tree, sgx, "perf-state-count", &candidate.perf_state_count) !=
-            sizeof(candidate.perf_state_count) ||
+    if (ADT_GETPROP(tree, sgx, "perf-state-count", &candidate.perf_state_count) < 0 ||
         ADT_GETPROP(tree, sgx, "perf-state-table-count",
-                    &candidate.perf_state_table_count) !=
-            sizeof(candidate.perf_state_table_count) ||
-        ADT_GETPROP(tree, sgx, "gpu-perf-base-pstate", &candidate.base_pstate) !=
-            sizeof(candidate.base_pstate) ||
-        ADT_GETPROP(tree, sgx, "gpu-num-perf-states", &candidate.max_pstate) !=
-            sizeof(candidate.max_pstate) ||
+                    &candidate.perf_state_table_count) < 0 ||
+        ADT_GETPROP(tree, sgx, "gpu-perf-base-pstate", &candidate.base_pstate) < 0 ||
+        ADT_GETPROP(tree, sgx, "gpu-num-perf-states", &candidate.max_pstate) < 0 ||
         ADT_GETPROP(tree, sgx, "gpu-power-sample-period",
-                    &candidate.power_sample_period_ms) !=
-            sizeof(candidate.power_sample_period_ms) ||
-        ADT_GETPROP(tree, sgx, "gpu-region-base", &candidate.gpu_region_base) !=
-            sizeof(candidate.gpu_region_base))
+                    &candidate.power_sample_period_ms) < 0 ||
+        ADT_GETPROP(tree, sgx, "gpu-region-base", &candidate.gpu_region_base) < 0)
         return false;
 
     states = adt_getprop(tree, sgx, "perf-states", &states_length);

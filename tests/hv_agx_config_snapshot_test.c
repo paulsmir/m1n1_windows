@@ -48,7 +48,7 @@ int adt_getprop_copy(const void *tree, int node, const char *name, void *out, si
 #define COPY_PROP(prop_name, value)                                                           \
     if (strcmp(name, prop_name) == 0 && length == sizeof(value)) {                             \
         memcpy(out, &(value), sizeof(value));                                                   \
-        return (int)sizeof(value);                                                              \
+        return 0;                                                                               \
     }
     COPY_PROP("perf-state-count", perf_state_count)
     COPY_PROP("perf-state-table-count", table_count)
