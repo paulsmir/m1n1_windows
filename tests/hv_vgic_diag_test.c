@@ -164,6 +164,19 @@ static void test_priority_is_masked_only_by_pmr_until_bpr_is_emulated(void)
     assert(!hv_vgic_diag_priority_deliverable(0x20, 0x20, 0xff));
 }
 
+static void test_route_transition_logging_is_bounded_but_keeps_landmarks(void)
+{
+    assert(!hv_vgic_diag_should_log_route_transition(0));
+    for (uint32_t transition = 1; transition <= 8; transition++)
+        assert(hv_vgic_diag_should_log_route_transition(transition));
+    assert(!hv_vgic_diag_should_log_route_transition(9));
+    assert(!hv_vgic_diag_should_log_route_transition(15));
+    assert(hv_vgic_diag_should_log_route_transition(16));
+    assert(hv_vgic_diag_should_log_route_transition(32));
+    assert(!hv_vgic_diag_should_log_route_transition(33));
+    assert(hv_vgic_diag_should_log_route_transition(1024));
+}
+
 int main(void)
 {
     test_empty_lrs_are_not_occupied();
@@ -176,6 +189,7 @@ int main(void)
     test_timer_reexpiry_coalesces_into_the_active_lr();
     test_level_sync_covers_every_lr_state();
     test_priority_is_masked_only_by_pmr_until_bpr_is_emulated();
+    test_route_transition_logging_is_bounded_but_keeps_landmarks();
     puts("hv_vgic_diag_test: ok");
     return 0;
 }

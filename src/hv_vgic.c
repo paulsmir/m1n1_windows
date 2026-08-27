@@ -55,6 +55,7 @@ static struct hv_xhci_dma_trace j313_xhci_dma_trace;
 static struct hv_xhci_cap_state j313_xhci_caps;
 static u32 j313_xhci_erdp_trace_budget = 16;
 static u32 j313_xhci_erdp_last_upper = 0xffffffff;
+static u32 irq_route_transition_count;
 
 struct hv_xhci_stage2_view {
     u64 direct_end;
@@ -663,8 +664,11 @@ static bool handle_vgic_dist_access(struct exc_info *ctx, u64 addr, u64 *val, bo
                             hv_mark_guest_runtime_ready();
                         }
                         aic_set_mask(route->hw_irq, false);
-                        printf("HV: IRQ route enabled vINTID=%u AIC=%u\n", route->vintid,
-                               route->hw_irq);
+                        u32 transition = __atomic_add_fetch(&irq_route_transition_count, 1,
+                                                            __ATOMIC_RELAXED);
+                        if (hv_vgic_diag_should_log_route_transition(transition))
+                            printf("HV: IRQ route enabled vINTID=%u AIC=%u count=%u\n",
+                                   route->vintid, route->hw_irq, transition);
                         hv_vgic3_trace_intid(route->vintid, 48);
                         if (route->hw_irq == 857)
                             hv_trace_j313_xhci("route-enable");
@@ -709,8 +713,11 @@ static bool handle_vgic_dist_access(struct exc_info *ctx, u64 addr, u64 *val, bo
                     const struct hv_irq_route *route = hv_irq_route_from_vintid(irq_num);
                     if (route) {
                         aic_set_mask(route->hw_irq, true);
-                        printf("HV: IRQ route disabled vINTID=%u AIC=%u\n", route->vintid,
-                               route->hw_irq);
+                        u32 transition = __atomic_add_fetch(&irq_route_transition_count, 1,
+                                                            __ATOMIC_RELAXED);
+                        if (hv_vgic_diag_should_log_route_transition(transition))
+                            printf("HV: IRQ route disabled vINTID=%u AIC=%u count=%u\n",
+                                   route->vintid, route->hw_irq, transition);
                     }
                 }
             }

@@ -101,3 +101,13 @@ bool hv_vgic_diag_priority_deliverable(u32 priority, u32 pmr, u32 running_priori
     (void)running_priority;
     return priority < pmr;
 }
+
+bool hv_vgic_diag_should_log_route_transition(u32 transition_count)
+{
+    if (!transition_count)
+        return false;
+    if (transition_count <= 8)
+        return true;
+
+    return !(transition_count & (transition_count - 1));
+}

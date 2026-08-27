@@ -36,5 +36,6 @@ int hv_vgic_diag_repend_live_intid(u64 lrs[HV_VGIC_DIAG_LR_COUNT], u32 intid);
 struct hv_vgic_level_result hv_vgic_diag_sync_level_lr(u64 lr, bool asserted);
 u64 hv_vgic_diag_eoi_lr(u64 lr);
 bool hv_vgic_diag_priority_deliverable(u32 priority, u32 pmr, u32 running_priority);
+bool hv_vgic_diag_should_log_route_transition(u32 transition_count);
 
 #endif
