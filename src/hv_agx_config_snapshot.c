@@ -21,6 +21,25 @@ int adt_getprop_copy(const void *tree, int node, const char *name, void *out, si
 #define J313_POWER_SAMPLE_PERIOD_MS 8u
 #define J313_GPU_REGION_BASE 0x9fffb8000ULL
 
+static const char *const scalar_property_names[HV_AGX_CONFIG_SCALAR_COUNT] = {
+    "gpu-avg-power-filter-tc-ms", "gpu-avg-power-ki-only",
+    "gpu-avg-power-kp", "gpu-avg-power-min-duty-cycle",
+    "gpu-avg-power-target-filter-tc", "gpu-fast-die0-integral-gain",
+    "gpu-fast-die0-prop-tgt-delta", "gpu-fast-die0-proportional-gain",
+    "gpu-fast-die0-release-temp", "gpu-perf-boost-ce-step",
+    "gpu-perf-boost-min-util", "gpu-perf-filter-drop-threshold",
+    "gpu-perf-filter-time-constant", "gpu-perf-filter-time-constant2",
+    "gpu-perf-integral-gain", "gpu-perf-integral-gain2",
+    "gpu-perf-integral-min-clamp", "gpu-perf-proportional-gain",
+    "gpu-perf-proportional-gain2", "gpu-perf-reset-iters",
+    "gpu-perf-tgt-utilization", "gpu-ppm-filter-time-constant-ms",
+    "gpu-ppm-ki", "gpu-ppm-kp", "gpu-pwr-filter-time-constant",
+    "gpu-pwr-integral-gain", "gpu-pwr-integral-min-clamp",
+    "gpu-pwr-min-duty-cycle", "gpu-pwr-proportional-gain",
+    "gpu-pwr-sample-period-aic-clks", "gpu-idle-off-delay-ms",
+    "gpu-fender-idle-off-delay-ms", "gpu-fw-early-wake-timeout-ms",
+};
+
 static bool valid_values(const struct hv_agx_config_snapshot *snapshot)
 {
     uint32_t previous_frequency = 0;
@@ -30,7 +49,10 @@ static bool valid_values(const struct hv_agx_config_snapshot *snapshot)
         snapshot->base_pstate != J313_BASE_PSTATE ||
         snapshot->max_pstate != J313_MAX_PSTATE ||
         snapshot->power_sample_period_ms != J313_POWER_SAMPLE_PERIOD_MS ||
-        snapshot->gpu_region_base != J313_GPU_REGION_BASE)
+        snapshot->gpu_region_base != J313_GPU_REGION_BASE ||
+        snapshot->scalar_count != HV_AGX_CONFIG_SCALAR_COUNT ||
+        snapshot->scalar_reserved != 0 || snapshot->trailing_reserved != 0 ||
+        (snapshot->scalar_presence >> HV_AGX_CONFIG_SCALAR_COUNT) != 0)
         return false;
 
     for (uint32_t i = 0; i < snapshot->perf_state_count; i++) {
@@ -89,6 +111,14 @@ bool hv_agx_config_snapshot_from_adt(const void *tree,
         return false;
     memcpy(candidate.perf_states, states,
            candidate.perf_state_count * sizeof(candidate.perf_states[0]));
+
+    candidate.scalar_count = HV_AGX_CONFIG_SCALAR_COUNT;
+    for (uint32_t i = 0; i < HV_AGX_CONFIG_SCALAR_COUNT; i++) {
+        if (adt_getprop_copy(tree, sgx, scalar_property_names[i],
+                             &candidate.scalar_bits[i],
+                             sizeof(candidate.scalar_bits[i])) >= 0)
+            candidate.scalar_presence |= 1ULL << i;
+    }
 
     candidate.magic = HV_AGX_CONFIG_MAGIC;
     candidate.abi_version = HV_AGX_CONFIG_ABI_VERSION;

@@ -22,6 +22,9 @@ static struct perf_state states[7] = {
 };
 static bool omit_perf_states;
 static uint32_t perf_states_length = sizeof(states);
+static uint32_t avg_filter_tc_ms = 1000;
+static uint32_t avg_ki_only_bits = 0x40f00000;
+static uint32_t fast_integral_gain_bits = 0x43480000;
 
 int adt_path_offset(const void *tree, const char *path)
 {
@@ -55,6 +58,9 @@ int adt_getprop_copy(const void *tree, int node, const char *name, void *out, si
     COPY_PROP("gpu-num-perf-states", max_pstate)
     COPY_PROP("gpu-power-sample-period", sample_period)
     COPY_PROP("gpu-region-base", gpu_region_base)
+    COPY_PROP("gpu-avg-power-filter-tc-ms", avg_filter_tc_ms)
+    COPY_PROP("gpu-avg-power-ki-only", avg_ki_only_bits)
+    COPY_PROP("gpu-fast-die0-integral-gain", fast_integral_gain_bits)
 #undef COPY_PROP
     return -1;
 }
@@ -75,6 +81,7 @@ static void test_exact_j313_snapshot(void)
 {
     struct hv_agx_config_snapshot snapshot;
 
+    assert(sizeof(snapshot) == 0x148);
     reset_fixture();
     memset(&snapshot, 0xa5, sizeof(snapshot));
     assert(hv_agx_config_snapshot_from_adt((void *)1, &snapshot));
@@ -89,6 +96,13 @@ static void test_exact_j313_snapshot(void)
     assert(snapshot.perf_states[0].voltage_mv == 400);
     assert(snapshot.perf_states[6].voltage_mv == 943);
     assert(snapshot.perf_states[7].frequency_hz == 0);
+    assert(snapshot.scalar_count == HV_AGX_CONFIG_SCALAR_COUNT);
+    assert(snapshot.scalar_presence ==
+           ((1ULL << HV_AGX_SCALAR_AVG_POWER_FILTER_TC_MS) |
+            (1ULL << HV_AGX_SCALAR_AVG_POWER_KI_ONLY) |
+            (1ULL << HV_AGX_SCALAR_FAST_DIE0_INTEGRAL_GAIN)));
+    assert(snapshot.scalar_bits[HV_AGX_SCALAR_AVG_POWER_FILTER_TC_MS] == 1000);
+    assert(snapshot.scalar_bits[HV_AGX_SCALAR_AVG_POWER_KI_ONLY] == 0x40f00000);
 }
 
 static void test_rejects_missing_or_wrong_sized_table_without_partial_output(void)

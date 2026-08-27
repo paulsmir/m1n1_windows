@@ -70,8 +70,10 @@ bool hv_agx_power_broker_map(void)
            (u64)(HV_AGX_G2_POWER_BROKER_BASE + HV_AGX_G2_POWER_BROKER_SIZE),
            HV_AGX_POWER_ABI_VERSION);
     if (config_snapshot_valid)
-        printf("HV: AGX boot config snapshot v%u at broker+0x%x (%u pstates)\n",
+        printf("HV: AGX boot config snapshot v%u at broker+0x%x (%u pstates, %u scalars, mask=0x%llx)\n",
                HV_AGX_CONFIG_ABI_VERSION, HV_AGX_CONFIG_MMIO_OFFSET,
-               config_snapshot.perf_state_count);
+               config_snapshot.perf_state_count,
+               (unsigned)__builtin_popcountll(config_snapshot.scalar_presence),
+               (unsigned long long)config_snapshot.scalar_presence);
     return true;
 }
