@@ -36,13 +36,13 @@ static bool valid_values(const struct hv_agx_config_snapshot *snapshot)
     for (uint32_t i = 0; i < snapshot->perf_state_count; i++) {
         const struct hv_agx_config_perf_state *state = &snapshot->perf_states[i];
 
-        if (!state->frequency_hz || !state->voltage_uv ||
-            state->frequency_hz <= previous_frequency)
+        if (!state->voltage_mv ||
+            (i > 0 && state->frequency_hz <= previous_frequency))
             return false;
         previous_frequency = state->frequency_hz;
     }
     for (uint32_t i = snapshot->perf_state_count; i < HV_AGX_CONFIG_MAX_PERF_STATES; i++) {
-        if (snapshot->perf_states[i].frequency_hz || snapshot->perf_states[i].voltage_uv)
+        if (snapshot->perf_states[i].frequency_hz || snapshot->perf_states[i].voltage_mv)
             return false;
     }
     return true;

@@ -14,7 +14,7 @@
 
 struct hv_agx_config_perf_state {
     uint32_t frequency_hz;
-    uint32_t voltage_uv;
+    uint32_t voltage_mv;
 };
 
 /* Immutable boot configuration copied from /arm-io/sgx before guest entry. */

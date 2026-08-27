@@ -17,9 +17,8 @@ static uint32_t max_pstate = 6;
 static uint32_t sample_period = 8;
 static uint64_t gpu_region_base = 0x9fffb8000ULL;
 static struct perf_state states[7] = {
-    {300000000, 650000}, {450000000, 675000}, {600000000, 700000},
-    {750000000, 725000}, {900000000, 750000}, {1050000000, 775000},
-    {1278000000, 800000},
+    {0, 400},          {396000000, 612}, {528000000, 650}, {720000000, 687},
+    {924000000, 778}, {1128000000, 871}, {1278000000, 943},
 };
 static bool omit_perf_states;
 static uint32_t perf_states_length = sizeof(states);
@@ -48,7 +47,7 @@ int adt_getprop_copy(const void *tree, int node, const char *name, void *out, si
 #define COPY_PROP(prop_name, value)                                                           \
     if (strcmp(name, prop_name) == 0 && length == sizeof(value)) {                             \
         memcpy(out, &(value), sizeof(value));                                                   \
-        return 0;                                                                               \
+        return (int)sizeof(value);                                                              \
     }
     COPY_PROP("perf-state-count", perf_state_count)
     COPY_PROP("perf-state-table-count", table_count)
@@ -86,7 +85,9 @@ static void test_exact_j313_snapshot(void)
     assert(snapshot.flags == HV_AGX_CONFIG_FLAG_VALID);
     assert(snapshot.perf_state_count == 7);
     assert(snapshot.perf_states[6].frequency_hz == 1278000000);
-    assert(snapshot.perf_states[6].voltage_uv == 800000);
+    assert(snapshot.perf_states[0].frequency_hz == 0);
+    assert(snapshot.perf_states[0].voltage_mv == 400);
+    assert(snapshot.perf_states[6].voltage_mv == 943);
     assert(snapshot.perf_states[7].frequency_hz == 0);
 }
 
@@ -121,7 +122,7 @@ static void test_rejects_non_j313_geometry_and_invalid_values(void)
     reset_fixture();
     states[2].frequency_hz = 0;
     assert(!hv_agx_config_snapshot_from_adt((void *)1, &snapshot));
-    states[2].frequency_hz = 600000000;
+    states[2].frequency_hz = 528000000;
     reset_fixture();
     gpu_region_base = 0;
     assert(!hv_agx_config_snapshot_from_adt((void *)1, &snapshot));
@@ -149,8 +150,8 @@ static void test_mmio_is_read_only_bounded_and_exact(void)
     assert(hv_agx_config_snapshot_mmio(&snapshot, 0x28, &value, false, 3));
     assert(value == 0x9fffb8000ULL);
     assert(hv_agx_config_snapshot_mmio(&snapshot, 0x30, &value, false, 3));
-    assert((uint32_t)value == 300000000);
-    assert((uint32_t)(value >> 32) == 650000);
+    assert((uint32_t)value == 0);
+    assert((uint32_t)(value >> 32) == 400);
     assert(!hv_agx_config_snapshot_mmio(&snapshot, 0, &value, true, 2));
     assert(!hv_agx_config_snapshot_mmio(&snapshot, 2, &value, false, 2));
     assert(!hv_agx_config_snapshot_mmio(&snapshot, sizeof(snapshot), &value, false, 2));
