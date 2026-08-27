@@ -81,6 +81,7 @@ static void test_exact_j313_snapshot(void)
 {
     struct hv_agx_config_snapshot snapshot;
 
+    assert(HV_AGX_CONFIG_ABI_VERSION == 2u);
     assert(sizeof(snapshot) == 0x148);
     reset_fixture();
     memset(&snapshot, 0xa5, sizeof(snapshot));
