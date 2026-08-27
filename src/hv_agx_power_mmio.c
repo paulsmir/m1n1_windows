@@ -1,11 +1,15 @@
 /* SPDX-License-Identifier: MIT */
 
 #include "hv.h"
+#include "adt.h"
+#include "hv_agx_config_snapshot.h"
 #include "hv_agx_g2.generated.h"
 #include "hv_agx_power_broker.h"
 #include "utils.h"
 
 static struct hv_agx_power_broker broker;
+static struct hv_agx_config_snapshot config_snapshot;
+static bool config_snapshot_valid;
 static DECLARE_SPINLOCK(broker_lock);
 static bool broker_mapped;
 
@@ -18,6 +22,15 @@ static bool handle_agx_power_broker(struct exc_info *ctx, u64 addr, u64 *value, 
     if (addr < HV_AGX_G2_POWER_BROKER_BASE ||
         addr >= HV_AGX_G2_POWER_BROKER_BASE + HV_AGX_G2_POWER_BROKER_SIZE)
         return false;
+
+    if (addr - HV_AGX_G2_POWER_BROKER_BASE >= HV_AGX_CONFIG_MMIO_OFFSET) {
+        if (!config_snapshot_valid)
+            return false;
+        return hv_agx_config_snapshot_mmio(
+            &config_snapshot,
+            addr - HV_AGX_G2_POWER_BROKER_BASE - HV_AGX_CONFIG_MMIO_OFFSET,
+            value, write, (unsigned)width);
+    }
 
     spin_lock(&broker_lock);
     handled = hv_agx_power_broker_mmio(&broker, addr - HV_AGX_G2_POWER_BROKER_BASE, value,
@@ -41,6 +54,9 @@ bool hv_agx_power_broker_map(void)
         return true;
 
     hv_agx_power_broker_init(&broker, hv_agx_power_j313_ops(), NULL);
+    config_snapshot_valid = hv_agx_config_snapshot_from_adt(adt, &config_snapshot);
+    if (!config_snapshot_valid)
+        printf("HV: AGX boot config snapshot unavailable; firmware start must fail closed\n");
     ret = hv_map_hook(HV_AGX_G2_POWER_BROKER_BASE, handle_agx_power_broker,
                       HV_AGX_G2_POWER_BROKER_SIZE);
     if (ret < 0) {
@@ -53,5 +69,9 @@ bool hv_agx_power_broker_map(void)
            (u64)HV_AGX_G2_POWER_BROKER_BASE,
            (u64)(HV_AGX_G2_POWER_BROKER_BASE + HV_AGX_G2_POWER_BROKER_SIZE),
            HV_AGX_POWER_ABI_VERSION);
+    if (config_snapshot_valid)
+        printf("HV: AGX boot config snapshot v%u at broker+0x%x (%u pstates)\n",
+               HV_AGX_CONFIG_ABI_VERSION, HV_AGX_CONFIG_MMIO_OFFSET,
+               config_snapshot.perf_state_count);
     return true;
 }

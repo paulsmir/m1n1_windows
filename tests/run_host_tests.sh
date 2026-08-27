@@ -47,6 +47,7 @@ hv_runtime_diag_release_test
 hv_watchdog_snapshot_test
 hv_wfx_policy_test
 hv_apple_input_contract_test
+hv_agx_config_snapshot_test
 hv_agx_power_broker_test
 hv_sgi_pending_test
 hv_sgi_diag_test
@@ -201,6 +202,10 @@ for name in "$@"; do
         hv_apple_input_contract_test)
             definitions="-DHV_APPLE_INPUT_HOST_TEST"
             sources="$sources src/hv_apple_input.c"
+            ;;
+        hv_agx_config_snapshot_test)
+            definitions="-DHV_AGX_CONFIG_SNAPSHOT_HOST_TEST"
+            sources="$sources src/hv_agx_config_snapshot.c"
             ;;
         hv_agx_power_broker_test)
             definitions="-DHV_AGX_POWER_BROKER_HOST_TEST"
