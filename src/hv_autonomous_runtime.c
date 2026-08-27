@@ -8,6 +8,7 @@
 #include "cpufreq.h"
 #include "heapblock.h"
 #include "hv.h"
+#include "hv_agx_power_broker.h"
 #include "hv_assisted_layout.h"
 #include "hv_launch_golden_j313.h"
 #include "hv_launch_j313.h"
@@ -317,7 +318,7 @@ static bool map_stage2(const struct hv_autonomous_runtime *runtime)
         return false;
     if (hv_map_hw(layout->low_mem_ipa, layout->low_mem_pa, layout->low_mem_size))
         return false;
-    return map_arm_io_ranges();
+    return map_arm_io_ranges() && hv_agx_g2_resources_map();
 }
 
 static bool map_vuart_from_adt(void)

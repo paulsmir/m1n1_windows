@@ -65,8 +65,21 @@ class TestAgxPowerBrokerProxy(unittest.TestCase):
         )
         self.assertIsNotNone(case)
         body = case.group(1)
-        self.assertIn("hv_agx_power_broker_map()", body)
+        self.assertIn("hv_agx_g2_resources_map()", body)
         self.assertNotIn("request->args", body)
+
+    def test_resource_mapper_identity_maps_the_context_zero_root_page(self):
+        mapper = (self.root / "src/hv_agx_power_mmio.c").read_text()
+        self.assertIn("hv_agx_g2_resources_map", mapper)
+        self.assertRegex(
+            mapper,
+            r"hv_map_sw\(HV_AGX_G2_GPU_BASE,\s*HV_AGX_G2_GPU_BASE,\s*"
+            r"HV_AGX_G2_GPU_SIZE\)",
+        )
+
+    def test_autonomous_launch_uses_the_same_g2_resource_mapper(self):
+        runtime = (self.root / "src/hv_autonomous_runtime.c").read_text()
+        self.assertIn("hv_agx_g2_resources_map()", runtime)
 
 
 if __name__ == "__main__":

@@ -11,7 +11,7 @@ static struct hv_agx_power_broker broker;
 static struct hv_agx_config_snapshot config_snapshot;
 static bool config_snapshot_valid;
 static DECLARE_SPINLOCK(broker_lock);
-static bool broker_mapped;
+static bool resources_mapped;
 
 static bool handle_agx_power_broker(struct exc_info *ctx, u64 addr, u64 *value, bool write,
                                     int width)
@@ -46,12 +46,19 @@ static bool handle_agx_power_broker(struct exc_info *ctx, u64 addr, u64 *value, 
     return handled;
 }
 
-bool hv_agx_power_broker_map(void)
+bool hv_agx_g2_resources_map(void)
 {
     int ret;
 
-    if (broker_mapped)
+    if (resources_mapped)
         return true;
+
+    ret = hv_map_sw(HV_AGX_G2_GPU_BASE, HV_AGX_G2_GPU_BASE,
+                    HV_AGX_G2_GPU_SIZE);
+    if (ret < 0) {
+        printf("HV: AGX gpu-region stage-2 map failed (%d)\n", ret);
+        return false;
+    }
 
     hv_agx_power_broker_init(&broker, hv_agx_power_j313_ops(), NULL);
     config_snapshot_valid = hv_agx_config_snapshot_from_adt(adt, &config_snapshot);
@@ -64,7 +71,10 @@ bool hv_agx_power_broker_map(void)
         return false;
     }
 
-    broker_mapped = true;
+    resources_mapped = true;
+    printf("HV: AGX gpu-region mapped at 0x%lx..0x%lx\n",
+           (u64)HV_AGX_G2_GPU_BASE,
+           (u64)(HV_AGX_G2_GPU_BASE + HV_AGX_G2_GPU_SIZE));
     printf("HV: AGX power broker mapped at 0x%lx..0x%lx (ABI %u)\n",
            (u64)HV_AGX_G2_POWER_BROKER_BASE,
            (u64)(HV_AGX_G2_POWER_BROKER_BASE + HV_AGX_G2_POWER_BROKER_SIZE),

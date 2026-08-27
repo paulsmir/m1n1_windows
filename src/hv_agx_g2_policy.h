@@ -18,6 +18,8 @@ struct hv_agx_g2_policy {
     const char *source_contract_sha256;
     u64 aperture_base;
     u64 aperture_size;
+    u64 gpu_region_base;
+    u64 gpu_region_size;
     const struct hv_agx_g2_interrupt_route *routes;
     unsigned int route_count;
     bool level;

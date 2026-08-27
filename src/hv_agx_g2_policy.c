@@ -30,6 +30,9 @@ bool hv_agx_g2_policy_validate(const struct hv_agx_g2_policy *policy)
     if (policy->aperture_base != HV_AGX_G2_SGX_MMIO_BASE ||
         policy->aperture_size != HV_AGX_G2_SGX_MMIO_SIZE)
         return false;
+    if (policy->gpu_region_base != HV_AGX_G2_GPU_BASE ||
+        policy->gpu_region_size != HV_AGX_G2_GPU_SIZE)
+        return false;
     if (policy->route_count != HV_AGX_G2_INTERRUPT_ROUTE_COUNT)
         return false;
     if (policy->level != (bool)HV_AGX_G2_INTERRUPT_LEVEL ||

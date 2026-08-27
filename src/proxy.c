@@ -526,7 +526,7 @@ int proxy_process(ProxyRequest *request, ProxyReply *reply)
                                                    (void *)request->args[2]);
             break;
         case P_HV_MAP_AGX_POWER:
-            reply->retval = hv_agx_power_broker_map();
+            reply->retval = hv_agx_g2_resources_map();
             break;
         case P_HV_MAP_VIRTIO:
             hv_map_virtio(request->args[0], (void *)request->args[1]);
