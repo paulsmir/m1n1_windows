@@ -150,7 +150,6 @@ OBJECTS := \
 	dcp_endpoint_owner.o \
 	dcp_iboot.o \
 	dcp_iomfb_latch.o \
-	dcp_iomfb_owner_lifecycle.o \
 	dcp_iomfb_rpc.o \
 	dcp_iomfb_v13_5_abi.o \
 	dcp_iomfb_bootstrap.o \

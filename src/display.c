@@ -8,7 +8,6 @@
 #include "adt.h"
 #include "assert.h"
 #include "dcp.h"
-#include "dcp_iomfb_owner_lifecycle.h"
 #include "dcp_iboot.h"
 #include "fb.h"
 #include "firmware.h"
@@ -53,21 +52,6 @@ static const display_config_t display_config_m1 = {
     .pmgr_dev = "DISP0_CPU0",
     .dcp_alias = "dcp",
 };
-
-static bool display_dcp_owner_start_system(void *opaque)
-{
-    dcp_dev_t *device = opaque;
-
-    if (device->system_ep)
-        return dcp_system_is_ready(device->system_ep);
-    device->system_ep = dcp_system_init(device);
-    return dcp_system_is_ready(device->system_ep);
-}
-
-static bool display_dcp_owner_start_iomfb(void *opaque)
-{
-    return dcp_iomfb_owner_start(opaque);
-}
 
 #define USE_DCPEXT 1
 
@@ -378,17 +362,15 @@ int display_start_dcp(void)
     }
 
 #ifdef DCP_IOMFB_FULL_OWNER
-    /* On the internal panel production Asahi starts IOMFB directly after the
-     * RTKit/system setup.  Opening disp0-service first, even if it is closed
-     * before endpoint 0x37, violates that single-frontend lifetime. */
+    /* The J313/13.5 Asahi contract starts endpoint 0x37 directly after RTKit.
+     * Neither the external iBoot frontend nor the optional system AFK service
+     * belongs to this reduced internal-panel ownership path. */
     else if (!dcp_iomfb_owner_supported()) {
         printf("display: refusing IOMFB ownership outside exact J313/13.5 profile\n");
         dcp_shutdown(dcp, false);
         dcp = NULL;
         return -1;
-    } else if (!dcp_iomfb_owner_start_ordered(
-                   dcp, display_dcp_owner_start_system,
-                   display_dcp_owner_start_iomfb)) {
+    } else if (!dcp_iomfb_owner_start(dcp)) {
         printf("display: IOMFB single-owner bootstrap failed closed\n");
         return -1;
     }

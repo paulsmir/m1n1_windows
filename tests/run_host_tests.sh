@@ -18,7 +18,6 @@ chainload_layout_test
 hv_assisted_layout_test
 display_guest_test
 display_dcp_frontend_test
-dcp_iomfb_owner_lifecycle_test
 dcp_endpoint_owner_test
 dcp_iomfb_latch_test
 dcp_iomfb_transport_test
@@ -128,9 +127,6 @@ for name in "$@"; do
             ;;
         display_dcp_frontend_test)
             sources="$sources src/display_dcp_frontend.c"
-            ;;
-        dcp_iomfb_owner_lifecycle_test)
-            sources="$sources src/dcp_iomfb_owner_lifecycle.c"
             ;;
         dcp_endpoint_owner_test)
             sources="$sources src/dcp_endpoint_owner.c"
