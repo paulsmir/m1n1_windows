@@ -51,7 +51,8 @@ int main(void)
 
     dcp_iomfb_properties_init(&properties, &ops, &fixture);
 
-    value = 6;
+    /* Firmware includes one non-payload terminator in the start length. */
+    value = 7;
     memcpy(input, &value, sizeof(value));
     assert(dcp_iomfb_properties_callback(&properties, 126, input, 4,
                                          output, 4) == 0);

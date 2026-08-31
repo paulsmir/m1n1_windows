@@ -63,13 +63,16 @@ static int start_transfer(struct dcp_iomfb_properties *properties,
                           const void *input, void *output,
                           uint32_t output_size)
 {
-    size_t size = load_u32(input);
+    size_t wire_size = load_u32(input);
+    size_t size;
 
-    if (properties->incoming || !size || size > DCP_IOMFB_PROPERTY_MAX_SIZE ||
+    if (wire_size <= 1 || wire_size - 1 > DCP_IOMFB_PROPERTY_MAX_SIZE ||
+        properties->incoming ||
         !properties->ops || !properties->ops->allocate) {
         store_result(output, output_size, false);
         return -1;
     }
+    size = wire_size - 1;
     properties->incoming = properties->ops->allocate(properties->opaque, size);
     if (!properties->incoming) {
         store_result(output, output_size, false);
