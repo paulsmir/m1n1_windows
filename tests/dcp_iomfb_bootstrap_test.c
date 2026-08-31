@@ -80,6 +80,8 @@ int main(void)
     uint8_t d589[0x6f0];
     uint8_t d124_input[0x64];
     uint8_t d124_output[0x24];
+    uint8_t d576_input[0x54];
+    uint8_t d576_output[0x4c];
 
     memset(&fixture, 0, sizeof(fixture));
     dcp_iomfb_bootstrap_init(&bootstrap, record_call, platform_callback,
@@ -157,6 +159,17 @@ int main(void)
                                          sizeof(d124_output)) == 0);
     assert(memcmp(d124_output, d124_input + 0x44, 8 * sizeof(uint32_t)) == 0);
     assert(d124_output[0x20] == 0);
+
+    memset(d576_input, 0, sizeof(d576_input));
+    memset(d576_output, 0, sizeof(d576_output));
+    for (unsigned int i = 0; i < sizeof(d576_output); i++)
+        d576_input[4 + i] = (uint8_t)(0x40u + i);
+    /* Offset 0x50 is the false/nullability flag for the in/out pointer. */
+    d576_input[0x50] = 0;
+    assert(dcp_iomfb_bootstrap_callback(&bootstrap, "D576", d576_input,
+                                         sizeof(d576_input), d576_output,
+                                         sizeof(d576_output)) == 0);
+    assert(memcmp(d576_output, d576_input + 4, sizeof(d576_output)) == 0);
 
     assert(dcp_iomfb_bootstrap_callback(&bootstrap, "D454", output, 4,
                                          output, 4) < 0);
