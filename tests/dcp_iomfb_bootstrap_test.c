@@ -171,6 +171,14 @@ int main(void)
                                          sizeof(d576_output)) == 0);
     assert(memcmp(d576_output, d576_input + 4, sizeof(d576_output)) == 0);
 
+    d576_input[0x50] = 1;
+    memset(d576_output, 0xff, sizeof(d576_output));
+    assert(dcp_iomfb_bootstrap_callback(&bootstrap, "D576", d576_input,
+                                         sizeof(d576_input), d576_output,
+                                         sizeof(d576_output)) == 0);
+    for (unsigned int i = 0; i < sizeof(d576_output); i++)
+        assert(d576_output[i] == 0);
+
     assert(dcp_iomfb_bootstrap_callback(&bootstrap, "D454", output, 4,
                                          output, 4) < 0);
     assert(dcp_iomfb_bootstrap_state(&bootstrap) == DCP_IOMFB_BOOT_FAILED);

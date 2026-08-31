@@ -166,12 +166,13 @@ int dcp_iomfb_bootstrap_callback(struct dcp_iomfb_bootstrap *bootstrap,
             return fail(bootstrap);
         return 0;
     case 576:
-        /* Firmware 13.5 hotPlug_notify_gated carries a uint followed by a
-         * non-null 0x4c-byte in/out object.  The canonical AP callback is a
-         * notification and leaves that object unchanged. */
-        if (((const uint8_t *)input)[0x50] != 0)
-            return fail(bootstrap);
-        memcpy(output, (const uint8_t *)input + sizeof(uint32_t), output_size);
+        /* Firmware 13.5 hotPlug_notify_gated carries a uint followed by an
+         * optional 0x4c-byte in/out object.  The canonical AP callback is a
+         * notification and leaves a present object unchanged.  A null object
+         * is valid and retains the zero reply prepared above. */
+        if (((const uint8_t *)input)[0x50] == 0)
+            memcpy(output, (const uint8_t *)input + sizeof(uint32_t),
+                   output_size);
         return 0;
     case 3:
         if (!bootstrap->platform ||
