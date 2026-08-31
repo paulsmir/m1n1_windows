@@ -544,7 +544,14 @@ defer_system:
     return rtkit_deferred_push(&rtk->deferred, &deferred) ? 0 : -1;
 }
 
-int rtkit_recv(rtkit_dev_t *rtk, struct rtkit_message *msg)
+enum rtkit_recv_one_result {
+    RTKIT_RECV_ONE_ERROR = -1,
+    RTKIT_RECV_ONE_IDLE = 0,
+    RTKIT_RECV_ONE_APPLICATION = 1,
+    RTKIT_RECV_ONE_SYSTEM = 2,
+};
+
+static int rtkit_recv_one_dispatch(rtkit_dev_t *rtk, struct rtkit_message *msg)
 {
     struct asc_message asc_msg;
     struct rtkit_deferred_message deferred;
@@ -553,28 +560,27 @@ int rtkit_recv(rtkit_dev_t *rtk, struct rtkit_message *msg)
     if (rtk->crashed)
         return -1;
 
-    while (true) {
-        if (rtkit_deferred_pop(&rtk->deferred, &deferred)) {
-            asc_msg.msg0 = deferred.msg;
-            asc_msg.msg1 = deferred.ep;
-        } else if (!asc_recv(rtk->asc, &asc_msg)) {
-            break;
-        }
-        if (asc_msg.msg1 >= 0x100) {
-            rtkit_printf("WARNING: received message for invalid endpoint %x >= 0x100\n",
-                         asc_msg.msg1);
-            continue;
-        }
+    if (rtkit_deferred_pop(&rtk->deferred, &deferred)) {
+        asc_msg.msg0 = deferred.msg;
+        asc_msg.msg1 = deferred.ep;
+    } else if (!asc_recv(rtk->asc, &asc_msg)) {
+        return RTKIT_RECV_ONE_IDLE;
+    }
+    if (asc_msg.msg1 >= 0x100) {
+        rtkit_printf("WARNING: received message for invalid endpoint %x >= 0x100\n",
+                     asc_msg.msg1);
+        return RTKIT_RECV_ONE_SYSTEM;
+    }
 
-        msg->msg = asc_msg.msg0;
-        msg->ep = (u8)asc_msg.msg1;
+    msg->msg = asc_msg.msg0;
+    msg->ep = (u8)asc_msg.msg1;
 
-        /* if this is an app message we can just forward it to the caller */
-        if (msg->ep >= 0x20)
-            return 1;
+    /* if this is an app message we can just forward it to the caller */
+    if (msg->ep >= 0x20)
+        return RTKIT_RECV_ONE_APPLICATION;
 
-        u32 msgtype = FIELD_GET(MGMT_TYPE, msg->msg);
-        switch (msg->ep) {
+    u32 msgtype = FIELD_GET(MGMT_TYPE, msg->msg);
+    switch (msg->ep) {
             case RTKIT_EP_MGMT:
                 switch (msgtype) {
                     case MGMT_MSG_IOP_PWR_STATE_ACK:
@@ -648,15 +654,49 @@ int rtkit_recv(rtkit_dev_t *rtk, struct rtkit_message *msg)
                 break;
             default:
                 rtkit_printf("message to unknown system endpoint 0x%02x: %lx\n", msg->ep, msg->msg);
-        }
-
-        if (!ok) {
-            rtkit_printf("failed to handle system message 0x%02x: %lx\n", msg->ep, msg->msg);
-            return -1;
-        }
     }
 
-    return 0;
+    if (!ok) {
+        rtkit_printf("failed to handle system message 0x%02x: %lx\n", msg->ep, msg->msg);
+        return RTKIT_RECV_ONE_ERROR;
+    }
+
+    return RTKIT_RECV_ONE_SYSTEM;
+}
+
+int rtkit_recv(rtkit_dev_t *rtk, struct rtkit_message *msg)
+{
+    while (true) {
+        int ret = rtkit_recv_one_dispatch(rtk, msg);
+
+        if (ret != RTKIT_RECV_ONE_SYSTEM)
+            return ret;
+    }
+}
+
+bool rtkit_drain_system_bounded(rtkit_dev_t *rtk, unsigned int max_messages,
+                                unsigned int *processed)
+{
+    struct rtkit_message msg;
+    unsigned int count = 0;
+
+    if (!rtk || !processed || !max_messages)
+        return false;
+    *processed = 0;
+    while (count < max_messages) {
+        int ret = rtkit_recv_one_dispatch(rtk, &msg);
+
+        if (ret == RTKIT_RECV_ONE_IDLE) {
+            *processed = count;
+            return true;
+        }
+        if (ret != RTKIT_RECV_ONE_SYSTEM)
+            return false;
+        count++;
+    }
+
+    *processed = count;
+    return false;
 }
 
 bool rtkit_start_ep(rtkit_dev_t *rtk, u8 ep)

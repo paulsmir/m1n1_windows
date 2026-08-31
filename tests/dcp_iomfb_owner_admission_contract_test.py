@@ -9,12 +9,24 @@ start = source.index("bool dcp_iomfb_owner_start(")
 end = source.index("\nbool dcp_iomfb_owner_supported", start)
 body = source[start:end]
 
+settle_system = body.index("dcp_iomfb_drain_pending_system_traffic(")
 start_endpoint = body.index("rtkit_start_ep(")
 init_piodma = body.index("dart_init_adt(")
 allocate_shmem = body.index("rtkit_alloc_buffer_aligned(")
 register_handler = body.index("afk_epic_register_raw_handler(")
 send_shmem = body.index("dcp_iomfb_set_shmem_message(")
 
+assert settle_system < start_endpoint < init_piodma, (
+    "RTKit system traffic must settle before starting the IOMFB endpoint"
+)
+assert "DCP_IOMFB_RTKIT_DRAIN_MAX_MESSAGES" in source
+settle_body = source[source.index(
+    "static bool dcp_iomfb_drain_pending_system_traffic"
+):start]
+assert "rtkit_drain_system_bounded(" in settle_body
+assert "if (!processed)" in settle_body and "return false;" in settle_body, (
+    "the experiment must not start IOMFB when the traffic discriminator is inactive"
+)
 assert start_endpoint < init_piodma, (
     "IOMFB endpoint must start before creating its PIODMA mapping"
 )

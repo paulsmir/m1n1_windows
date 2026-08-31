@@ -239,6 +239,28 @@ static int dcp_iomfb_owner_receive(void *opaque, afk_raw_u8 endpoint,
     return 0;
 }
 
+#define DCP_IOMFB_RTKIT_DRAIN_MAX_MESSAGES 64u
+
+static bool dcp_iomfb_drain_pending_system_traffic(dcp_dev_t *dcp)
+{
+    unsigned int processed = 0;
+
+    if (!rtkit_drain_system_bounded(dcp->rtkit,
+                                    DCP_IOMFB_RTKIT_DRAIN_MAX_MESSAGES,
+                                    &processed)) {
+        printf("dcp-iomfb: bounded RTKit system drain failed after %u messages\n",
+               processed);
+        return false;
+    }
+    if (!processed) {
+        printf("dcp-iomfb: no pending RTKit system traffic; discriminator not active\n");
+        return false;
+    }
+    printf("dcp-iomfb: drained %u pending RTKit system messages before owner START\n",
+           processed);
+    return true;
+}
+
 bool dcp_iomfb_owner_start(dcp_dev_t *dcp)
 {
     int dart_path[8];
@@ -251,6 +273,8 @@ bool dcp_iomfb_owner_start(dcp_dev_t *dcp)
         return false;
     }
     if (adt_path_offset_trace(adt, "/arm-io/dart-disp0", dart_path) < 0)
+        return false;
+    if (!dcp_iomfb_drain_pending_system_traffic(dcp))
         return false;
     if (!rtkit_start_ep(dcp->rtkit, DCP_IOMFB_RPC_ENDPOINT))
         return false;

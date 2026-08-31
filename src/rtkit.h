@@ -35,6 +35,9 @@ bool rtkit_can_recv(rtkit_dev_t *rtk);
 bool rtkit_can_send(rtkit_dev_t *rtk);
 
 int rtkit_recv(rtkit_dev_t *rtk, struct rtkit_message *msg);
+/* Drain at most max_messages already-pending system messages. */
+bool rtkit_drain_system_bounded(rtkit_dev_t *rtk, unsigned int max_messages,
+                                unsigned int *processed);
 /* Consume at most one post-boot mailbox item without logging or allocating. */
 int rtkit_recv_one_quiet(rtkit_dev_t *rtk, struct rtkit_message *msg);
 bool rtkit_send(rtkit_dev_t *rtk, const struct rtkit_message *msg);
