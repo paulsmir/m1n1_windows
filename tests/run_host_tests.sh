@@ -77,6 +77,7 @@ hv_xhci_handoff_test
 iodev_console_backpressure_test
 ringbuffer_test
 rtkit_deferred_test
+rtkit_endpoint_map_test
 rtkit_power_ack_contract_test
 uartproxy_event_test
 usb_dwc3_bulk_state_test
@@ -171,6 +172,9 @@ for name in "$@"; do
             ;;
         cpufreq_state_test)
             sources="$sources src/cpufreq_state.c"
+            ;;
+        rtkit_endpoint_map_test)
+            sources="$sources src/rtkit_endpoint_map.c"
             ;;
         hv_autonomous_manifest_test)
             sources="$sources src/hv_autonomous_manifest.c src/hv_autonomous_profile.c"

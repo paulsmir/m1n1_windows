@@ -4,6 +4,7 @@
 
 #include "rtkit.h"
 #include "rtkit_deferred.h"
+#include "rtkit_endpoint_map.h"
 #include "adt.h"
 #include "asc.h"
 #include "dart.h"
@@ -103,6 +104,7 @@ struct rtkit_dev {
     u32 syslog_cnt, syslog_size;
 
     bool crashed;
+    struct rtkit_endpoint_map endpoints;
     struct rtkit_deferred_queue deferred;
 };
 
@@ -166,6 +168,7 @@ rtkit_dev_t *rtkit_init(const char *name, asc_dev_t *asc, dart_dev_t *dart,
     rtk->ap_power = RTKIT_POWER_OFF;
     rtk->dva_base = 0;
     rtkit_deferred_init(&rtk->deferred);
+    rtkit_endpoint_map_init(&rtk->endpoints);
 
     int iop_node = asc_get_iop_node(asc);
     ADT_GETPROP(adt, iop_node, "asc-dram-mask", &rtk->dva_base);
@@ -660,6 +663,11 @@ bool rtkit_start_ep(rtkit_dev_t *rtk, u8 ep)
 {
     struct asc_message msg;
 
+    if (!rtkit_endpoint_map_contains(&rtk->endpoints, ep)) {
+        rtkit_printf("refusing to start unadvertised endpoint 0x%02x\n", ep);
+        return false;
+    }
+
     msg.msg0 = FIELD_PREP(MGMT_TYPE, MGMT_MSG_START_EP);
     msg.msg0 |= MGMT_MSG_START_EP_FLAG;
     msg.msg0 |= FIELD_PREP(MGMT_MSG_START_EP_IDX, ep);
@@ -755,6 +763,10 @@ bool rtkit_boot(rtkit_dev_t *rtk)
 
         u32 bitmap = FIELD_GET(MGMT_MSG_EPMAP_BITMAP, msg.msg0);
         u32 base = FIELD_GET(MGMT_MSG_EPMAP_BASE, msg.msg0);
+        if (!rtkit_endpoint_map_add_chunk(&rtk->endpoints, base, bitmap)) {
+            rtkit_printf("endpoint map base 0x%x is out of range\n", base);
+            return false;
+        }
         for (unsigned int i = 0; i < 32; i++) {
             if (bitmap & (1U << i)) {
                 u8 ep_idx = 32 * base + i;

@@ -187,6 +187,7 @@ OBJECTS := \
 	proxy_boot_identity.o \
 	ringbuffer.o \
 	rtkit.o \
+	rtkit_endpoint_map.o \
 	rtkit_deferred.o \
 	sart.o \
 	sep.o \
