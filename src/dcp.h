@@ -7,6 +7,12 @@
 #include "asc.h"
 #include "dart.h"
 #include "rtkit.h"
+#include "dcp_iomfb_transport.h"
+#include "dcp_iomfb_rpc.h"
+#include "dcp_iomfb_bootstrap.h"
+#include "dcp_iomfb_properties.h"
+#include "dcp_iomfb_present.h"
+#include "dcp_iomfb_resources.h"
 
 #include "dcp/dpav_ep.h"
 #include "dcp/dptx_port_ep.h"
@@ -28,6 +34,7 @@ typedef struct {
 typedef struct dcp_dev {
     dart_dev_t *dart_dcp;
     dart_dev_t *dart_disp;
+    dart_dev_t *dart_piodma;
     iova_domain_t *iovad_dcp;
     asc_dev_t *asc;
     rtkit_dev_t *rtkit;
@@ -36,6 +43,19 @@ typedef struct dcp_dev {
     dcp_dpav_if_t *dpav_ep;
     dcp_dptx_if_t *dptx_ep;
     dptx_phy_t *phy;
+    struct rtkit_buffer iomfb_shmem;
+    struct dcp_iomfb_transport iomfb_transport;
+    enum dcp_iomfb_rx_result iomfb_last_rx;
+    bool iomfb_observer_registered;
+    bool iomfb_owner_registered;
+    bool iomfb_initialized;
+    struct dcp_iomfb_rpc iomfb_rpc;
+    struct dcp_iomfb_bootstrap iomfb_bootstrap;
+    struct dcp_iomfb_properties iomfb_properties;
+    struct dcp_iomfb_present_request iomfb_present_request;
+    struct dcp_iomfb_resources iomfb_resources;
+    u32 iomfb_expected_swap_id;
+    u32 iomfb_latched_swap_id;
     u32 die;
     u32 dp2hdmi_pwr_gpio;
     u32 hdmi_pwr_gpio;
@@ -43,6 +63,16 @@ typedef struct dcp_dev {
 
 int dcp_connect_dptx(dcp_dev_t *dcp);
 int dcp_work(dcp_dev_t *dcp);
+bool dcp_iomfb_observer_start(dcp_dev_t *dcp);
+void dcp_iomfb_observer_arm(dcp_dev_t *dcp, u32 swap_id);
+int dcp_iomfb_observer_poll_latch(dcp_dev_t *dcp, u32 expected_swap_id);
+bool dcp_iomfb_owner_start(dcp_dev_t *dcp);
+bool dcp_iomfb_owner_supported(void);
+bool dcp_iomfb_owner_active(const dcp_dev_t *dcp);
+void dcp_iomfb_owner_arm(dcp_dev_t *dcp, u32 swap_id);
+int dcp_iomfb_owner_poll_latch(dcp_dev_t *dcp, u32 expected_swap_id);
+int dcp_iomfb_owner_present(dcp_dev_t *dcp, u64 surface_iova, u32 width,
+                            u32 height, u32 stride);
 
 dcp_dev_t *dcp_init(const display_config_t *config);
 

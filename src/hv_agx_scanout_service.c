@@ -1,0 +1,388 @@
+/* SPDX-License-Identifier: MIT */
+
+#include "hv_agx_scanout_service.h"
+
+#include <string.h>
+
+static uint64_t chunk_size(uint64_t completed, uint64_t total)
+{
+    uint64_t remaining = total - completed;
+
+    return remaining < HV_AGX_SCANOUT_SERVICE_CHUNK_SIZE
+               ? remaining
+               : HV_AGX_SCANOUT_SERVICE_CHUNK_SIZE;
+}
+
+static void complete_register_error(struct hv_agx_scanout_service *service,
+                                    struct hv_agx_scanout_broker *broker)
+{
+    hv_agx_scanout_broker_complete_register(
+        broker, service->request.Sequence, service->register_error, 0, 0);
+    service->state = HV_AGX_SCANOUT_SERVICE_IDLE;
+}
+
+static void start_rollback(struct hv_agx_scanout_service *service)
+{
+    service->register_error = HV_AGX_SCANOUT_RESULT_MAP_FAILED;
+    service->state = service->mapped_bytes[HV_AGX_SCANOUT_DART_DCP]
+                         ? HV_AGX_SCANOUT_SERVICE_ROLLBACK_DCP
+                         : HV_AGX_SCANOUT_SERVICE_ROLLBACK_DISPLAY;
+}
+
+static void fail_present(struct hv_agx_scanout_service *service,
+                         struct hv_agx_scanout_broker *broker)
+{
+    hv_agx_scanout_broker_complete_present(
+        broker, service->request.Sequence, HV_AGX_SCANOUT_RESULT_PRESENT_FAILED, 0);
+    service->state = HV_AGX_SCANOUT_SERVICE_IDLE;
+}
+
+static void fail_release(struct hv_agx_scanout_service *service,
+                         struct hv_agx_scanout_broker *broker)
+{
+    hv_agx_scanout_broker_complete_release(
+        broker, service->request.Sequence, HV_AGX_SCANOUT_RESULT_NOT_QUIESCED,
+        false);
+    service->state = HV_AGX_SCANOUT_SERVICE_IDLE;
+}
+
+void hv_agx_scanout_service_init(struct hv_agx_scanout_service *service,
+                                 const struct hv_agx_scanout_platform_ops *ops,
+                                 void *opaque)
+{
+    if (!service)
+        return;
+    memset(service, 0, sizeof(*service));
+    service->ops = ops;
+    service->opaque = opaque;
+    service->state = HV_AGX_SCANOUT_SERVICE_IDLE;
+}
+
+static enum hv_agx_scanout_service_step_result
+take_request(struct hv_agx_scanout_service *service,
+             struct hv_agx_scanout_broker *broker)
+{
+    if (!hv_agx_scanout_broker_take_pending(broker, &service->request))
+        return HV_AGX_SCANOUT_SERVICE_IDLE_STEP;
+
+    switch (service->request.Command) {
+    case HV_AGX_SCANOUT_CMD_REGISTER_POOL:
+        service->validated_bytes = 0;
+        service->pool_pa = 0;
+        service->pool_iova = 0;
+        memset(service->mapped_bytes, 0, sizeof(service->mapped_bytes));
+        memset(service->unmapped_bytes, 0, sizeof(service->unmapped_bytes));
+        service->state = HV_AGX_SCANOUT_SERVICE_VALIDATE;
+        break;
+    case HV_AGX_SCANOUT_CMD_PRESENT:
+        service->state = HV_AGX_SCANOUT_SERVICE_PRESENT_BEGIN;
+        break;
+    case HV_AGX_SCANOUT_CMD_RELEASE:
+        service->state = HV_AGX_SCANOUT_SERVICE_QUIESCE_BEGIN;
+        break;
+    default:
+        return HV_AGX_SCANOUT_SERVICE_IDLE_STEP;
+    }
+    return HV_AGX_SCANOUT_SERVICE_PROGRESSED;
+}
+
+static void validate_pages(struct hv_agx_scanout_service *service)
+{
+    const struct hv_agx_scanout_platform_ops *ops = service->ops;
+
+    if (!ops || !ops->translate || !ops->is_ram) {
+        service->register_error = HV_AGX_SCANOUT_RESULT_UNMAPPED;
+        service->state = HV_AGX_SCANOUT_SERVICE_COMPLETE_REGISTER_ERROR;
+        return;
+    }
+
+    for (unsigned page = 0; page < HV_AGX_SCANOUT_SERVICE_PAGES_PER_STEP &&
+                            service->validated_bytes < service->request.PoolSize;
+         page++) {
+        uint64_t ipa = service->request.PoolIpa + service->validated_bytes;
+        uint64_t pa = 0;
+
+        if (!ops->translate(service->opaque, ipa, &pa)) {
+            service->register_error = HV_AGX_SCANOUT_RESULT_UNMAPPED;
+            service->state = HV_AGX_SCANOUT_SERVICE_COMPLETE_REGISTER_ERROR;
+            return;
+        }
+        if (!ops->is_ram(service->opaque, pa,
+                         HV_AGX_SCANOUT_SERVICE_PAGE_SIZE)) {
+            service->register_error = HV_AGX_SCANOUT_RESULT_NOT_RAM;
+            service->state = HV_AGX_SCANOUT_SERVICE_COMPLETE_REGISTER_ERROR;
+            return;
+        }
+        if ((pa & (HV_AGX_SCANOUT_SERVICE_PAGE_SIZE - 1)) != 0 ||
+            (!service->validated_bytes &&
+             pa > UINT64_MAX - service->request.PoolSize) ||
+            (service->validated_bytes &&
+             pa != service->pool_pa + service->validated_bytes)) {
+            service->register_error = HV_AGX_SCANOUT_RESULT_NONCONTIGUOUS;
+            service->state = HV_AGX_SCANOUT_SERVICE_COMPLETE_REGISTER_ERROR;
+            return;
+        }
+        if (!service->validated_bytes)
+            service->pool_pa = pa;
+        service->validated_bytes += HV_AGX_SCANOUT_SERVICE_PAGE_SIZE;
+    }
+
+    if (service->validated_bytes == service->request.PoolSize)
+        service->state = HV_AGX_SCANOUT_SERVICE_RESERVE_IOVA;
+}
+
+static void reserve_iova(struct hv_agx_scanout_service *service)
+{
+    const struct hv_agx_scanout_platform_ops *ops = service->ops;
+    bool reserved;
+
+    if (!ops || !ops->reserve_iova || !ops->free_iova) {
+        service->register_error = HV_AGX_SCANOUT_RESULT_MAP_FAILED;
+        service->state = HV_AGX_SCANOUT_SERVICE_COMPLETE_REGISTER_ERROR;
+        return;
+    }
+    reserved = ops->reserve_iova(service->opaque, service->request.PoolSize,
+                                 HV_AGX_SCANOUT_SERVICE_PAGE_SIZE,
+                                 &service->pool_iova);
+    if (!reserved || !service->pool_iova ||
+        (service->pool_iova & (HV_AGX_SCANOUT_SERVICE_PAGE_SIZE - 1)) != 0) {
+        if (reserved)
+            ops->free_iova(service->opaque, service->pool_iova,
+                           service->request.PoolSize);
+        service->pool_iova = 0;
+        service->register_error = HV_AGX_SCANOUT_RESULT_MAP_FAILED;
+        service->state = HV_AGX_SCANOUT_SERVICE_COMPLETE_REGISTER_ERROR;
+        return;
+    }
+    service->owns_pool = true;
+    service->state = HV_AGX_SCANOUT_SERVICE_MAP_DISPLAY;
+}
+
+static void map_chunk(struct hv_agx_scanout_service *service,
+                      enum hv_agx_scanout_dart dart)
+{
+    uint64_t completed = service->mapped_bytes[dart];
+    uint64_t size = chunk_size(completed, service->request.PoolSize);
+
+    if (!service->ops || !service->ops->map ||
+        !service->ops->map(service->opaque, dart, service->pool_iova + completed,
+                           service->pool_pa + completed, size)) {
+        start_rollback(service);
+        return;
+    }
+    service->mapped_bytes[dart] += size;
+    if (service->mapped_bytes[dart] != service->request.PoolSize)
+        return;
+    service->state = dart == HV_AGX_SCANOUT_DART_DISPLAY
+                         ? HV_AGX_SCANOUT_SERVICE_MAP_DCP
+                         : HV_AGX_SCANOUT_SERVICE_COMPLETE_REGISTER;
+}
+
+static void rollback_chunk(struct hv_agx_scanout_service *service,
+                           enum hv_agx_scanout_dart dart)
+{
+    uint64_t remaining = service->mapped_bytes[dart] - service->unmapped_bytes[dart];
+    uint64_t size;
+
+    if (!remaining) {
+        service->state = dart == HV_AGX_SCANOUT_DART_DCP
+                             ? HV_AGX_SCANOUT_SERVICE_ROLLBACK_DISPLAY
+                             : HV_AGX_SCANOUT_SERVICE_COMPLETE_REGISTER_ERROR;
+        return;
+    }
+    size = remaining < HV_AGX_SCANOUT_SERVICE_CHUNK_SIZE
+               ? remaining
+               : HV_AGX_SCANOUT_SERVICE_CHUNK_SIZE;
+    service->ops->unmap(service->opaque, dart,
+                        service->pool_iova + remaining - size, size);
+    service->unmapped_bytes[dart] += size;
+}
+
+static void finish_rollback(struct hv_agx_scanout_service *service,
+                            struct hv_agx_scanout_broker *broker)
+{
+    service->ops->free_iova(service->opaque, service->pool_iova,
+                            service->request.PoolSize);
+    service->pool_iova = 0;
+    service->owns_pool = false;
+    complete_register_error(service, broker);
+}
+
+static enum hv_agx_scanout_service_step_result
+poll_present(struct hv_agx_scanout_service *service,
+             struct hv_agx_scanout_broker *broker)
+{
+    uint32_t swap_id = 0;
+    enum hv_agx_scanout_async_result result = service->ops->present_poll(
+        service->opaque, service->async_cookie, &swap_id);
+
+    if (result == HV_AGX_SCANOUT_ASYNC_PENDING)
+        return HV_AGX_SCANOUT_SERVICE_WAITING;
+    if (result != HV_AGX_SCANOUT_ASYNC_APPLIED || !swap_id) {
+        fail_present(service, broker);
+        return HV_AGX_SCANOUT_SERVICE_PROGRESSED;
+    }
+    if (!hv_agx_scanout_broker_complete_present(
+            broker, service->request.Sequence, HV_AGX_SCANOUT_RESULT_OK,
+            swap_id)) {
+        service->state = HV_AGX_SCANOUT_SERVICE_IDLE;
+        return HV_AGX_SCANOUT_SERVICE_PROGRESSED;
+    }
+    service->applied_swap_id = swap_id;
+    if (broker->abi_version == HV_AGX_SCANOUT_ABI_VERSION_V2 &&
+        (broker->capabilities & HV_AGX_SCANOUT_V2_LATCH_CAPABILITIES) ==
+            HV_AGX_SCANOUT_V2_LATCH_CAPABILITIES)
+        service->state = HV_AGX_SCANOUT_SERVICE_PRESENT_LATCH_POLL;
+    else
+        service->state = HV_AGX_SCANOUT_SERVICE_IDLE;
+    return HV_AGX_SCANOUT_SERVICE_PROGRESSED;
+}
+
+static enum hv_agx_scanout_service_step_result
+poll_present_latch(struct hv_agx_scanout_service *service,
+                   struct hv_agx_scanout_broker *broker)
+{
+    enum hv_agx_scanout_latch_result result;
+
+    if (!service->ops || !service->ops->present_latch_poll) {
+        (void)hv_agx_scanout_broker_fail_latch(
+            broker, service->request.Sequence);
+        service->state = HV_AGX_SCANOUT_SERVICE_IDLE;
+        return HV_AGX_SCANOUT_SERVICE_PROGRESSED;
+    }
+    result = service->ops->present_latch_poll(service->opaque,
+                                               service->applied_swap_id);
+    if (result == HV_AGX_SCANOUT_LATCH_PENDING)
+        return HV_AGX_SCANOUT_SERVICE_WAITING;
+    if (result == HV_AGX_SCANOUT_LATCHED)
+        (void)hv_agx_scanout_broker_mark_latched(
+            broker, service->request.Sequence);
+    else
+        (void)hv_agx_scanout_broker_fail_latch(
+            broker, service->request.Sequence);
+    service->state = HV_AGX_SCANOUT_SERVICE_IDLE;
+    return HV_AGX_SCANOUT_SERVICE_PROGRESSED;
+}
+
+static void unmap_release_chunk(struct hv_agx_scanout_service *service,
+                                enum hv_agx_scanout_dart dart)
+{
+    uint64_t remaining = service->mapped_bytes[dart] - service->unmapped_bytes[dart];
+    uint64_t size;
+
+    if (!remaining) {
+        service->state = dart == HV_AGX_SCANOUT_DART_DCP
+                             ? HV_AGX_SCANOUT_SERVICE_UNMAP_DISPLAY
+                             : HV_AGX_SCANOUT_SERVICE_COMPLETE_RELEASE;
+        return;
+    }
+    size = remaining < HV_AGX_SCANOUT_SERVICE_CHUNK_SIZE
+               ? remaining
+               : HV_AGX_SCANOUT_SERVICE_CHUNK_SIZE;
+    service->ops->unmap(service->opaque, dart,
+                        service->pool_iova + remaining - size, size);
+    service->unmapped_bytes[dart] += size;
+}
+
+enum hv_agx_scanout_service_step_result
+hv_agx_scanout_service_step(struct hv_agx_scanout_service *service,
+                            struct hv_agx_scanout_broker *broker)
+{
+    enum hv_agx_scanout_async_result async_result;
+
+    if (!service || !broker)
+        return HV_AGX_SCANOUT_SERVICE_IDLE_STEP;
+
+    switch (service->state) {
+    case HV_AGX_SCANOUT_SERVICE_IDLE:
+        return take_request(service, broker);
+    case HV_AGX_SCANOUT_SERVICE_VALIDATE:
+        validate_pages(service);
+        break;
+    case HV_AGX_SCANOUT_SERVICE_RESERVE_IOVA:
+        reserve_iova(service);
+        break;
+    case HV_AGX_SCANOUT_SERVICE_MAP_DISPLAY:
+        map_chunk(service, HV_AGX_SCANOUT_DART_DISPLAY);
+        break;
+    case HV_AGX_SCANOUT_SERVICE_MAP_DCP:
+        map_chunk(service, HV_AGX_SCANOUT_DART_DCP);
+        break;
+    case HV_AGX_SCANOUT_SERVICE_COMPLETE_REGISTER:
+        hv_agx_scanout_broker_complete_register(
+            broker, service->request.Sequence, HV_AGX_SCANOUT_RESULT_OK,
+            service->pool_pa, service->pool_iova);
+        service->state = HV_AGX_SCANOUT_SERVICE_IDLE;
+        break;
+    case HV_AGX_SCANOUT_SERVICE_ROLLBACK_DCP:
+        rollback_chunk(service, HV_AGX_SCANOUT_DART_DCP);
+        break;
+    case HV_AGX_SCANOUT_SERVICE_ROLLBACK_DISPLAY:
+        rollback_chunk(service, HV_AGX_SCANOUT_DART_DISPLAY);
+        break;
+    case HV_AGX_SCANOUT_SERVICE_COMPLETE_REGISTER_ERROR:
+        if (service->owns_pool)
+            finish_rollback(service, broker);
+        else
+            complete_register_error(service, broker);
+        break;
+    case HV_AGX_SCANOUT_SERVICE_PRESENT_BEGIN:
+        if (!service->owns_pool || !service->ops || !service->ops->present_begin ||
+            !service->ops->present_poll ||
+            !service->ops->present_begin(
+                service->opaque,
+                service->pool_iova + service->request.SurfaceOffset,
+                &service->request, &service->async_cookie)) {
+            fail_present(service, broker);
+            break;
+        }
+        service->state = HV_AGX_SCANOUT_SERVICE_PRESENT_POLL;
+        break;
+    case HV_AGX_SCANOUT_SERVICE_PRESENT_POLL:
+        return poll_present(service, broker);
+    case HV_AGX_SCANOUT_SERVICE_PRESENT_LATCH_POLL:
+        return poll_present_latch(service, broker);
+    case HV_AGX_SCANOUT_SERVICE_QUIESCE_BEGIN:
+        if (!service->owns_pool || !service->ops || !service->ops->quiesce_begin ||
+            !service->ops->quiesce_poll || !service->ops->unmap ||
+            !service->ops->free_iova ||
+            !service->ops->quiesce_begin(service->opaque,
+                                         &service->async_cookie)) {
+            fail_release(service, broker);
+            break;
+        }
+        service->state = HV_AGX_SCANOUT_SERVICE_QUIESCE_POLL;
+        break;
+    case HV_AGX_SCANOUT_SERVICE_QUIESCE_POLL:
+        async_result = service->ops->quiesce_poll(service->opaque,
+                                                  service->async_cookie);
+        if (async_result == HV_AGX_SCANOUT_ASYNC_PENDING)
+            return HV_AGX_SCANOUT_SERVICE_WAITING;
+        if (async_result != HV_AGX_SCANOUT_ASYNC_APPLIED) {
+            fail_release(service, broker);
+            break;
+        }
+        memset(service->unmapped_bytes, 0, sizeof(service->unmapped_bytes));
+        service->state = HV_AGX_SCANOUT_SERVICE_UNMAP_DCP;
+        break;
+    case HV_AGX_SCANOUT_SERVICE_UNMAP_DCP:
+        unmap_release_chunk(service, HV_AGX_SCANOUT_DART_DCP);
+        break;
+    case HV_AGX_SCANOUT_SERVICE_UNMAP_DISPLAY:
+        unmap_release_chunk(service, HV_AGX_SCANOUT_DART_DISPLAY);
+        break;
+    case HV_AGX_SCANOUT_SERVICE_COMPLETE_RELEASE:
+        service->ops->free_iova(service->opaque, service->pool_iova,
+                                service->request.PoolSize);
+        service->owns_pool = false;
+        service->pool_pa = 0;
+        service->pool_iova = 0;
+        memset(service->mapped_bytes, 0, sizeof(service->mapped_bytes));
+        memset(service->unmapped_bytes, 0, sizeof(service->unmapped_bytes));
+        hv_agx_scanout_broker_complete_release(
+            broker, service->request.Sequence, HV_AGX_SCANOUT_RESULT_OK, true);
+        service->state = HV_AGX_SCANOUT_SERVICE_IDLE;
+        break;
+    }
+    return HV_AGX_SCANOUT_SERVICE_PROGRESSED;
+}

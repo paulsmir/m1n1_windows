@@ -3,6 +3,7 @@
 #include "../config.h"
 
 #include "rtkit.h"
+#include "rtkit_deferred.h"
 #include "adt.h"
 #include "asc.h"
 #include "dart.h"
@@ -101,6 +102,7 @@ struct rtkit_dev {
     u32 syslog_cnt, syslog_size;
 
     bool crashed;
+    struct rtkit_deferred_queue deferred;
 };
 
 struct syslog_log {
@@ -162,6 +164,7 @@ rtkit_dev_t *rtkit_init(const char *name, asc_dev_t *asc, dart_dev_t *dart,
     rtk->iop_power = RTKIT_POWER_OFF;
     rtk->ap_power = RTKIT_POWER_OFF;
     rtk->dva_base = 0;
+    rtkit_deferred_init(&rtk->deferred);
 
     int iop_node = asc_get_iop_node(asc);
     ADT_GETPROP(adt, iop_node, "asc-dram-mask", &rtk->dva_base);
@@ -190,6 +193,38 @@ bool rtkit_send(rtkit_dev_t *rtk, const struct rtkit_message *msg)
     asc_msg.msg1 = msg->ep;
 
     return asc_send(rtk->asc, &asc_msg);
+}
+
+bool rtkit_try_send(rtkit_dev_t *rtk, const struct rtkit_message *msg)
+{
+    struct asc_message asc_msg = {
+        .msg0 = msg->msg,
+        .msg1 = msg->ep,
+    };
+
+    return asc_try_send(rtk->asc, &asc_msg);
+}
+
+bool rtkit_try_reserve_send(rtkit_dev_t *rtk, const void *owner)
+{
+    return !rtk->crashed && asc_try_reserve_send(rtk->asc, owner);
+}
+
+bool rtkit_reserve_send(rtkit_dev_t *rtk, const void *owner, u32 delay_usec)
+{
+    return !rtk->crashed && asc_reserve_send(rtk->asc, owner, delay_usec);
+}
+
+bool rtkit_commit_reserved_send(rtkit_dev_t *rtk, const void *owner,
+                                const struct rtkit_message *msg)
+{
+    struct asc_message asc_msg = {.msg0 = msg->msg, .msg1 = msg->ep};
+    return asc_commit_reserved_send(rtk->asc, owner, &asc_msg);
+}
+
+bool rtkit_cancel_reserved_send(rtkit_dev_t *rtk, const void *owner)
+{
+    return asc_cancel_reserved_send(rtk->asc, owner);
 }
 
 bool rtkit_map(rtkit_dev_t *rtk, void *phys, size_t sz, u64 *dva)
@@ -222,6 +257,39 @@ bool rtkit_map(rtkit_dev_t *rtk, void *phys, size_t sz, u64 *dva)
         rtkit_printf("TODO: implement no IOMMU buffers\n");
         return false;
     }
+}
+
+bool rtkit_map_aligned(rtkit_dev_t *rtk, void *phys, size_t sz, size_t alignment,
+                       u64 *dva)
+{
+    sz = ALIGN_UP(sz, SZ_16K);
+    if (!alignment || (alignment & (alignment - 1)) != 0)
+        return false;
+
+    if (rtk->sart) {
+        if (((u64)phys & (alignment - 1)) != 0 ||
+            !sart_add_allowed_region(rtk->sart, phys, sz))
+            return false;
+        *dva = (u64)phys;
+        return true;
+    } else if (rtk->dart) {
+        u64 iova = iova_alloc_aligned(rtk->dart_iovad, sz, alignment);
+        if (!iova)
+            return false;
+        if (dart_map(rtk->dart, iova, phys, sz) < 0) {
+            iova_free(rtk->dart_iovad, iova, sz);
+            return false;
+        }
+        *dva = iova | rtk->dva_base;
+        if ((*dva & (alignment - 1)) != 0) {
+            dart_unmap(rtk->dart, iova & IOVA_MASK, sz);
+            iova_free(rtk->dart_iovad, iova, sz);
+            return false;
+        }
+        return true;
+    }
+
+    return false;
 }
 
 bool rtkit_unmap(rtkit_dev_t *rtk, u64 dva, size_t sz)
@@ -261,6 +329,28 @@ error:
     free(bfr->bfr);
     bfr->bfr = NULL;
     return false;
+}
+
+bool rtkit_alloc_buffer_aligned(rtkit_dev_t *rtk, struct rtkit_buffer *bfr,
+                                size_t sz, size_t alignment)
+{
+    if (!bfr || alignment < SZ_16K || (alignment & (alignment - 1)) != 0)
+        return false;
+
+    memset(bfr, 0, sizeof(*bfr));
+    bfr->bfr = memalign(alignment, sz);
+    if (!bfr->bfr)
+        return false;
+
+    sz = ALIGN_UP(sz, SZ_16K);
+    bfr->sz = sz;
+    if (!rtkit_map_aligned(rtk, bfr->bfr, sz, alignment, &bfr->dva)) {
+        free(bfr->bfr);
+        memset(bfr, 0, sizeof(*bfr));
+        return false;
+    }
+
+    return true;
 }
 
 bool rtkit_free_buffer(rtkit_dev_t *rtk, struct rtkit_buffer *bfr)
@@ -368,15 +458,104 @@ bool rtkit_can_recv(rtkit_dev_t *rtk)
     return asc_can_recv(rtk->asc);
 }
 
+bool rtkit_can_send(rtkit_dev_t *rtk)
+{
+    if (rtk->crashed)
+        return false;
+
+    return asc_can_send(rtk->asc);
+}
+
+int rtkit_recv_one_quiet(rtkit_dev_t *rtk, struct rtkit_message *msg)
+{
+    struct asc_message asc_msg;
+    struct rtkit_deferred_message deferred;
+    u32 msgtype;
+
+    if (rtk->crashed)
+        return -1;
+    /* Do not consume another mailbox item if a system message is already
+     * waiting for the normal (potentially allocating/blocking) dispatcher. */
+    if (rtkit_deferred_full(&rtk->deferred))
+        return 0;
+    if (!asc_recv(rtk->asc, &asc_msg))
+        return 0;
+    if (asc_msg.msg1 >= 0x100)
+        return -1;
+
+    msg->msg = asc_msg.msg0;
+    msg->ep = (u8)asc_msg.msg1;
+    if (msg->ep >= 0x20)
+        return 1;
+
+    msgtype = FIELD_GET(MGMT_TYPE, msg->msg);
+    switch (msg->ep) {
+        case RTKIT_EP_MGMT:
+            if (msgtype == MGMT_MSG_IOP_PWR_STATE_ACK)
+                rtk->iop_power = FIELD_GET(MGMT_PWR_STATE, msg->msg);
+            else if (msgtype == MGMT_MSG_AP_PWR_STATE_ACK)
+                rtk->ap_power = FIELD_GET(MGMT_PWR_STATE, msg->msg);
+            else
+                goto defer_system;
+            return 0;
+
+        case RTKIT_EP_SYSLOG:
+            if (msgtype == MSG_SYSLOG_INIT) {
+                rtk->syslog_cnt = FIELD_GET(MSG_SYSLOG_INIT_COUNT, msg->msg);
+                rtk->syslog_size = FIELD_GET(MSG_SYSLOG_INIT_ENTRYSIZE, msg->msg);
+                return 0;
+            }
+            if (msgtype == MSG_SYSLOG_LOG) {
+                if (asc_try_send(rtk->asc, &asc_msg)) {
+                    return 0;
+                } else {
+                    goto defer_system;
+                }
+            }
+            goto defer_system;
+
+        case RTKIT_EP_CRASHLOG:
+            goto defer_system;
+
+        case RTKIT_EP_IOREPORT:
+            if (msgtype == 0x8 || msgtype == 0xc) {
+                if (asc_try_send(rtk->asc, &asc_msg)) {
+                    return 0;
+                } else {
+                    goto defer_system;
+                }
+            }
+            goto defer_system;
+
+        case RTKIT_EP_OSLOG:
+            goto defer_system;
+
+        default:
+            goto defer_system;
+    }
+
+defer_system:
+    deferred.ep = msg->ep;
+    deferred.msg = msg->msg;
+    return rtkit_deferred_push(&rtk->deferred, &deferred) ? 0 : -1;
+}
+
 int rtkit_recv(rtkit_dev_t *rtk, struct rtkit_message *msg)
 {
     struct asc_message asc_msg;
+    struct rtkit_deferred_message deferred;
     bool ok = true;
 
     if (rtk->crashed)
         return -1;
 
-    while (asc_recv(rtk->asc, &asc_msg)) {
+    while (true) {
+        if (rtkit_deferred_pop(&rtk->deferred, &deferred)) {
+            asc_msg.msg0 = deferred.msg;
+            asc_msg.msg1 = deferred.ep;
+        } else if (!asc_recv(rtk->asc, &asc_msg)) {
+            break;
+        }
         if (asc_msg.msg1 >= 0x100) {
             rtkit_printf("WARNING: received message for invalid endpoint %x >= 0x100\n",
                          asc_msg.msg1);

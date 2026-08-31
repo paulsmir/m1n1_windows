@@ -7,10 +7,24 @@ trap 'rm -rf "$build_dir"' EXIT HUP INT TERM
 cc=${CC:-cc}
 
 all_tests="
+afk_raw_router_test
+afk_command_test
+afk_command_owner_test
+afk_deferred_message_test
+afk_tx_reservation_contract_test
+asc_tx_gate_test
 boot_options_test
 chainload_layout_test
 hv_assisted_layout_test
 display_guest_test
+dcp_iomfb_latch_test
+dcp_iomfb_transport_test
+dcp_iomfb_rpc_test
+dcp_iomfb_v13_5_abi_test
+dcp_iomfb_bootstrap_test
+dcp_iomfb_properties_test
+dcp_iomfb_present_test
+dcp_iomfb_resources_test
 cpufreq_state_test
 hv_autonomous_manifest_test
 hv_bootstrap_manifest_test
@@ -21,6 +35,8 @@ hv_autonomous_stage_test
 hv_autonomous_boot_test
 hv_autonomous_transport_test
 hv_exception_lower_test
+hv_guest_ipa_pa_test
+iova_aligned_fit_test
 hv_diag_test
 hv_fb_stream_test
 hv_fb_stream_usb_limit_test
@@ -49,6 +65,8 @@ hv_wfx_policy_test
 hv_apple_input_contract_test
 hv_agx_config_snapshot_test
 hv_agx_power_broker_test
+hv_agx_scanout_broker_test
+hv_agx_scanout_service_test
 hv_sgi_pending_test
 hv_sgi_diag_test
 hv_vgic_diag_test
@@ -56,6 +74,7 @@ hv_vgic_redist_test
 hv_xhci_handoff_test
 iodev_console_backpressure_test
 ringbuffer_test
+rtkit_deferred_test
 uartproxy_event_test
 usb_dwc3_bulk_state_test
 "
@@ -66,9 +85,30 @@ if [ "$#" -eq 0 ]; then
 fi
 
 for name in "$@"; do
+    if [ "$name" = afk_tx_reservation_contract_test ]; then
+        echo "  PYTEST  $name"
+        python3 tests/afk_tx_reservation_contract_test.py
+        continue
+    fi
     definitions=""
     sources="tests/$name.c"
     case "$name" in
+        afk_raw_router_test)
+            definitions="-DAFK_RAW_ROUTER_HOST_TEST"
+            sources="$sources src/afk_raw_router.c"
+            ;;
+        afk_command_test)
+            sources="$sources src/afk_command.c"
+            ;;
+        afk_command_owner_test)
+            sources="$sources src/afk_command_owner.c"
+            ;;
+        afk_deferred_message_test)
+            sources="$sources src/afk_deferred_message.c"
+            ;;
+        asc_tx_gate_test)
+            sources="$sources src/asc_tx_gate.c"
+            ;;
         boot_options_test)
             definitions="-DBOOT_OPTIONS_HOST_TEST"
             sources="$sources src/boot_options.c"
@@ -82,6 +122,38 @@ for name in "$@"; do
         display_guest_test)
             definitions="-DDISPLAY_GUEST_HOST_TEST"
             sources="$sources src/display_guest.c"
+            ;;
+        dcp_iomfb_latch_test)
+            definitions="-DDCP_IOMFB_LATCH_HOST_TEST"
+            sources="$sources src/dcp_iomfb_latch.c"
+            ;;
+        dcp_iomfb_transport_test)
+            definitions="-DDCP_IOMFB_LATCH_HOST_TEST -DDCP_IOMFB_TRANSPORT_HOST_TEST"
+            sources="$sources src/dcp_iomfb_latch.c src/dcp_iomfb_transport.c"
+            ;;
+        dcp_iomfb_rpc_test)
+            definitions="-DDCP_IOMFB_RPC_HOST_TEST"
+            sources="$sources src/dcp_iomfb_rpc.c"
+            ;;
+        dcp_iomfb_v13_5_abi_test)
+            definitions="-DDCP_IOMFB_V13_5_ABI_HOST_TEST"
+            sources="$sources src/dcp_iomfb_v13_5_abi.c"
+            ;;
+        dcp_iomfb_bootstrap_test)
+            definitions="-DDCP_IOMFB_V13_5_ABI_HOST_TEST -DDCP_IOMFB_BOOTSTRAP_HOST_TEST"
+            sources="$sources src/dcp_iomfb_v13_5_abi.c src/dcp_iomfb_bootstrap.c"
+            ;;
+        dcp_iomfb_properties_test)
+            definitions="-DDCP_IOMFB_PROPERTIES_HOST_TEST"
+            sources="$sources src/dcp_iomfb_properties.c"
+            ;;
+        dcp_iomfb_present_test)
+            definitions="-DDCP_IOMFB_PRESENT_HOST_TEST"
+            sources="$sources src/dcp_iomfb_present.c"
+            ;;
+        dcp_iomfb_resources_test)
+            definitions="-DDCP_IOMFB_RESOURCES_HOST_TEST"
+            sources="$sources src/dcp_iomfb_resources.c"
             ;;
         cpufreq_state_test)
             sources="$sources src/cpufreq_state.c"
@@ -112,6 +184,14 @@ for name in "$@"; do
             ;;
         hv_exception_lower_test)
             definitions="-DHV_EXCEPTION_LOWER_HOST_TEST"
+            ;;
+        hv_guest_ipa_pa_test)
+            definitions="-DHV_GUEST_IPA_PA_HOST_TEST"
+            sources="$sources src/hv_guest_ipa_pa.c"
+            ;;
+        iova_aligned_fit_test)
+            definitions="-DIOVA_ALIGNED_FIT_HOST_TEST"
+            sources="$sources src/iova_aligned_fit.c"
             ;;
         hv_diag_test)
             definitions="-DHV_DIAG_HOST_TEST"
@@ -211,6 +291,14 @@ for name in "$@"; do
             definitions="-DHV_AGX_POWER_BROKER_HOST_TEST"
             sources="$sources src/hv_agx_power_broker.c src/hv_agx_power_platform.c"
             ;;
+        hv_agx_scanout_broker_test)
+            definitions="-DHV_AGX_SCANOUT_BROKER_HOST_TEST"
+            sources="$sources src/hv_agx_scanout_broker.c"
+            ;;
+        hv_agx_scanout_service_test)
+            definitions="-DHV_AGX_SCANOUT_SERVICE_HOST_TEST"
+            sources="$sources src/hv_agx_scanout_broker.c src/hv_agx_scanout_service.c"
+            ;;
         hv_sgi_pending_test)
             definitions="-DHV_SGI_PENDING_HOST_TEST"
             sources="$sources src/hv_sgi_pending.c"
@@ -236,6 +324,9 @@ for name in "$@"; do
         ringbuffer_test)
             definitions="-DRINGBUFFER_HOST_TEST"
             sources="$sources src/ringbuffer.c"
+            ;;
+        rtkit_deferred_test)
+            sources="$sources src/rtkit_deferred.c"
             ;;
         uartproxy_event_test)
             definitions="-DUARTPROXY_EVENT_HOST_TEST"

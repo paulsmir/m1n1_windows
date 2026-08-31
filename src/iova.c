@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: MIT */
 
 #include "iova.h"
+#include "iova_aligned_fit.h"
 #include "malloc.h"
 #include "string.h"
 #include "utils.h"
@@ -163,6 +164,52 @@ u64 iova_alloc(iova_domain_t *iovad, size_t sz)
 
         blk_prev = blk;
         blk = blk->next;
+    }
+
+    return 0;
+}
+
+u64 iova_alloc_aligned(iova_domain_t *iovad, size_t sz, size_t alignment)
+{
+    struct iova_block *blk_prev = NULL;
+    struct iova_block *blk;
+
+    if (!iovad || alignment < SZ_16K || (alignment & (alignment - 1)) != 0)
+        return 0;
+
+    sz = ALIGN_UP(sz, SZ_16K);
+    for (blk = iovad->free_list; blk; blk_prev = blk, blk = blk->next) {
+        u64 start, prefix, suffix;
+
+        if (!iova_aligned_fit(blk->iova, blk->sz, sz, alignment,
+                              &start, &prefix, &suffix))
+            continue;
+
+        if (prefix == 0) {
+            if (suffix == 0) {
+                if (blk_prev)
+                    blk_prev->next = blk->next;
+                else
+                    iovad->free_list = blk->next;
+                free(blk);
+            } else {
+                blk->iova = start + sz;
+                blk->sz = suffix;
+            }
+        } else if (suffix == 0) {
+            blk->sz = prefix;
+        } else {
+            struct iova_block *tail = calloc(1, sizeof(*tail));
+            if (!tail)
+                return 0;
+            tail->iova = start + sz;
+            tail->sz = suffix;
+            tail->next = blk->next;
+            blk->next = tail;
+            blk->sz = prefix;
+        }
+
+        return start;
     }
 
     return 0;

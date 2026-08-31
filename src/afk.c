@@ -1,6 +1,9 @@
 /* SPDX-License-Identifier: MIT */
 
 #include "afk.h"
+#include "afk_command_internal.h"
+#include "afk_command_owner.h"
+#include "afk_deferred_message.h"
 #include "assert.h"
 #include "malloc.h"
 #include "string.h"
@@ -86,6 +89,7 @@ struct afk_epic {
     rtkit_dev_t *rtk;
 
     afk_epic_ep_t *endpoint[0x10];
+    struct afk_raw_router raw_router;
 };
 
 #define AFK_MAX_CHANNEL 8
@@ -105,6 +109,11 @@ struct afk_epic_ep {
 
     bool started;
     u16 seq;
+    u16 command_seq;
+
+    struct afk_epic_command_owner command_owner;
+    struct afk_deferred_message deferred;
+    void *deferred_storage;
 
     u32 num_channels;
 
@@ -179,6 +188,10 @@ static int afk_epic_poll(afk_epic_t *afk, int endpoint, bool block)
     if (ret == 0) {
         return 0;
     }
+
+    int raw_ret = afk_raw_router_dispatch(&afk->raw_router, msg.ep, msg.msg);
+    if (raw_ret != AFK_RAW_NOT_HANDLED)
+        return raw_ret;
 
     if (msg.ep < 0x20 || msg.ep >= 0x30 || !afk->endpoint[msg.ep - 0x20]) {
         printf("EPIC: received message for unexpected endpoint 0x%02x\n", msg.ep);
@@ -268,14 +281,27 @@ static int afk_epic_poll(afk_epic_t *afk, int endpoint, bool block)
     return 0;
 }
 
-static int afk_epic_rx(afk_epic_ep_t *epic, struct afk_qe **qe)
+bool afk_epic_register_raw_handler(afk_epic_t *afk, u8 endpoint,
+                                   afk_raw_message_handler_t handler, void *opaque)
+{
+    return afk && afk_raw_router_register(&afk->raw_router, endpoint, handler, opaque);
+}
+
+bool afk_epic_unregister_raw_handler(afk_epic_t *afk, u8 endpoint,
+                                     afk_raw_message_handler_t handler, void *opaque)
+{
+    return afk && afk_raw_router_unregister(&afk->raw_router, endpoint, handler, opaque);
+}
+
+static int afk_epic_rx_mode(afk_epic_ep_t *epic, struct afk_qe **qe, bool quiet)
 {
     struct afk_rb *rb = &epic->rx;
     u32 rptr = rb->hdr->rptr;
     struct afk_qe *hdr = rb->buf + rptr;
 
     if (hdr->magic != QE_MAGIC) {
-        printf("EPIC: bad queue entry magic!\n");
+        if (!quiet)
+            printf("EPIC: bad queue entry magic!\n");
         return -1;
     }
 
@@ -283,7 +309,8 @@ static int afk_epic_rx(afk_epic_ep_t *epic, struct afk_qe **qe)
         rptr = 0;
         hdr = rb->buf + rptr;
         if (hdr->magic != QE_MAGIC) {
-            printf("EPIC: bad queue entry magic!\n");
+            if (!quiet)
+                printf("EPIC: bad queue entry magic!\n");
             return -1;
         }
         rb->hdr->rptr = rptr;
@@ -294,9 +321,23 @@ static int afk_epic_rx(afk_epic_ep_t *epic, struct afk_qe **qe)
     return 1;
 }
 
-static int afk_epic_tx(afk_epic_ep_t *epic, u32 channel, u32 type, void *data, size_t size)
+static int afk_epic_rx(afk_epic_ep_t *epic, struct afk_qe **qe)
+{
+    return afk_epic_rx_mode(epic, qe, false);
+}
+
+static int afk_epic_tx_mode(afk_epic_ep_t *epic, u32 channel, u32 type, void *data, size_t size,
+                            bool nonblocking, bool quiet)
 {
     struct afk_rb *rb = &epic->tx;
+
+    /* Serialize the entire TX-ring transaction.  Reserving only before the
+     * ASC doorbell is too late: concurrent senders could both select and
+     * populate the same ring slot from an identical stale wptr. */
+    bool reserved = nonblocking ? rtkit_try_reserve_send(epic->afk->rtk, epic) :
+                                  rtkit_reserve_send(epic->afk->rtk, epic, 200000);
+    if (!reserved)
+        return nonblocking ? AFK_EPIC_COMMAND_BUSY : -1;
 
     u32 rptr = rb->hdr->rptr;
     u32 wptr = rb->hdr->wptr;
@@ -342,16 +383,25 @@ static int afk_epic_tx(afk_epic_ep_t *epic, u32 channel, u32 type, void *data, s
         FIELD_PREP(RBEP_TYPE, RBEP_SEND) | FIELD_PREP(SEND_WPTR, wptr),
     };
 
-    if (!rtkit_send(epic->afk->rtk, &msg)) {
-        printf("EPIC: failed to send TX WPTR message\n");
+    bool sent = rtkit_commit_reserved_send(epic->afk->rtk, epic, &msg);
+    if (!sent) {
+        if (!quiet)
+            printf("EPIC: failed to send TX WPTR message\n");
         return -1;
     }
 
     return 1;
 
 buffer_full:
-    printf("EPIC: TX ring buffer is full\n");
-    return -1;
+    assert(rtkit_cancel_reserved_send(epic->afk->rtk, epic));
+    if (!quiet)
+        printf("EPIC: TX ring buffer is full\n");
+    return quiet ? AFK_EPIC_COMMAND_BUSY : -1;
+}
+
+static int afk_epic_tx(afk_epic_ep_t *epic, u32 channel, u32 type, void *data, size_t size)
+{
+    return afk_epic_tx_mode(epic, channel, type, data, size, false, false);
 }
 
 static void afk_epic_rx_ack(afk_epic_ep_t *epic)
@@ -380,6 +430,11 @@ int afk_epic_work(afk_epic_t *afk, int endpoint)
     while (i < 0x10) {
         afk_epic_ep_t *cur = afk->endpoint[i++];
         if (cur) {
+            if (cur->deferred.valid) {
+                int ret = afk_epic_dispatch_deferred(cur);
+                if (ret < 0)
+                    return ret;
+            }
             struct afk_rb *rb = &cur->rx;
             if (rb->hdr->rptr != rb->hdr->wptr) {
                 if (cur->ep == endpoint) {
@@ -493,8 +548,31 @@ static int afk_epic_handle_std_service(afk_epic_ep_t *epic, int channel, u8 cate
     return -1;
 }
 
-int afk_epic_command(afk_epic_ep_t *epic, int channel, u16 sub_type, void *txbuf, size_t txsize,
-                     void *rxbuf, size_t *rxsize)
+int afk_epic_command_backend_claim(afk_epic_ep_t *epic, afk_epic_command_t *command)
+{
+    return afk_epic_command_owner_claim(&epic->command_owner, command);
+}
+
+void afk_epic_command_backend_release(afk_epic_ep_t *epic, afk_epic_command_t *command)
+{
+    bool released = afk_epic_command_owner_release(&epic->command_owner, command);
+    assert(released);
+}
+
+void afk_epic_command_backend_poison(afk_epic_ep_t *epic, afk_epic_command_t *command)
+{
+    struct afk_epic_command_identity identity = {
+        .channel = command->channel,
+        .sub_type = command->sub_type,
+        .sequence = command->sequence,
+    };
+
+    bool poisoned = afk_epic_command_owner_poison(&epic->command_owner, command, &identity);
+    assert(poisoned);
+}
+
+int afk_epic_command_backend_submit(afk_epic_ep_t *epic, u32 channel, u16 sub_type,
+                                    const void *txbuf, size_t txsize, size_t rxsize, u16 *sequence)
 {
     struct {
         struct epic_hdr hdr;
@@ -502,8 +580,8 @@ int afk_epic_command(afk_epic_ep_t *epic, int channel, u16 sub_type, void *txbuf
         struct epic_cmd cmd;
     } PACKED msg;
 
-    assert(txsize <= epic->txbuf.sz);
-    assert(!rxsize || *rxsize <= epic->rxbuf.sz);
+    if (txsize > epic->txbuf.sz || rxsize > epic->rxbuf.sz)
+        return AFK_EPIC_COMMAND_OVERFLOW;
 
     memset(&msg, 0, sizeof(msg));
 
@@ -513,79 +591,179 @@ int afk_epic_command(afk_epic_ep_t *epic, int channel, u16 sub_type, void *txbuf
     msg.sub.version = 4;
     msg.sub.category = CAT_COMMAND;
     msg.sub.type = sub_type;
-    msg.sub.seq = 0;
+    msg.sub.seq = epic->command_seq++;
     msg.cmd.txbuf = epic->txbuf.dva;
     msg.cmd.txlen = txsize;
     msg.cmd.rxbuf = epic->rxbuf.dva;
-    msg.cmd.rxlen = rxsize ? *rxsize : 0;
+    msg.cmd.rxlen = rxsize;
 
-    memcpy(epic->txbuf.bfr, txbuf, txsize);
+    if (txsize)
+        memcpy(epic->txbuf.bfr, txbuf, txsize);
 
-    int ret = afk_epic_tx(epic, channel, TYPE_COMMAND, &msg, sizeof msg);
-    if (ret < 0) {
-        printf("EPIC: failed to transmit command\n");
+    int ret = afk_epic_tx_mode(epic, channel, TYPE_COMMAND, &msg, sizeof msg, true, true);
+    if (ret < 0)
         return ret;
+
+    *sequence = msg.sub.seq;
+    return 0;
+}
+
+static int afk_epic_command_transport_step(afk_epic_ep_t *epic)
+{
+    struct rtkit_message msg;
+    int ret;
+
+    if (!rtkit_can_recv(epic->afk->rtk))
+        return 0;
+
+    ret = rtkit_recv_one_quiet(epic->afk->rtk, &msg);
+    if (ret <= 0)
+        return ret;
+
+    if (msg.ep < 0x20 || msg.ep >= 0x30)
+        return 0;
+
+    afk_epic_ep_t *target = epic->afk->endpoint[msg.ep - 0x20];
+    if (!target || FIELD_GET(RBEP_TYPE, msg.msg) != RBEP_RECV)
+        return 0;
+
+    dma_rmb();
+    return target == epic && epic->rx.hdr->rptr != epic->rx.hdr->wptr;
+}
+
+int afk_epic_command_backend_poll_one(afk_epic_ep_t *epic, struct afk_epic_command_reply *reply)
+{
+    struct afk_qe *rmsg;
+    struct epic_hdr *hdr;
+    struct epic_sub_hdr *sub;
+    struct epic_cmd *rcmd;
+    size_t min_reply_size = sizeof(*hdr) + sizeof(*sub) + sizeof(*rcmd);
+    int ret;
+
+    if (epic->rx.hdr->rptr == epic->rx.hdr->wptr) {
+        ret = afk_epic_command_transport_step(epic);
+        if (ret < 0)
+            return ret;
+        if (epic->rx.hdr->rptr == epic->rx.hdr->wptr)
+            return 0;
     }
 
-    struct afk_qe *rmsg;
-    struct epic_cmd *rcmd;
+    ret = afk_epic_rx_mode(epic, &rmsg, true);
+    if (ret < 0)
+        return ret;
+    if (rmsg->size < sizeof(*hdr) + sizeof(*sub)) {
+        if (!afk_deferred_message_store(&epic->deferred, rmsg->channel, rmsg->type,
+                                        rmsg->data, rmsg->size))
+            return 0;
+        afk_epic_rx_ack(epic);
+        return 0;
+    }
+
+    memset(reply, 0, sizeof(*reply));
+    hdr = (void *)(rmsg + 1);
+    sub = (void *)(hdr + 1);
+    reply->channel = rmsg->channel;
+    reply->type = rmsg->type;
+    reply->category = sub->category;
+    reply->sub_type = sub->type;
+    reply->sequence = sub->seq;
+
+    if (rmsg->type != TYPE_REPLY || sub->category != CAT_REPLY) {
+        if (!afk_deferred_message_store(&epic->deferred, rmsg->channel, rmsg->type,
+                                        rmsg->data, rmsg->size))
+            return 0;
+        afk_epic_rx_ack(epic);
+        return 0;
+    }
+    if (rmsg->size < min_reply_size || sub->length < sizeof(*rcmd) ||
+        sub->length > rmsg->size - sizeof(*hdr) - sizeof(*sub)) {
+        afk_epic_rx_ack(epic);
+        return AFK_EPIC_COMMAND_INVALID;
+    }
+
+    rcmd = (void *)(sub + 1);
+    reply->retcode = rcmd->retcode;
+    reply->rxlen = rcmd->rxlen;
+    reply->rxbuf_matches = rcmd->rxbuf == epic->rxbuf.dva;
+    return 1;
+}
+
+void afk_epic_command_backend_consume(afk_epic_ep_t *epic)
+{
+    afk_epic_rx_ack(epic);
+}
+
+void afk_epic_command_backend_copy_reply(afk_epic_ep_t *epic, void *rxbuf, size_t rxsize)
+{
+    memcpy(rxbuf, epic->rxbuf.bfr, rxsize);
+}
+
+int afk_epic_command_reap(afk_epic_ep_t *epic)
+{
+    struct afk_epic_command_reply reply;
+    int ret;
+
+    if (!epic || !afk_epic_command_owner_is_poisoned(&epic->command_owner))
+        return 1;
+    ret = afk_epic_command_backend_poll_one(epic, &reply);
+    if (ret <= 0)
+        return ret;
+    afk_epic_command_backend_consume(epic);
+    return afk_epic_command_owner_retire_poison(&epic->command_owner, &reply) ? 1 : 0;
+}
+
+int afk_epic_dispatch_deferred(afk_epic_ep_t *epic)
+{
+    struct afk_deferred_view view;
+    struct epic_hdr *hdr;
+    struct epic_sub_hdr *sub;
+    int ret = 0;
+
+    if (!epic || !afk_deferred_message_take(&epic->deferred, &view))
+        return 0;
+    if (view.size < sizeof(*hdr) + sizeof(*sub)) {
+        ret = AFK_EPIC_COMMAND_INVALID;
+        goto out;
+    }
+    hdr = (void *)view.data;
+    sub = (void *)(hdr + 1);
+    if (sub->category == CAT_NOTIFY && sub->type == SUBTYPE_STD_SERVICE) {
+        size_t header_size = sizeof(*hdr) + sizeof(*sub);
+        ret = afk_epic_handle_std_service(epic, view.channel, sub->category, sub->seq,
+                                          (void *)view.data + header_size,
+                                          view.size - header_size);
+    } else {
+        dprintf("EPIC[0x%02x]: deferred message ch=%u type=%u cat=%x sub=%x\n", epic->ep,
+                view.channel, view.type, sub->category, sub->type);
+    }
+out:
+    afk_deferred_message_release(&epic->deferred);
+    return ret;
+}
+
+#define AFK_EPIC_COMMAND_TIMEOUT_USEC 500000
+
+int afk_epic_command(afk_epic_ep_t *epic, int channel, u16 sub_type, void *txbuf, size_t txsize,
+                     void *rxbuf, size_t *rxsize)
+{
+    afk_epic_command_t command;
+    size_t rx_capacity = rxsize ? *rxsize : 0;
+    int ret;
+
+    afk_epic_command_init(&command);
+    ret = afk_epic_command_submit(&command, epic, channel, sub_type, txbuf, txsize, rxbuf,
+                                  rx_capacity, timeout_calculate(AFK_EPIC_COMMAND_TIMEOUT_USEC));
+    if (ret)
+        return ret;
 
     while (true) {
-        ret = afk_epic_work(epic->afk, epic->ep);
-        if (ret < 0)
-            return ret;
-        else if (ret != EPIC_DATA_READY)
+        enum afk_epic_command_poll_result poll = afk_epic_command_poll(&command, get_ticks());
+        if (poll == AFK_EPIC_COMMAND_PENDING)
             continue;
-        // will not block
-        ret = afk_epic_rx(epic, &rmsg);
-        if (ret < 0)
-            return ret;
-
-        if (rmsg->type != TYPE_REPLY && rmsg->type != TYPE_NOTIFY) {
-            printf("EPIC: got unexpected message type %d during command\n", rmsg->type);
-            afk_epic_rx_ack(epic);
-            continue;
-        }
-
-        struct epic_hdr *hdr = (void *)(rmsg + 1);
-        struct epic_sub_hdr *sub = (void *)(hdr + 1);
-
-        if (sub->category == CAT_NOTIFY && sub->type == SUBTYPE_STD_SERVICE) {
-            void *payload = rmsg->data + sizeof(struct epic_hdr) + sizeof(struct epic_sub_hdr);
-            size_t payload_size =
-                rmsg->size - sizeof(struct epic_hdr) - sizeof(struct epic_sub_hdr);
-            afk_epic_rx_ack(epic);
-            afk_epic_handle_std_service(epic, channel, sub->category, sub->seq, payload,
-                                        payload_size);
-            continue;
-        } else if (sub->category != CAT_REPLY || sub->type != sub_type) {
-            printf("EPIC: got unexpected message %02x:%04x during command\n", sub->category,
-                   sub->type);
-            afk_epic_rx_ack(epic);
-            continue;
-        }
-
-        rcmd = (void *)(sub + 1);
-        break;
+        if (poll == AFK_EPIC_COMMAND_COMPLETE && rxsize)
+            *rxsize = afk_epic_command_reply_size(&command);
+        return afk_epic_command_result(&command);
     }
-
-    if (rcmd->retcode != 0) {
-        printf("EPIC: IOP returned 0x%x\n", rcmd->retcode);
-        afk_epic_rx_ack(epic);
-        return rcmd->retcode; // should be negative already
-    }
-
-    if (rxsize) {
-        assert(*rxsize >= rcmd->rxlen);
-        *rxsize = rcmd->rxlen;
-
-        if (*rxsize && rcmd->rxbuf)
-            memcpy(rxbuf, epic->rxbuf.bfr, *rxsize);
-    }
-
-    afk_epic_rx_ack(epic);
-
-    return 0;
 }
 
 static void afk_epic_notify_handler(afk_epic_ep_t *epic)
@@ -629,6 +807,7 @@ afk_epic_ep_t *afk_epic_start_ep(afk_epic_t *afk, int endpoint, const afk_epic_s
     epic->ep = endpoint;
     epic->afk = afk;
     epic->ops = ops;
+    afk_epic_command_owner_init(&epic->command_owner);
     afk->endpoint[endpoint - 0x20] = epic;
 
     if (notify)
@@ -653,9 +832,15 @@ afk_epic_ep_t *afk_epic_start_ep(afk_epic_t *afk, int endpoint, const afk_epic_s
             printf("EPIC: received unexpected message during init\n");
     }
 
+    epic->deferred_storage = calloc(1, epic->rx.bufsz);
+    if (!epic->deferred_storage)
+        goto err;
+    afk_deferred_message_init(&epic->deferred, epic->deferred_storage, epic->rx.bufsz);
+
     return epic;
 
 err:
+    free(epic->deferred_storage);
     afk->endpoint[endpoint - 0x20] = NULL;
     free(epic);
     return NULL;
@@ -672,9 +857,11 @@ int afk_epic_shutdown_ep(afk_epic_ep_t *epic)
     while (epic->started) {
         int ret = afk_epic_poll(epic->afk, epic->ep, true);
         if (ret < 0)
-            break;
+            return ret;
     }
 
+    afk_epic_command_owner_reset(&epic->command_owner);
+    free(epic->deferred_storage);
     rtkit_free_buffer(epic->afk->rtk, &epic->buf);
     rtkit_free_buffer(epic->afk->rtk, &epic->rxbuf);
     rtkit_free_buffer(epic->afk->rtk, &epic->txbuf);
@@ -845,6 +1032,7 @@ afk_epic_t *afk_epic_init(rtkit_dev_t *rtkit)
         return NULL;
 
     afk->rtk = rtkit;
+    afk_raw_router_init(&afk->raw_router);
 
     return afk;
 }

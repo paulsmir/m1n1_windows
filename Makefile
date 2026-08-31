@@ -69,6 +69,15 @@ endif
 ifeq ($(APPLE_INPUT),0)
 CFG += HV_DISABLE_APPLE_INPUT
 endif
+ifeq ($(IOMFB_FULL_OWNER),1)
+CFG += DCP_IOMFB_FULL_OWNER
+endif
+ifeq ($(IOMFB_LATCH_OBSERVER),1)
+CFG += DCP_IOMFB_LATCH_OBSERVER
+endif
+ifeq ($(IOMFB_FULL_OWNER)$(IOMFB_LATCH_OBSERVER),11)
+$(error IOMFB_FULL_OWNER and IOMFB_LATCH_OBSERVER are mutually exclusive)
+endif
 
 # Required for no_std + alloc for now
 export RUSTC_BOOTSTRAP=1
@@ -109,8 +118,13 @@ DCP_OBJECTS := $(patsubst %,dcp/%, \
 OBJECTS := \
 	adt.o \
 	afk.o \
+	afk_raw_router.o \
+	afk_command.o \
+	afk_command_owner.o \
+	afk_deferred_message.o \
 	aic.o \
 	asc.o \
+	asc_tx_gate.o \
 	bootlogo_48.o bootlogo_128.o bootlogo_256.o \
 	boot_options.o \
 	chainload.o \
@@ -134,6 +148,14 @@ OBJECTS := \
 	dart.o \
 	dcp.o \
 	dcp_iboot.o \
+	dcp_iomfb_latch.o \
+	dcp_iomfb_rpc.o \
+	dcp_iomfb_v13_5_abi.o \
+	dcp_iomfb_bootstrap.o \
+	dcp_iomfb_properties.o \
+	dcp_iomfb_present.o \
+	dcp_iomfb_resources.o \
+	dcp_iomfb_transport.o \
 	devicetree.o \
 	display.o \
 	display_guest.o \
@@ -142,12 +164,13 @@ OBJECTS := \
 	firmware.o \
 	gxf.o gxf_asm.o \
 	heapblock.o \
-	hv.o hv_vm.o hv_exc.o hv_fiq_fast_path.o hv_vuart.o hv_pl011.o hv_pci.o hv_nvme.o hv_nvme_fast_path.o hv_nvme_queue.o hv_fb_stream.o hv_diag.o hv_irq_routes.o hv_apple_input.o hv_agx_g2_policy.o hv_agx_config_snapshot.o hv_agx_power_broker.o hv_agx_power_platform.o hv_agx_power_mmio.o hv_sgi_diag.o hv_sgi_pending.o hv_xhci_handoff.o hv_bootstrap.o hv_bootstrap_manifest.o hv_autonomous_manifest.o hv_autonomous_memory.o hv_autonomous.o hv_autonomous_runtime.o hv_autonomous_boot.o hv_autonomous_boot_runtime.o hv_wdt.o hv_asm.o hv_aic.o hv_virtio.o hv_psci.o hv_vgic.o hv_vgic_diag.o hv_vgic_redist.o \
+	hv.o hv_vm.o hv_exc.o hv_guest_ipa_pa.o hv_fiq_fast_path.o hv_vuart.o hv_pl011.o hv_pci.o hv_nvme.o hv_nvme_fast_path.o hv_nvme_queue.o hv_fb_stream.o hv_diag.o hv_irq_routes.o hv_apple_input.o hv_agx_g2_policy.o hv_agx_config_snapshot.o hv_agx_power_broker.o hv_agx_scanout_broker.o hv_agx_scanout_service.o hv_agx_power_platform.o hv_agx_power_mmio.o hv_sgi_diag.o hv_sgi_pending.o hv_xhci_handoff.o hv_bootstrap.o hv_bootstrap_manifest.o hv_autonomous_manifest.o hv_autonomous_memory.o hv_autonomous.o hv_autonomous_runtime.o hv_autonomous_boot.o hv_autonomous_boot_runtime.o hv_wdt.o hv_asm.o hv_aic.o hv_virtio.o hv_psci.o hv_vgic.o hv_vgic_diag.o hv_vgic_redist.o \
 	hv_tick_policy.o \
 	hv_autonomous_profile.o hv_assisted_layout.o hv_launch_golden_j313.o \
 	i2c.o \
 	iodev.o \
 	iova.o \
+	iova_aligned_fit.o \
 	isp.o \
 	kboot.o kboot_atc.o \
 	main.o \
@@ -162,6 +185,7 @@ OBJECTS := \
 	proxy_boot_identity.o \
 	ringbuffer.o \
 	rtkit.o \
+	rtkit_deferred.o \
 	sart.o \
 	sep.o \
 	sio.o \

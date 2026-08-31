@@ -32,14 +32,27 @@ bool rtkit_start_ep(rtkit_dev_t *rtk, u8 ep);
 bool rtkit_boot(rtkit_dev_t *rtk);
 
 bool rtkit_can_recv(rtkit_dev_t *rtk);
+bool rtkit_can_send(rtkit_dev_t *rtk);
 
 int rtkit_recv(rtkit_dev_t *rtk, struct rtkit_message *msg);
+/* Consume at most one post-boot mailbox item without logging or allocating. */
+int rtkit_recv_one_quiet(rtkit_dev_t *rtk, struct rtkit_message *msg);
 bool rtkit_send(rtkit_dev_t *rtk, const struct rtkit_message *msg);
+bool rtkit_try_send(rtkit_dev_t *rtk, const struct rtkit_message *msg);
+bool rtkit_try_reserve_send(rtkit_dev_t *rtk, const void *owner);
+bool rtkit_reserve_send(rtkit_dev_t *rtk, const void *owner, u32 delay_usec);
+bool rtkit_commit_reserved_send(rtkit_dev_t *rtk, const void *owner,
+                                const struct rtkit_message *msg);
+bool rtkit_cancel_reserved_send(rtkit_dev_t *rtk, const void *owner);
 
 bool rtkit_map(rtkit_dev_t *rtk, void *phys, size_t sz, u64 *dva);
+bool rtkit_map_aligned(rtkit_dev_t *rtk, void *phys, size_t sz, size_t alignment,
+                       u64 *dva);
 bool rtkit_unmap(rtkit_dev_t *rtk, u64 dva, size_t sz);
 
 bool rtkit_alloc_buffer(rtkit_dev_t *rtk, struct rtkit_buffer *bfr, size_t sz);
+bool rtkit_alloc_buffer_aligned(rtkit_dev_t *rtk, struct rtkit_buffer *bfr,
+                                size_t sz, size_t alignment);
 bool rtkit_free_buffer(rtkit_dev_t *rtk, struct rtkit_buffer *bfr);
 
 #endif

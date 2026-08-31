@@ -26,6 +26,14 @@ bool asc_can_send(asc_dev_t *asc);
 
 bool asc_recv(asc_dev_t *asc, struct asc_message *msg);
 bool asc_recv_timeout(asc_dev_t *asc, struct asc_message *msg, u32 delay_usec);
+bool asc_try_send(asc_dev_t *asc, const struct asc_message *msg);
 bool asc_send(asc_dev_t *asc, const struct asc_message *msg);
+/* Reserve the sole A2I mailbox slot before publishing any shared producer
+ * state.  owner must remain stable until commit or cancel. */
+bool asc_try_reserve_send(asc_dev_t *asc, const void *owner);
+bool asc_reserve_send(asc_dev_t *asc, const void *owner, u32 delay_usec);
+bool asc_commit_reserved_send(asc_dev_t *asc, const void *owner,
+                              const struct asc_message *msg);
+bool asc_cancel_reserved_send(asc_dev_t *asc, const void *owner);
 
 #endif

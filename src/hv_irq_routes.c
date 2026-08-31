@@ -13,8 +13,15 @@ static const struct hv_irq_route routes[] = {
     {.hw_irq = 857, .vintid = 857, .level = true},
 };
 
+static const struct hv_agx_g2_interrupt_route agx_g2_routes[] =
+    HV_AGX_G2_INTERRUPT_ROUTE_VALUES;
+
 static struct hv_irq_route dynamic_routes[HV_IRQ_DYNAMIC_ROUTE_CAPACITY];
 static size_t dynamic_route_count;
+
+_Static_assert(sizeof(agx_g2_routes) / sizeof(agx_g2_routes[0]) ==
+                   HV_AGX_G2_INTERRUPT_ROUTE_COUNT,
+               "generated AGX G2 route count");
 
 size_t hv_irq_route_count(void)
 {
@@ -86,6 +93,18 @@ bool hv_irq_route_register(u32 hw_irq, u32 vintid, bool level)
 
     dynamic_routes[dynamic_route_count++] =
         (struct hv_irq_route){.hw_irq = hw_irq, .vintid = vintid, .level = level};
+    return true;
+}
+
+bool hv_irq_routes_register_agx_g2(void)
+{
+    for (size_t i = 0; i < HV_AGX_G2_INTERRUPT_ROUTE_COUNT; i++) {
+        if (!hv_irq_route_register(agx_g2_routes[i].physical_intid,
+                                   agx_g2_routes[i].guest_intid,
+                                   (bool)HV_AGX_G2_INTERRUPT_LEVEL))
+            return false;
+    }
+
     return true;
 }
 

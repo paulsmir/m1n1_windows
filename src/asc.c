@@ -2,6 +2,8 @@
 
 #include "adt.h"
 #include "asc.h"
+#include "asc_tx_gate.h"
+#include "assert.h"
 #include "malloc.h"
 #include "utils.h"
 
@@ -27,6 +29,7 @@ struct asc_dev {
     uintptr_t cpu_base;
     uintptr_t base;
     int iop_node;
+    struct asc_tx_gate tx_gate;
 };
 
 asc_dev_t *asc_init(const char *path)
@@ -51,6 +54,7 @@ asc_dev_t *asc_init(const char *path)
     asc->iop_node = adt_first_child_offset(adt, node);
     asc->cpu_base = base;
     asc->base = base + 0x8000;
+    asc_tx_gate_init(&asc->tx_gate);
 
     // clear32(base + ASC_CPU_CONTROL, ASC_CPU_CONTROL_START);
     return asc;
@@ -115,17 +119,62 @@ bool asc_can_send(asc_dev_t *asc)
     return !(read32(asc->base + ASC_MBOX_A2I_CONTROL) & ASC_MBOX_CONTROL_FULL);
 }
 
-bool asc_send(asc_dev_t *asc, const struct asc_message *msg)
+static void asc_send_unchecked(asc_dev_t *asc, const struct asc_message *msg)
 {
-    if (poll32(asc->base + ASC_MBOX_A2I_CONTROL, ASC_MBOX_CONTROL_FULL, 0, 200000)) {
-        printf("asc: A2I mailbox full for 200ms. Is the ASC stuck?");
-        return false;
-    }
-
     dma_wmb();
     write64(asc->base + ASC_MBOX_A2I_SEND0, msg->msg0);
     write64(asc->base + ASC_MBOX_A2I_SEND1, msg->msg1);
+}
 
-    // printf("sent msg: %lx %x\n", msg->msg0, msg->msg1);
+bool asc_try_send(asc_dev_t *asc, const struct asc_message *msg)
+{
+    if (!asc_try_reserve_send(asc, msg))
+        return false;
+    return asc_commit_reserved_send(asc, msg, msg);
+}
+
+bool asc_send(asc_dev_t *asc, const struct asc_message *msg)
+{
+    if (!asc_reserve_send(asc, msg, 200000)) {
+        printf("asc: A2I mailbox full for 200ms. Is the ASC stuck?");
+        return false;
+    }
+    return asc_commit_reserved_send(asc, msg, msg);
+}
+
+bool asc_try_reserve_send(asc_dev_t *asc, const void *owner)
+{
+    if (!asc_tx_gate_try_acquire(&asc->tx_gate, owner))
+        return false;
+    if (!asc_can_send(asc)) {
+        bool released = asc_tx_gate_release(&asc->tx_gate, owner);
+        assert(released);
+        return false;
+    }
     return true;
+}
+
+bool asc_reserve_send(asc_dev_t *asc, const void *owner, u32 delay_usec)
+{
+    u64 deadline = timeout_calculate(delay_usec);
+
+    do {
+        if (asc_try_reserve_send(asc, owner))
+            return true;
+    } while (!timeout_expired(deadline));
+    return false;
+}
+
+bool asc_commit_reserved_send(asc_dev_t *asc, const void *owner,
+                              const struct asc_message *msg)
+{
+    asc_send_unchecked(asc, msg);
+    bool released = asc_tx_gate_release(&asc->tx_gate, owner);
+    assert(released);
+    return released;
+}
+
+bool asc_cancel_reserved_send(asc_dev_t *asc, const void *owner)
+{
+    return asc_tx_gate_release(&asc->tx_gate, owner);
 }

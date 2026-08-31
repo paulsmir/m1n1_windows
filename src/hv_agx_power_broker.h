@@ -87,5 +87,6 @@ bool hv_agx_power_broker_mmio(struct hv_agx_power_broker *broker, uint64_t offse
                               uint64_t *value, bool write, unsigned width);
 const struct hv_agx_power_ops *hv_agx_power_j313_ops(void);
 bool hv_agx_g2_resources_map(void);
+void hv_agx_scanout_service_run_once(void);
 
 #endif

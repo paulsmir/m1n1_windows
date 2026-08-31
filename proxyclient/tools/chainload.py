@@ -92,6 +92,12 @@ if args.xnu:
             if hasattr(nub, "segment_names"):
                 remove_oslog(nub)
 
+# IOMFB D209 requires calendar milliseconds rather than a fabricated
+# monotonic value. Assisted chainloads have an authoritative host clock, so
+# carry one exact snapshot in the copied ADT. The next m1n1 stage owns this
+# copy; the source ADT and every unrelated launch property remain unchanged.
+u.adt["chosen"].m1n1_iomfb_utc_ms = time.time_ns() // 1_000_000
+
 print("Setting secondary CPU RVBARs...")
 
 rvbar = entry & ~0xfff

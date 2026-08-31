@@ -44,7 +44,7 @@
 #define NVME_CAP_VALUE    ((VNVME_MAX_QSIZE - 1ULL) | BIT(16) | (10ULL << 24) | (1ULL << 37))
 #define NVME_VS_VALUE     0x00010300
 #define NVME_BAR_SIZE     0x1000000
-#define NVME_TRACE_BUDGET 64
+#define NVME_TRACE_BUDGET 192
 
 extern int hv_pci_intx_irq(void);
 

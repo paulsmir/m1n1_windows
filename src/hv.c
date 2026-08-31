@@ -194,6 +194,10 @@ bool hv_init(void)
      * It only maps reviewed resources and routes the level interrupt; the
      * Windows driver remains the sole owner of SPI/GPIO programming. */
     hv_irq_routes_reset_dynamic();
+    if (!hv_irq_routes_register_agx_g2()) {
+        printf("HV: AGX G2 interrupt route registration failed\n");
+        return false;
+    }
 #ifdef HV_DISABLE_APPLE_INPUT
     /* Narrow hardware A/B profile: preserve every other launch contract while
      * proving whether the optional SPI-HID mapping/route affects guest timing. */

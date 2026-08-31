@@ -29,6 +29,12 @@
 
 static dcp_dev_t *dcp;
 static dcp_iboot_if_t *iboot;
+static dcp_ib_swap_async_t scanout_swap;
+static u64 scanout_cookie;
+static u64 scanout_quiesce_after;
+static bool scanout_swap_active;
+static bool scanout_quiescing;
+static u32 scanout_owner_swap_id;
 static u64 fb_dva;
 static u64 fb_size;
 static u64 guest_fb_dva;
@@ -269,8 +275,15 @@ const display_config_t *display_get_config(void)
 
 int display_start_dcp(void)
 {
+#ifdef DCP_IOMFB_FULL_OWNER
+    if (dcp_iomfb_owner_active(dcp))
+        return 0;
+    if (dcp)
+        return -1;
+#else
     if (iboot)
         return 0;
+#endif
 
 #ifdef NO_DISPLAY
     printf("display: NO_DISPLAY!\n");
@@ -320,6 +333,29 @@ int display_start_dcp(void)
         dcp_shutdown(dcp, false);
         return -1;
     }
+
+#ifdef DCP_IOMFB_FULL_OWNER
+    /* The IOMFB endpoint is not an observer. Transfer ownership atomically:
+     * shut down iBoot EPIC first, then create the sole endpoint-0x37 owner. */
+    if (!dcp_iomfb_owner_supported()) {
+        printf("display: refusing IOMFB ownership transfer outside exact J313/13.5 profile\n");
+        return -1;
+    }
+    if (dcp_ib_shutdown(iboot) < 0) {
+        printf("display: failed to release iBoot endpoint ownership\n");
+        return -1;
+    }
+    iboot = NULL;
+    if (!dcp_iomfb_owner_start(dcp)) {
+        printf("display: IOMFB single-owner bootstrap failed closed\n");
+        return -1;
+    }
+#endif
+
+#ifdef DCP_IOMFB_LATCH_OBSERVER
+    if (!dcp_iomfb_observer_start(dcp))
+        printf("display: IOMFB latch observer unavailable; trace remains fail-closed\n");
+#endif
 
     return 0;
 }
@@ -406,6 +442,8 @@ static bool display_guest_present(void *opaque, u64 iova, u32 width, u32 height,
 {
     (void)opaque;
     struct display_guest_rect destination;
+    if (!iboot)
+        return false;
     if (!display_guest_fit(width, height, cur_boot_args.video.width,
                            cur_boot_args.video.height, &destination))
         return false;
@@ -435,14 +473,28 @@ static bool display_guest_present(void *opaque, u64 iova, u32 width, u32 height,
     int swap_id = dcp_ib_swap_begin(iboot);
     if (swap_id < 0)
         return false;
+#ifdef DCP_IOMFB_LATCH_OBSERVER
+    dcp_iomfb_observer_arm(dcp, (u32)swap_id);
+#endif
     int layer_ret = dcp_ib_swap_set_layer(iboot, 0, &layer, &source, &target);
     int end_ret = dcp_ib_swap_end(iboot);
     if (layer_ret < 0 || end_ret < 0)
         return false;
 
+#ifdef DCP_IOMFB_LATCH_OBSERVER
+    int latch = 0;
+    for (unsigned int attempt = 0; attempt < 5000 && latch == 0; ++attempt) {
+        latch = dcp_iomfb_observer_poll_latch(dcp, (u32)swap_id);
+        if (latch == 0)
+            udelay(100);
+    }
+    printf("display: passive IOMFB D589 trace swap_id=%d verdict=%s\n", swap_id,
+           latch > 0 ? "MATCHED" : latch == 0 ? "TIMEOUT" : "UNAVAILABLE");
+#else
     /* DCP consumes the surface asynchronously. Keep the old mapping alive until
      * the swap has crossed at least one display interval. */
     mdelay(150);
+#endif
     printf("display: guest surface scaled %ux%u -> %ux%u at %u,%u (swap_id=%d)\n",
            width, height, destination.width, destination.height, destination.x,
            destination.y, swap_id);
@@ -456,6 +508,224 @@ static void display_guest_unmap(void *opaque, u64 iova, u64 size)
     dart_unmap(dcp->dart_dcp, iova, size);
 }
 
+static bool display_scanout_build_layer(u64 iova, u32 width, u32 height,
+                                        u32 stride, dcp_layer_t *layer,
+                                        dcp_rect_t *source, dcp_rect_t *target)
+{
+    struct display_guest_rect destination;
+
+    if (!layer || !source || !target || !iova || !width || !height ||
+        (u64)stride < (u64)width * 4 ||
+        !display_guest_fit(width, height, cur_boot_args.video.width,
+                           cur_boot_args.video.height, &destination))
+        return false;
+    memset(layer, 0, sizeof(*layer));
+    layer->planes[0].addr = iova;
+    layer->planes[0].stride = stride;
+    layer->planes[0].addr_format = ADDR_PLANAR;
+    layer->plane_cnt = 1;
+    layer->width = width;
+    layer->height = height;
+    layer->surface_fmt = FMT_BGRA;
+    layer->colorspace = 2;
+    layer->eotf = EOTF_GAMMA_SDR;
+    layer->transform = XFRM_NONE;
+    *source = (dcp_rect_t){.w = width, .h = height};
+    *target = (dcp_rect_t){
+        .w = destination.width,
+        .h = destination.height,
+        .x = destination.x,
+        .y = destination.y,
+    };
+    return true;
+}
+
+bool display_scanout_ready(void)
+{
+    return (iboot || dcp_iomfb_owner_active(dcp)) && dcp && dcp->dart_dcp &&
+           dcp->dart_disp && dcp->iovad_dcp &&
+           !display_is_external;
+}
+
+bool display_scanout_reserve_iova(u64 size, u64 alignment, u64 *iova)
+{
+    u64 allocated;
+
+    if (!iova || !size || !alignment || (alignment & (alignment - 1)) ||
+        alignment > SZ_16K || !display_scanout_ready())
+        return false;
+    allocated = iova_alloc(dcp->iovad_dcp, size);
+    if (!allocated || (allocated & (alignment - 1))) {
+        if (allocated)
+            iova_free(dcp->iovad_dcp, allocated, size);
+        return false;
+    }
+    *iova = allocated;
+    return true;
+}
+
+void display_scanout_free_iova(u64 iova, u64 size)
+{
+    if (display_scanout_ready() && iova && size)
+        iova_free(dcp->iovad_dcp, iova, size);
+}
+
+bool display_scanout_map(unsigned dart_index, u64 iova, u64 pa, u64 size)
+{
+    dart_dev_t *dart;
+
+    if (!display_scanout_ready() || dart_index > 1 || !iova || !pa || !size)
+        return false;
+    dart = dart_index == 0 ? dcp->dart_disp : dcp->dart_dcp;
+    return dart_map(dart, iova, (void *)(uintptr_t)pa, size) == 0;
+}
+
+void display_scanout_unmap(unsigned dart_index, u64 iova, u64 size)
+{
+    dart_dev_t *dart;
+
+    if (!display_scanout_ready() || dart_index > 1 || !iova || !size)
+        return;
+    dart = dart_index == 0 ? dcp->dart_disp : dcp->dart_dcp;
+    dart_unmap(dart, iova, size);
+}
+
+bool display_scanout_present_begin(u64 surface_iova, u32 width, u32 height,
+                                   u32 stride, u64 *cookie)
+{
+    dcp_layer_t layer;
+    dcp_rect_t source;
+    dcp_rect_t target;
+
+    if (!cookie || scanout_swap_active || !display_scanout_ready() ||
+        !display_scanout_build_layer(surface_iova, width, height, stride,
+                                     &layer, &source, &target))
+        return false;
+    if (dcp_iomfb_owner_active(dcp)) {
+        int owner_swap_id = dcp_iomfb_owner_present(
+            dcp, surface_iova, width, height, stride);
+        if (owner_swap_id <= 0)
+            return false;
+        scanout_owner_swap_id = (u32)owner_swap_id;
+        scanout_swap_active = true;
+        scanout_quiescing = false;
+        if (++scanout_cookie == 0)
+            ++scanout_cookie;
+        *cookie = scanout_cookie;
+        return true;
+    }
+    dcp_ib_swap_async_init(&scanout_swap);
+    if (dcp_ib_swap_async_begin(&scanout_swap, iboot, &layer, &source, &target))
+        return false;
+    scanout_swap_active = true;
+    scanout_quiescing = false;
+    if (++scanout_cookie == 0)
+        ++scanout_cookie;
+    *cookie = scanout_cookie;
+    return true;
+}
+
+int display_scanout_present_poll(u64 cookie, u32 *swap_id)
+{
+    enum dcp_ib_swap_async_result result;
+
+    if (!swap_id || !scanout_swap_active || scanout_quiescing ||
+        cookie != scanout_cookie)
+        return -1;
+    if (dcp_iomfb_owner_active(dcp)) {
+        *swap_id = scanout_owner_swap_id;
+        scanout_swap_active = false;
+        return *swap_id ? 1 : -1;
+    }
+    result = dcp_ib_swap_async_poll(&scanout_swap);
+    if (result == DCP_IB_SWAP_ASYNC_PENDING)
+        return 0;
+    scanout_swap_active = false;
+    if (result != DCP_IB_SWAP_ASYNC_APPLIED || scanout_swap.swap_id <= 0)
+        return -1;
+    *swap_id = (u32)scanout_swap.swap_id;
+    return 1;
+}
+
+int display_scanout_latch_poll(u32 expected_swap_id)
+{
+    if (!dcp_iomfb_owner_active(dcp) || !expected_swap_id ||
+        expected_swap_id != scanout_owner_swap_id)
+        return -1;
+    return dcp_iomfb_owner_poll_latch(dcp, expected_swap_id);
+}
+
+bool display_scanout_quiesce_begin(u64 *cookie)
+{
+    dcp_layer_t layer;
+    dcp_rect_t source;
+    dcp_rect_t target;
+
+    if (!cookie || scanout_swap_active || !display_scanout_ready() || !fb_dva ||
+        !display_scanout_build_layer(fb_dva, cur_boot_args.video.width,
+                                     cur_boot_args.video.height,
+                                     cur_boot_args.video.stride,
+                                     &layer, &source, &target))
+        return false;
+    if (dcp_iomfb_owner_active(dcp)) {
+        int owner_swap_id = dcp_iomfb_owner_present(
+            dcp, fb_dva, cur_boot_args.video.width, cur_boot_args.video.height,
+            cur_boot_args.video.stride);
+        if (owner_swap_id <= 0)
+            return false;
+        scanout_owner_swap_id = (u32)owner_swap_id;
+        scanout_swap_active = true;
+        scanout_quiescing = true;
+        if (++scanout_cookie == 0)
+            ++scanout_cookie;
+        *cookie = scanout_cookie;
+        return true;
+    }
+    dcp_ib_swap_async_init(&scanout_swap);
+    if (dcp_ib_swap_async_begin(&scanout_swap, iboot, &layer, &source, &target))
+        return false;
+    scanout_swap_active = true;
+    scanout_quiescing = true;
+    scanout_quiesce_after = 0;
+    if (++scanout_cookie == 0)
+        ++scanout_cookie;
+    *cookie = scanout_cookie;
+    return true;
+}
+
+int display_scanout_quiesce_poll(u64 cookie)
+{
+    enum dcp_ib_swap_async_result result;
+
+    if (!scanout_quiescing || cookie != scanout_cookie)
+        return -1;
+    if (dcp_iomfb_owner_active(dcp)) {
+        int latch = dcp_iomfb_owner_poll_latch(dcp, scanout_owner_swap_id);
+        if (latch <= 0)
+            return latch;
+        scanout_swap_active = false;
+        scanout_quiescing = false;
+        return 1;
+    }
+    if (!scanout_quiesce_after) {
+        result = dcp_ib_swap_async_poll(&scanout_swap);
+        if (result == DCP_IB_SWAP_ASYNC_PENDING)
+            return 0;
+        if (result != DCP_IB_SWAP_ASYNC_APPLIED) {
+            scanout_swap_active = false;
+            scanout_quiescing = false;
+            return -1;
+        }
+        scanout_quiesce_after = timeout_calculate(150000);
+        return 0;
+    }
+    if ((s64)(get_ticks() - scanout_quiesce_after) < 0)
+        return 0;
+    scanout_swap_active = false;
+    scanout_quiescing = false;
+    return 1;
+}
+
 int display_prepare_guest_surface(u64 base, u64 size, u32 width, u32 height, u32 stride,
                                   u32 depth)
 {
@@ -463,6 +733,10 @@ int display_prepare_guest_surface(u64 base, u64 size, u32 width, u32 height, u32
         return 0;
     if (display_is_external) {
         printf("display: guest surface handoff only supports the internal panel\n");
+        return 0;
+    }
+    if (!iboot) {
+        printf("display: IOMFB owner scanout is not admitted yet; guest present fails closed\n");
         return 0;
     }
 
@@ -506,6 +780,12 @@ int display_configure(const char *config)
     int ret = display_start_dcp();
     if (ret < 0)
         return ret;
+#ifdef DCP_IOMFB_FULL_OWNER
+    if (!iboot) {
+        printf("display: IOMFB bootstrap trace active; legacy iBoot modeset is disabled\n");
+        return 0;
+    }
+#endif
 
     // connect dptx if necessary
     if (display_is_dptx) {
@@ -788,5 +1068,9 @@ void display_shutdown(dcp_shutdown_mode mode)
                 break;
         }
         iboot = NULL;
+    } else if (dcp) {
+        printf("display: Quiescing DCP IOMFB owner\n");
+        dcp_shutdown(dcp, false);
+        dcp = NULL;
     }
 }

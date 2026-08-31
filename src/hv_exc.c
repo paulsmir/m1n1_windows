@@ -4,6 +4,8 @@
 #include "hv_diag.h"
 #include "hv_exception_lower.h"
 #include "hv_fiq_fast_path.h"
+#include "hv_agx_power_broker.h"
+#include "hv_guest_ipa_pa.h"
 #include "hv_irq_routes.h"
 #include "hv_runtime_diag.h"
 #include "hv_sgi_diag.h"
@@ -18,6 +20,7 @@
 #include "string.h"
 #include "uart.h"
 #include "uartproxy.h"
+#include "xnuboot.h"
 #include "hv_vgic.h"
 #include "hv_vgic_diag.h"
 #include "aic.h"
@@ -78,6 +81,32 @@ void hv_exit_guest(void) __attribute__((noreturn));
 
 static u64 stolen_time = 0;
 static u64 exc_entry_time;
+
+static u64 hv_guest_ipa_pa_translate(u64 ipa, void *opaque)
+{
+    UNUSED(opaque);
+    return hv_ipa_to_pa(ipa);
+}
+
+static bool hv_guest_ipa_pa_is_ram(u64 pa, u64 size, void *opaque)
+{
+    u64 base = cur_boot_args.phys_base;
+    u64 length = cur_boot_args.mem_size;
+
+    UNUSED(opaque);
+    return size != 0 && pa >= base && size <= length && pa - base <= length - size;
+}
+
+static bool hv_handle_guest_ipa_pa(struct exc_info *ctx)
+{
+    u32 status;
+
+    if (!hv_guest_ipa_pa_handle(FIELD_GET(ESR_ISS, ctx->esr), ctx->regs[0],
+                                hv_guest_ipa_pa_translate, hv_guest_ipa_pa_is_ram, NULL, &status))
+        return false;
+    ctx->regs[0] = status;
+    return true;
+}
 static int num_cpus;
 
 extern u64 hv_cpus_in_guest;
@@ -1791,6 +1820,9 @@ static void hv_exc_exit(struct exc_info *ctx)
     reg_set(SYS_IMP_APL_PMCR0, PERCPU(exc_entry_pmcr0_cnt));
     msr(CNTVOFF_EL2, stolen_time);
     spin_unlock(&bhl);
+    /* Exactly one bounded scanout state-machine step.  This is deliberately
+     * outside the global BHL and never runs from the broker MMIO handler. */
+    hv_agx_scanout_service_run_once();
     hv_maybe_exit();
     __atomic_or_fetch(&hv_cpus_in_guest, BIT(smp_id()), __ATOMIC_ACQUIRE);
 
@@ -1882,6 +1914,9 @@ void hv_exc_sync(struct exc_info *ctx)
         case ESR_EC_SMC:
             hv_wdt_breadcrumb('s');
             handled = hv_handle_smc(ctx);
+            break;
+        case ESR_EC_HVC:
+            handled = hv_handle_guest_ipa_pa(ctx);
             break;
         case ESR_EC_IMPDEF:
             hv_wdt_breadcrumb('a');

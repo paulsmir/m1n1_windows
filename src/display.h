@@ -22,4 +22,17 @@ int display_configure(const char *config);
 void display_shutdown(dcp_shutdown_mode mode);
 const display_config_t *display_get_config(void);
 
+/* Non-blocking fixed-panel backend used by the EL2 scanout broker. */
+bool display_scanout_ready(void);
+bool display_scanout_reserve_iova(u64 size, u64 alignment, u64 *iova);
+void display_scanout_free_iova(u64 iova, u64 size);
+bool display_scanout_map(unsigned dart_index, u64 iova, u64 pa, u64 size);
+void display_scanout_unmap(unsigned dart_index, u64 iova, u64 size);
+bool display_scanout_present_begin(u64 surface_iova, u32 width, u32 height,
+                                   u32 stride, u64 *cookie);
+int display_scanout_present_poll(u64 cookie, u32 *swap_id);
+int display_scanout_latch_poll(u32 expected_swap_id);
+bool display_scanout_quiesce_begin(u64 *cookie);
+int display_scanout_quiesce_poll(u64 cookie);
+
 #endif

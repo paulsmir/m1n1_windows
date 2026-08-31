@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: MIT */
 
 #include "hv_launch_golden_j313.h"
+#include "hv_agx_g2.generated.h"
 #include "hv_apple_input.generated.h"
 
 #define GOLDEN_J313_TARGET          0x3331334aU
@@ -9,6 +10,16 @@
 static const uint64_t j313_mpidrs[HV_CONTRACT_MAX_CPUS] = {
     0x0, 0x1, 0x2, 0x3, 0x10100, 0x10101, 0x10102, 0x10103,
 };
+
+static const struct hv_agx_g2_interrupt_route j313_agx_routes[] =
+    HV_AGX_G2_INTERRUPT_ROUTE_VALUES;
+
+_Static_assert(sizeof(j313_agx_routes) / sizeof(j313_agx_routes[0]) ==
+                   HV_AGX_G2_INTERRUPT_ROUTE_COUNT,
+               "generated AGX G2 route count");
+_Static_assert(1u + HV_AGX_G2_INTERRUPT_ROUTE_COUNT + 1u <=
+                   HV_CONTRACT_MAX_IRQ_ROUTES,
+               "J313 launch route capacity");
 
 static const uint8_t j313_adt_digest[HV_CONTRACT_DIGEST_SIZE] = {
     0x09, 0x12, 0xe5, 0x89, 0x6c, 0xe6, 0x16, 0xba,
@@ -73,13 +84,21 @@ static void fill_common(struct hv_contract_snapshot *snapshot, uint32_t checkpoi
     snapshot->irq_routes[0] = (struct hv_contract_irq_route){
         .physical_irq = 857, .vintid = 857, .flags = HV_CONTRACT_IRQ_LEVEL};
     snapshot->irq_route_count = 1;
+    if (checkpoint != HV_CONTRACT_PRE_HV_INIT) {
+        for (uint32_t i = 0; i < HV_AGX_G2_INTERRUPT_ROUTE_COUNT; i++) {
+            snapshot->irq_routes[snapshot->irq_route_count++] = (struct hv_contract_irq_route){
+                .physical_irq = j313_agx_routes[i].physical_intid,
+                .vintid = j313_agx_routes[i].guest_intid,
+                .flags = HV_AGX_G2_INTERRUPT_LEVEL ? HV_CONTRACT_IRQ_LEVEL : 0,
+            };
+        }
+    }
     if (apple_input_declared && checkpoint != HV_CONTRACT_PRE_HV_INIT) {
-        snapshot->irq_routes[1] = (struct hv_contract_irq_route){
+        snapshot->irq_routes[snapshot->irq_route_count++] = (struct hv_contract_irq_route){
             .physical_irq = HV_APPLE_INPUT_PHYSICAL_PARENT_IRQ,
             .vintid = HV_APPLE_INPUT_GUEST_VINTID,
             .flags = HV_CONTRACT_IRQ_LEVEL,
         };
-        snapshot->irq_route_count = 2;
     }
     snapshot->devices = (struct hv_contract_devices){
         .pci_ecam_base = 0x690000000ULL,

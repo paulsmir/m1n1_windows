@@ -13,6 +13,7 @@ void iovad_shutdown(iova_domain_t *iovad, dart_dev_t *dart);
 
 bool iova_reserve(iova_domain_t *iovad, u64 iova, size_t sz);
 u64 iova_alloc(iova_domain_t *iovad, size_t sz);
+u64 iova_alloc_aligned(iova_domain_t *iovad, size_t sz, size_t alignment);
 void iova_free(iova_domain_t *iovad, u64 iova, size_t sz);
 
 #endif

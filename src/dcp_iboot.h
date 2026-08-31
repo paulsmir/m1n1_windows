@@ -4,8 +4,26 @@
 #define DCP_IBOOT_H
 
 #include "dcp.h"
+#include "afk_command.h"
 
 typedef struct dcp_iboot_if dcp_iboot_if_t;
+
+#define DCP_IB_ASYNC_BUFFER_SIZE 0x4000
+
+enum dcp_ib_swap_async_result {
+    DCP_IB_SWAP_ASYNC_FAILED = -1,
+    DCP_IB_SWAP_ASYNC_PENDING = 0,
+    DCP_IB_SWAP_ASYNC_APPLIED = 1,
+};
+
+enum dcp_ib_swap_async_stage {
+    DCP_IB_SWAP_ASYNC_IDLE = 0,
+    DCP_IB_SWAP_ASYNC_BEGIN,
+    DCP_IB_SWAP_ASYNC_SET_LAYER,
+    DCP_IB_SWAP_ASYNC_END,
+    DCP_IB_SWAP_ASYNC_COMPLETE,
+    DCP_IB_SWAP_ASYNC_ERROR,
+};
 
 enum DCPEOTF {
     EOTF_GAMMA_SDR = 1,
@@ -95,6 +113,18 @@ typedef struct {
     u32 w, h, x, y;
 } PACKED dcp_rect_t;
 
+typedef struct dcp_ib_swap_async {
+    dcp_iboot_if_t *iboot;
+    afk_epic_command_t command;
+    enum dcp_ib_swap_async_stage stage;
+    dcp_layer_t layer;
+    dcp_rect_t source;
+    dcp_rect_t target;
+    int swap_id;
+    u8 txbuf[DCP_IB_ASYNC_BUFFER_SIZE];
+    u8 rxbuf[DCP_IB_ASYNC_BUFFER_SIZE];
+} dcp_ib_swap_async_t;
+
 dcp_iboot_if_t *dcp_ib_init(dcp_dev_t *dcp);
 int dcp_ib_shutdown(dcp_iboot_if_t *iboot);
 
@@ -108,5 +138,10 @@ int dcp_ib_swap_begin(dcp_iboot_if_t *iboot);
 int dcp_ib_swap_set_layer(dcp_iboot_if_t *iboot, int layer_id, dcp_layer_t *layer,
                           dcp_rect_t *src_rect, dcp_rect_t *dst_rect);
 int dcp_ib_swap_end(dcp_iboot_if_t *iboot);
+void dcp_ib_swap_async_init(dcp_ib_swap_async_t *swap);
+int dcp_ib_swap_async_begin(dcp_ib_swap_async_t *swap, dcp_iboot_if_t *iboot,
+                            const dcp_layer_t *layer, const dcp_rect_t *source,
+                            const dcp_rect_t *target);
+enum dcp_ib_swap_async_result dcp_ib_swap_async_poll(dcp_ib_swap_async_t *swap);
 
 #endif
