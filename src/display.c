@@ -1112,3 +1112,8 @@ void display_shutdown(dcp_shutdown_mode mode)
             printf("display: DCP shutdown failed; retaining owner until reset\n");
     }
 }
+
+bool display_shutdown_complete(void)
+{
+    return !dcp && !iboot;
+}

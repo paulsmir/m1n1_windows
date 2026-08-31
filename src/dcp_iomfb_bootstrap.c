@@ -113,10 +113,13 @@ int dcp_iomfb_bootstrap_callback(struct dcp_iomfb_bootstrap *bootstrap,
     case 109:
     case 110:
     case 111:
-    case 112:
     case 113:
     case 582:
         store_u32(output, 1);
+        return 0;
+    case 112:
+        /* J313/13.5 create_backlight_service: no host-side service exists. */
+        store_u32(output, 0);
         return 0;
     case 2:
     case 6:

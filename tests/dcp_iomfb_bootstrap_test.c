@@ -85,6 +85,12 @@ int main(void)
     dcp_iomfb_bootstrap_init(&bootstrap, record_call, platform_callback,
                              &fixture);
 
+    memset(output, 0xff, 4);
+    assert(dcp_iomfb_bootstrap_callback(&bootstrap, "D112", NULL, 0,
+                                         output, 4) == 0);
+    assert(output[0] == 0 && output[1] == 0 && output[2] == 0 &&
+           output[3] == 0);
+
     assert(dcp_iomfb_bootstrap_callback(&bootstrap, "D120", NULL, 0,
                                          output, 4) == 0);
     assert(output[0] == 1);

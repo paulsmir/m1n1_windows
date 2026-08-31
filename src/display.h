@@ -20,6 +20,7 @@ int display_prepare_guest_surface(u64 base, u64 size, u32 width, u32 height, u32
                                   u32 depth);
 int display_configure(const char *config);
 void display_shutdown(dcp_shutdown_mode mode);
+bool display_shutdown_complete(void);
 const display_config_t *display_get_config(void);
 
 /* Non-blocking fixed-panel backend used by the EL2 scanout broker. */
