@@ -70,6 +70,7 @@
 
 #define RTKIT_MIN_VERSION 11
 #define RTKIT_MAX_VERSION 12
+#define RTKIT_POWER_ACK_TIMEOUT_USEC USEC_PER_SEC
 
 #define IOVA_MASK GENMASK(35, 0)
 
@@ -829,6 +830,26 @@ bool rtkit_boot(rtkit_dev_t *rtk)
     msg.msg1 = RTKIT_EP_MGMT;
     if (!asc_send(rtk->asc, &msg)) {
         rtkit_printf("unable to send AP power message\n");
+        return false;
+    }
+
+    for (unsigned int attempt = 0;
+         attempt < RTKIT_POWER_ACK_TIMEOUT_USEC &&
+         rtk->ap_power != RTKIT_POWER_ON;
+         attempt++) {
+        struct rtkit_message rtk_msg;
+        int ret = rtkit_recv(rtk, &rtk_msg);
+
+        if (ret == 1)
+            rtkit_printf("unexpected message to application endpoint 0x%02x "
+                         "while waiting for AP power ON: %lx\n",
+                         rtk_msg.ep, rtk_msg.msg);
+        else if (ret < 0)
+            return false;
+        udelay(1);
+    }
+    if (rtk->ap_power != RTKIT_POWER_ON) {
+        rtkit_printf("timed out waiting for AP power ON acknowledgement\n");
         return false;
     }
 

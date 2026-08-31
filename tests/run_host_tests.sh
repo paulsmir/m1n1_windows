@@ -77,6 +77,7 @@ hv_xhci_handoff_test
 iodev_console_backpressure_test
 ringbuffer_test
 rtkit_deferred_test
+rtkit_power_ack_contract_test
 uartproxy_event_test
 usb_dwc3_bulk_state_test
 "
@@ -90,6 +91,11 @@ for name in "$@"; do
     if [ "$name" = afk_tx_reservation_contract_test ]; then
         echo "  PYTEST  $name"
         python3 tests/afk_tx_reservation_contract_test.py
+        continue
+    fi
+    if [ "$name" = rtkit_power_ack_contract_test ]; then
+        echo "  PYTEST  $name"
+        python3 tests/rtkit_power_ack_contract_test.py
         continue
     fi
     definitions=""
