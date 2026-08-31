@@ -147,8 +147,10 @@ OBJECTS := \
 	dapf.o \
 	dart.o \
 	dcp.o \
+	dcp_endpoint_owner.o \
 	dcp_iboot.o \
 	dcp_iomfb_latch.o \
+	dcp_iomfb_owner_lifecycle.o \
 	dcp_iomfb_rpc.o \
 	dcp_iomfb_v13_5_abi.o \
 	dcp_iomfb_bootstrap.o \
@@ -158,6 +160,7 @@ OBJECTS := \
 	dcp_iomfb_transport.o \
 	devicetree.o \
 	display.o \
+	display_dcp_frontend.o \
 	display_guest.o \
 	exception.o exception_asm.o \
 	fb.o font.o font_retina.o \

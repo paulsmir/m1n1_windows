@@ -528,7 +528,7 @@ static int dcp_hdmi_dptx_init(dcp_dev_t *dcp, const display_config_t *cfg)
 #ifdef RTKIT_SYSLOG
     // start system endpoint when extended logging is requested
     dcp->system_ep = dcp_system_init(dcp);
-    if (!dcp->system_ep) {
+    if (!dcp_system_is_ready(dcp->system_ep)) {
         printf("dcp: failed to initialize system endpoint\n");
         dcp_dptx_shutdown(dcp->dptx_ep);
         dcp_dpav_shutdown(dcp->dpav_ep);
@@ -732,7 +732,11 @@ int dcp_shutdown(dcp_dev_t *dcp, bool sleep)
         dcp->dart_piodma = NULL;
         dcp->iomfb_owner_registered = false;
     } else {
-        dcp_system_shutdown(dcp->system_ep);
+        if (dcp->system_ep && dcp_system_shutdown(dcp->system_ep) < 0) {
+            printf("dcp-system: shutdown failed; retaining DCP until reset\n");
+            return -1;
+        }
+        dcp->system_ep = NULL;
         dcp_dptx_shutdown(dcp->dptx_ep);
         dcp_dpav_shutdown(dcp->dpav_ep);
         free(dcp->phy);

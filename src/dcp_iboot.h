@@ -126,6 +126,7 @@ typedef struct dcp_ib_swap_async {
 } dcp_ib_swap_async_t;
 
 dcp_iboot_if_t *dcp_ib_init(dcp_dev_t *dcp);
+bool dcp_ib_is_ready(const dcp_iboot_if_t *iboot);
 int dcp_ib_shutdown(dcp_iboot_if_t *iboot);
 
 int dcp_ib_set_surface(dcp_iboot_if_t *iboot, dcp_layer_t *layer);

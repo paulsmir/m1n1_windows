@@ -34,6 +34,7 @@ struct dcp_iboot_if {
     afk_epic_ep_t *epic;
     int channel;
     bool enabled;
+    bool ready;
 
     union {
         u8 txbuf[TXBUF_LEN];
@@ -147,18 +148,30 @@ dcp_iboot_if_t *dcp_ib_init(dcp_dev_t *dcp)
         goto err_shutdown;
     }
 
+    iboot->ready = true;
     return iboot;
 
 err_shutdown:
-    afk_epic_shutdown_ep(iboot->epic);
+    if (afk_epic_shutdown_ep(iboot->epic) < 0) {
+        printf("dcp-iboot: shutdown failed; retaining endpoint owner\n");
+        return iboot;
+    }
 err_free:
     free(iboot);
     return NULL;
 }
 
+bool dcp_ib_is_ready(const dcp_iboot_if_t *iboot)
+{
+    return iboot && iboot->ready;
+}
+
 int dcp_ib_shutdown(dcp_iboot_if_t *iboot)
 {
-    afk_epic_shutdown_ep(iboot->epic);
+    int ret = afk_epic_shutdown_ep(iboot->epic);
+
+    if (ret < 0)
+        return ret;
 
     free(iboot);
     return 0;

@@ -3,10 +3,12 @@
 #include "../build/build_cfg.h"
 
 #include "display.h"
+#include "display_dcp_frontend.h"
 #include "display_guest.h"
 #include "adt.h"
 #include "assert.h"
 #include "dcp.h"
+#include "dcp_iomfb_owner_lifecycle.h"
 #include "dcp_iboot.h"
 #include "fb.h"
 #include "firmware.h"
@@ -51,6 +53,21 @@ static const display_config_t display_config_m1 = {
     .pmgr_dev = "DISP0_CPU0",
     .dcp_alias = "dcp",
 };
+
+static bool display_dcp_owner_start_system(void *opaque)
+{
+    dcp_dev_t *device = opaque;
+
+    if (device->system_ep)
+        return dcp_system_is_ready(device->system_ep);
+    device->system_ep = dcp_system_init(device);
+    return dcp_system_is_ready(device->system_ep);
+}
+
+static bool display_dcp_owner_start_iomfb(void *opaque)
+{
+    return dcp_iomfb_owner_start(opaque);
+}
 
 #define USE_DCPEXT 1
 
@@ -275,6 +292,8 @@ const display_config_t *display_get_config(void)
 
 int display_start_dcp(void)
 {
+    enum display_dcp_frontend frontend;
+
 #ifdef DCP_IOMFB_FULL_OWNER
     if (dcp_iomfb_owner_active(dcp))
         return 0;
@@ -282,7 +301,11 @@ int display_start_dcp(void)
         return -1;
 #else
     if (iboot)
-        return 0;
+        return dcp_ib_is_ready(iboot) ? 0 : -1;
+    if (dcp) {
+        printf("display: refusing DCP reopen while retained owner is live\n");
+        return -1;
+    }
 #endif
 
 #ifdef NO_DISPLAY
@@ -327,26 +350,45 @@ int display_start_dcp(void)
         return -1;
     }
 
-    iboot = dcp_ib_init(dcp);
-    if (!iboot) {
-        printf("display: failed to initialize DCP iBoot interface\n");
+#ifdef DCP_IOMFB_FULL_OWNER
+    frontend = display_dcp_frontend_select(true, display_is_external);
+#else
+    frontend = display_dcp_frontend_select(false, display_is_external);
+#endif
+    if (frontend == DISPLAY_DCP_FRONTEND_UNSUPPORTED) {
+        printf("display: IOMFB full owner only supports the internal panel\n");
         dcp_shutdown(dcp, false);
+        dcp = NULL;
         return -1;
+    }
+    if (frontend == DISPLAY_DCP_FRONTEND_IBOOT) {
+        iboot = dcp_ib_init(dcp);
+        if (!dcp_ib_is_ready(iboot)) {
+            printf("display: failed to initialize DCP iBoot interface\n");
+            if (iboot) {
+                printf("display: retaining failed iBoot owner until reset\n");
+                return -1;
+            }
+            if (dcp_shutdown(dcp, false) == 0)
+                dcp = NULL;
+            else
+                printf("display: DCP shutdown failed; retaining owner until reset\n");
+            return -1;
+        }
     }
 
 #ifdef DCP_IOMFB_FULL_OWNER
-    /* The IOMFB endpoint is not an observer. Transfer ownership atomically:
-     * shut down iBoot EPIC first, then create the sole endpoint-0x37 owner. */
-    if (!dcp_iomfb_owner_supported()) {
-        printf("display: refusing IOMFB ownership transfer outside exact J313/13.5 profile\n");
+    /* On the internal panel production Asahi starts IOMFB directly after the
+     * RTKit/system setup.  Opening disp0-service first, even if it is closed
+     * before endpoint 0x37, violates that single-frontend lifetime. */
+    else if (!dcp_iomfb_owner_supported()) {
+        printf("display: refusing IOMFB ownership outside exact J313/13.5 profile\n");
+        dcp_shutdown(dcp, false);
+        dcp = NULL;
         return -1;
-    }
-    if (dcp_ib_shutdown(iboot) < 0) {
-        printf("display: failed to release iBoot endpoint ownership\n");
-        return -1;
-    }
-    iboot = NULL;
-    if (!dcp_iomfb_owner_start(dcp)) {
+    } else if (!dcp_iomfb_owner_start_ordered(
+                   dcp, display_dcp_owner_start_system,
+                   display_dcp_owner_start_iomfb)) {
         printf("display: IOMFB single-owner bootstrap failed closed\n");
         return -1;
     }
@@ -1049,28 +1091,42 @@ void display_shutdown(dcp_shutdown_mode mode)
         return;
 
     if (iboot) {
-        dcp_ib_shutdown(iboot);
+        int ret;
+
+        if (dcp_ib_shutdown(iboot) < 0) {
+            printf("display: iBoot endpoint shutdown failed; retaining owner until reset\n");
+            return;
+        }
+        iboot = NULL;
         switch (mode) {
             case DCP_QUIESCED:
                 printf("display: Quiescing DCP (unconditional)\n");
-                dcp_shutdown(dcp, false);
+                ret = dcp_shutdown(dcp, false);
                 break;
             case DCP_SLEEP_IF_EXTERNAL:
                 if (!display_is_external)
                     printf("display: Quiescing DCP (internal)\n");
                 else
                     printf("display: Sleeping DCP (external)\n");
-                dcp_shutdown(dcp, display_is_external);
+                ret = dcp_shutdown(dcp, display_is_external);
                 break;
             case DCP_SLEEP:
                 printf("display: Sleeping DCP (unconditional)\n");
-                dcp_shutdown(dcp, true);
+                ret = dcp_shutdown(dcp, true);
+                break;
+            default:
+                ret = -1;
                 break;
         }
-        iboot = NULL;
+        if (ret == 0)
+            dcp = NULL;
+        else
+            printf("display: DCP shutdown failed; retaining owner until reset\n");
     } else if (dcp) {
         printf("display: Quiescing DCP IOMFB owner\n");
-        dcp_shutdown(dcp, false);
-        dcp = NULL;
+        if (dcp_shutdown(dcp, false) == 0)
+            dcp = NULL;
+        else
+            printf("display: DCP shutdown failed; retaining owner until reset\n");
     }
 }

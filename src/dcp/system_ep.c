@@ -6,6 +6,7 @@
 #include <string.h>
 
 #include "system_ep.h"
+#include "../dcp_endpoint_owner.h"
 #include "malloc.h"
 #include "parser.h"
 
@@ -26,7 +27,19 @@ typedef struct dcp_system_if {
 
     afk_epic_service_t *sys_service;
     afk_epic_service_t *powerlog;
+    bool ready;
 } dcp_system_if_t;
+
+static int system_endpoint_shutdown(void *opaque)
+{
+    dcp_system_if_t *system = opaque;
+    return afk_epic_shutdown_ep(system->epic);
+}
+
+static void system_owner_release(void *opaque)
+{
+    free(opaque);
+}
 
 static void system_service_init(afk_epic_service_t *service, const char *name, const char *eclass,
                                 s64 unit)
@@ -131,20 +144,28 @@ dcp_system_if_t *dcp_system_init(dcp_dev_t *dcp)
         goto err_shutdown;
     }
 
+    system->ready = true;
     return system;
 
 err_shutdown:
-    afk_epic_shutdown_ep(system->epic);
+    if (dcp_endpoint_owner_shutdown(system, system_endpoint_shutdown,
+                                    system_owner_release) < 0) {
+        printf("dcp-system: shutdown failed; retaining endpoint owner\n");
+        return system;
+    }
+    return NULL;
 err_free:
     free(system);
     return NULL;
 }
 
+bool dcp_system_is_ready(const dcp_system_if_t *system)
+{
+    return system && system->ready;
+}
+
 int dcp_system_shutdown(dcp_system_if_t *system)
 {
-    if (system) {
-        afk_epic_shutdown_ep(system->epic);
-        free(system);
-    }
-    return 0;
+    return dcp_endpoint_owner_shutdown(system, system_endpoint_shutdown,
+                                       system_owner_release);
 }

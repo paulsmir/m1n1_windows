@@ -17,6 +17,9 @@ boot_options_test
 chainload_layout_test
 hv_assisted_layout_test
 display_guest_test
+display_dcp_frontend_test
+dcp_iomfb_owner_lifecycle_test
+dcp_endpoint_owner_test
 dcp_iomfb_latch_test
 dcp_iomfb_transport_test
 dcp_iomfb_rpc_test
@@ -122,6 +125,15 @@ for name in "$@"; do
         display_guest_test)
             definitions="-DDISPLAY_GUEST_HOST_TEST"
             sources="$sources src/display_guest.c"
+            ;;
+        display_dcp_frontend_test)
+            sources="$sources src/display_dcp_frontend.c"
+            ;;
+        dcp_iomfb_owner_lifecycle_test)
+            sources="$sources src/dcp_iomfb_owner_lifecycle.c"
+            ;;
+        dcp_endpoint_owner_test)
+            sources="$sources src/dcp_endpoint_owner.c"
             ;;
         dcp_iomfb_latch_test)
             definitions="-DDCP_IOMFB_LATCH_HOST_TEST"
