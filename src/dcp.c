@@ -243,7 +243,8 @@ bool dcp_iomfb_owner_start(dcp_dev_t *dcp)
 {
     int dart_path[8];
 
-    if (!dcp || dcp->iomfb_owner_registered || dcp->iomfb_observer_registered)
+    if (!dcp || dcp->iomfb_owner_endpoint_started ||
+        dcp->iomfb_owner_registered || dcp->iomfb_observer_registered)
         return false;
     if (!dcp_iomfb_owner_supported()) {
         printf("dcp-iomfb: full owner is restricted to J313AP firmware 13.5\n");
@@ -251,16 +252,20 @@ bool dcp_iomfb_owner_start(dcp_dev_t *dcp)
     }
     if (adt_path_offset_trace(adt, "/arm-io/dart-disp0", dart_path) < 0)
         return false;
+    if (!rtkit_start_ep(dcp->rtkit, DCP_IOMFB_RPC_ENDPOINT))
+        return false;
+    dcp->iomfb_owner_endpoint_started = true;
+
     dcp->dart_piodma = dart_init_adt("/arm-io/dart-disp0", 0, 4, true);
     if (!dcp->dart_piodma)
-        return false;
+        goto fail_endpoint;
     if (dart_setup_pt_region(dcp->dart_piodma, "/arm-io/dart-disp0", 4,
                              dart_vm_base(dcp->dart_dcp)))
-        goto fail_piodma;
+        goto fail_endpoint;
 
     if (!rtkit_alloc_buffer_aligned(dcp->rtkit, &dcp->iomfb_shmem,
                                     DCP_IOMFB_RPC_SHMEM_SIZE, 0x10000))
-        goto fail_piodma;
+        goto fail_endpoint;
     memset(dcp->iomfb_shmem.bfr, 0, dcp->iomfb_shmem.sz);
     dcp_iomfb_resources_init(&dcp->iomfb_resources, &dcp_iomfb_resource_ops,
                              dcp);
@@ -273,10 +278,9 @@ bool dcp_iomfb_owner_start(dcp_dev_t *dcp)
                              dcp_iomfb_owner_platform, dcp);
     if (!afk_epic_register_raw_handler(dcp->afk, DCP_IOMFB_RPC_ENDPOINT,
                                        dcp_iomfb_owner_receive, dcp))
-        goto fail_buffer;
+        goto fail_endpoint;
     dcp->iomfb_owner_registered = true;
-    if (!rtkit_start_ep(dcp->rtkit, DCP_IOMFB_RPC_ENDPOINT) ||
-        !dcp_iomfb_send(dcp, DCP_IOMFB_RPC_ENDPOINT,
+    if (!dcp_iomfb_send(dcp, DCP_IOMFB_RPC_ENDPOINT,
                         dcp_iomfb_set_shmem_message(dcp->iomfb_shmem.dva)))
         goto fail_endpoint;
 
@@ -302,15 +306,6 @@ bool dcp_iomfb_owner_start(dcp_dev_t *dcp)
 fail_endpoint:
     /* A live failed endpoint cannot be safely restarted in-place. Keep the
      * allocation owned until the enclosing DCP/SoC reset. */
-    return false;
-fail_buffer:
-    dcp_iomfb_properties_destroy(&dcp->iomfb_properties);
-    dcp_iomfb_resources_destroy(&dcp->iomfb_resources);
-    rtkit_free_buffer(dcp->rtkit, &dcp->iomfb_shmem);
-    memset(&dcp->iomfb_shmem, 0, sizeof(dcp->iomfb_shmem));
-fail_piodma:
-    dart_shutdown(dcp->dart_piodma);
-    dcp->dart_piodma = NULL;
     return false;
 }
 
@@ -701,7 +696,7 @@ out_free:
 int dcp_shutdown(dcp_dev_t *dcp, bool sleep)
 {
     /* dcp/dcp0 on desktop M2 and M2 Pro/Max devices do not wake from sleep */
-    bool iomfb_owner = dcp->iomfb_owner_registered;
+    bool iomfb_owner = dcp->iomfb_owner_endpoint_started;
 
     if (iomfb_owner) {
         /* First close every normal EPIC producer while firmware can still
@@ -722,15 +717,19 @@ int dcp_shutdown(dcp_dev_t *dcp, bool sleep)
         }
         free(dcp->phy);
         dcp->phy = NULL;
-        afk_epic_unregister_raw_handler(dcp->afk, DCP_IOMFB_RPC_ENDPOINT,
-                                        dcp_iomfb_owner_receive, dcp);
+        if (dcp->iomfb_owner_registered)
+            afk_epic_unregister_raw_handler(dcp->afk,
+                                            DCP_IOMFB_RPC_ENDPOINT,
+                                            dcp_iomfb_owner_receive, dcp);
         dcp_iomfb_properties_destroy(&dcp->iomfb_properties);
         dcp_iomfb_resources_destroy(&dcp->iomfb_resources);
         rtkit_free_buffer(dcp->rtkit, &dcp->iomfb_shmem);
         memset(&dcp->iomfb_shmem, 0, sizeof(dcp->iomfb_shmem));
-        dart_shutdown(dcp->dart_piodma);
+        if (dcp->dart_piodma)
+            dart_shutdown(dcp->dart_piodma);
         dcp->dart_piodma = NULL;
         dcp->iomfb_owner_registered = false;
+        dcp->iomfb_owner_endpoint_started = false;
     } else {
         if (dcp->system_ep && dcp_system_shutdown(dcp->system_ep) < 0) {
             printf("dcp-system: shutdown failed; retaining DCP until reset\n");

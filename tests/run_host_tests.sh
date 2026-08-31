@@ -19,6 +19,7 @@ hv_assisted_layout_test
 display_guest_test
 display_dcp_frontend_test
 dcp_endpoint_owner_test
+dcp_iomfb_owner_admission_contract_test
 dcp_iomfb_latch_test
 dcp_iomfb_transport_test
 dcp_iomfb_rpc_test
@@ -97,6 +98,11 @@ for name in "$@"; do
     if [ "$name" = rtkit_power_ack_contract_test ]; then
         echo "  PYTEST  $name"
         python3 tests/rtkit_power_ack_contract_test.py
+        continue
+    fi
+    if [ "$name" = dcp_iomfb_owner_admission_contract_test ]; then
+        echo "  PYTEST  $name"
+        python3 tests/dcp_iomfb_owner_admission_contract_test.py
         continue
     fi
     definitions=""

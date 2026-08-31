@@ -47,6 +47,7 @@ typedef struct dcp_dev {
     struct dcp_iomfb_transport iomfb_transport;
     enum dcp_iomfb_rx_result iomfb_last_rx;
     bool iomfb_observer_registered;
+    bool iomfb_owner_endpoint_started;
     bool iomfb_owner_registered;
     bool iomfb_initialized;
     struct dcp_iomfb_rpc iomfb_rpc;
