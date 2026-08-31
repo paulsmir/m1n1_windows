@@ -244,7 +244,8 @@ static int dcp_iomfb_owner_receive(void *opaque, afk_raw_u8 endpoint,
 #define DCP_IOMFB_START_OBSERVE_MAX_POLLS 100000u
 #define DCP_IOMFB_START_OBSERVE_USEC 500000u
 
-#ifndef DCP_IOMFB_START_OBSERVER
+#if !defined(DCP_IOMFB_START_OBSERVER) && \
+    !defined(DCP_IOMFB_EARLY_PIODMA_OBSERVER)
 static bool dcp_iomfb_drain_pending_system_traffic(dcp_dev_t *dcp)
 {
     unsigned int processed = 0;
@@ -266,8 +267,9 @@ static bool dcp_iomfb_drain_pending_system_traffic(dcp_dev_t *dcp)
 }
 #endif
 
-#ifdef DCP_IOMFB_START_OBSERVER
-static bool dcp_iomfb_observe_start_without_piodma(dcp_dev_t *dcp)
+#if defined(DCP_IOMFB_START_OBSERVER) || \
+    defined(DCP_IOMFB_EARLY_PIODMA_OBSERVER)
+static bool dcp_iomfb_observe_start_fail_closed(dcp_dev_t *dcp)
 {
     u64 deadline = timeout_calculate(DCP_IOMFB_START_OBSERVE_USEC);
 
@@ -315,17 +317,19 @@ bool dcp_iomfb_owner_start(dcp_dev_t *dcp)
     }
     if (adt_path_offset_trace(adt, "/arm-io/dart-disp0", dart_path) < 0)
         return false;
-#ifndef DCP_IOMFB_START_OBSERVER
+#if !defined(DCP_IOMFB_START_OBSERVER) && \
+    !defined(DCP_IOMFB_EARLY_PIODMA_OBSERVER)
     if (!dcp_iomfb_drain_pending_system_traffic(dcp))
         return false;
 #endif
     if (!rtkit_start_ep(dcp->rtkit, DCP_IOMFB_RPC_ENDPOINT))
         return false;
     dcp->iomfb_owner_endpoint_started = true;
-#ifdef DCP_IOMFB_START_OBSERVER
-    /* Receipt-only discriminator: do not touch PIODMA, shared memory, AFK or
-     * RPC state until START itself is classified. Every result fails closed. */
-    return dcp_iomfb_observe_start_without_piodma(dcp);
+#if defined(DCP_IOMFB_START_OBSERVER) || \
+    defined(DCP_IOMFB_EARLY_PIODMA_OBSERVER)
+    /* Receipt-only discriminator: after START, do not perform any further
+     * PIODMA, shared-memory, AFK or RPC action. Every result fails closed. */
+    return dcp_iomfb_observe_start_fail_closed(dcp);
 #endif
 
     dcp->dart_piodma = dart_init_adt("/arm-io/dart-disp0", 0, 4, true);
@@ -708,6 +712,23 @@ dcp_dev_t *dcp_init(const display_config_t *cfg)
     // set disp0's page tables at dart-dcp's vm-base
     dart_setup_pt_region(dcp->dart_disp, cfg->disp_dart, 0, vm_base);
 
+#ifdef DCP_IOMFB_EARLY_PIODMA_OBSERVER
+    /* Linux creates/configures the PIODMA IOMMU child during probe, before
+     * dcp_start() starts any RTKit application endpoint.  Preserve that
+     * lifecycle for the isolated admission discriminator. */
+    dcp->dart_piodma = dart_init_adt("/arm-io/dart-disp0", 0, 4, true);
+    if (!dcp->dart_piodma) {
+        printf("dcp-iomfb: failed to initialize early PIODMA DART\n");
+        goto out_dart_disp;
+    }
+    if (dart_setup_pt_region(dcp->dart_piodma, "/arm-io/dart-disp0", 4,
+                             vm_base)) {
+        printf("dcp-iomfb: failed to configure early PIODMA page tables\n");
+        goto out_dart_piodma;
+    }
+    printf("dcp-iomfb: early PIODMA SID4 ready before RTKit boot\n");
+#endif
+
     dcp->iovad_dcp = iovad_init(vm_base + 0x10000000, vm_base + 0x20000000);
 
     int ret = dcp_create_firmware_mappings(cfg, dcp);
@@ -757,6 +778,11 @@ out_rtkit:
     rtkit_free(dcp->rtkit);
 out_iovad:
     iovad_shutdown(dcp->iovad_dcp, dcp->dart_dcp);
+#ifdef DCP_IOMFB_EARLY_PIODMA_OBSERVER
+out_dart_piodma:
+    dart_shutdown(dcp->dart_piodma);
+out_dart_disp:
+#endif
     dart_shutdown(dcp->dart_disp);
 out_dart_dcp:
     dart_shutdown(dcp->dart_dcp);
@@ -820,6 +846,8 @@ int dcp_shutdown(dcp_dev_t *dcp, bool sleep)
         rtkit_quiesce(dcp->rtkit);
     }
     rtkit_free(dcp->rtkit);
+    if (!iomfb_owner && dcp->dart_piodma)
+        dart_shutdown(dcp->dart_piodma);
     dart_shutdown(dcp->dart_disp);
     iovad_shutdown(dcp->iovad_dcp, dcp->dart_dcp);
     dart_shutdown(dcp->dart_dcp);

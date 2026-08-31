@@ -5,12 +5,13 @@ from pathlib import Path
 
 
 source = (Path(__file__).parents[1] / "src" / "dcp.c").read_text()
+makefile = (Path(__file__).parents[1] / "Makefile").read_text()
 start = source.index("bool dcp_iomfb_owner_start(")
 end = source.index("\nbool dcp_iomfb_owner_supported", start)
 body = source[start:end]
 
 start_endpoint = body.index("rtkit_start_ep(")
-observe_start = body.index("dcp_iomfb_observe_start_without_piodma(")
+observe_start = body.index("dcp_iomfb_observe_start_fail_closed(")
 settle_system = body.index("dcp_iomfb_drain_pending_system_traffic(")
 init_piodma = body.index("dart_init_adt(")
 allocate_shmem = body.index("rtkit_alloc_buffer_aligned(")
@@ -21,7 +22,7 @@ assert start_endpoint < observe_start < init_piodma, (
     "START-only observation must run before any PIODMA state is touched"
 )
 observe_body = source[source.index(
-    "static bool dcp_iomfb_observe_start_without_piodma"
+    "static bool dcp_iomfb_observe_start_fail_closed"
 ):start]
 assert "DCP_IOMFB_START_OBSERVE_MAX_POLLS" in source
 assert "DCP_IOMFB_START_OBSERVE_USEC" in source
@@ -32,8 +33,8 @@ assert "msg.ep == DCP_IOMFB_RPC_ENDPOINT" in observe_body
 assert "return false;" in observe_body, (
     "the receipt-only experiment must fail closed for every observation"
 )
-assert "#ifdef DCP_IOMFB_START_OBSERVER" in body
-assert "#ifndef DCP_IOMFB_START_OBSERVER" in body
+assert "defined(DCP_IOMFB_START_OBSERVER)" in body
+assert "defined(DCP_IOMFB_EARLY_PIODMA_OBSERVER)" in body
 assert settle_system < start_endpoint, (
     "ordinary full-owner builds must retain the accepted pre-START drain"
 )
@@ -57,5 +58,19 @@ assert "dart_shutdown" not in fail_body
 assert "return false;" in fail_body, (
     "post-START failure must retain endpoint-owned resources until reset"
 )
+
+init_start = source.index("dcp_dev_t *dcp_init(")
+init_end = source.index("\nint dcp_shutdown", init_start)
+init_body = source[init_start:init_end]
+early_init = init_body.index("DCP_IOMFB_EARLY_PIODMA_OBSERVER")
+early_piodma = init_body.index(
+    'dart_init_adt("/arm-io/dart-disp0", 0, 4, true)', early_init
+)
+rtkit_boot = init_body.index("rtkit_boot(")
+assert early_init < early_piodma < rtkit_boot, (
+    "the early PIODMA discriminator must configure SID4 before RTKit boot"
+)
+assert "IOMFB_EARLY_PIODMA_OBSERVER requires IOMFB_FULL_OWNER=1" in makefile
+assert "IOMFB_START_OBSERVER and IOMFB_EARLY_PIODMA_OBSERVER are mutually exclusive" in makefile
 
 print("dcp_iomfb_owner_admission_contract_test: ok")
