@@ -63,7 +63,7 @@ int main(void)
     assert(dcp_iomfb_transport_send_shmem(&transport));
     assert(sent.calls == 1);
     assert(sent.endpoint == DCP_IOMFB_ENDPOINT);
-    assert(sent.message == dcp_iomfb_set_shmem_message(0x12340000));
+    assert(sent.message == 0x123400000040ull);
     assert(dcp_iomfb_transport_state(&transport) == DCP_IOMFB_WAIT_INITIALIZED);
 
     assert(dcp_iomfb_transport_receive(&transport, DCP_IOMFB_MESSAGE_TYPE_INITIALIZED) ==

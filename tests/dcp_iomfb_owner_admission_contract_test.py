@@ -35,6 +35,7 @@ assert "return false;" in observe_body, (
 )
 assert "defined(DCP_IOMFB_START_OBSERVER)" in body
 assert "defined(DCP_IOMFB_EARLY_PIODMA_OBSERVER)" in body
+assert "defined(DCP_IOMFB_SET_SHMEM_OBSERVER)" in body
 assert settle_system < start_endpoint, (
     "ordinary full-owner builds must retain the accepted pre-START drain"
 )
@@ -72,5 +73,25 @@ assert early_init < early_piodma < rtkit_boot, (
 )
 assert "IOMFB_EARLY_PIODMA_OBSERVER requires IOMFB_FULL_OWNER=1" in makefile
 assert "IOMFB_START_OBSERVER and IOMFB_EARLY_PIODMA_OBSERVER are mutually exclusive" in makefile
+assert "IOMFB_SET_SHMEM_OBSERVER requires IOMFB_FULL_OWNER=1" in makefile
+assert "IOMFB_START_OBSERVER and IOMFB_SET_SHMEM_OBSERVER are mutually exclusive" in makefile
+assert "IOMFB_EARLY_PIODMA_OBSERVER and IOMFB_SET_SHMEM_OBSERVER are mutually exclusive" in makefile
+
+set_shmem_observer = source[source.index(
+    "static bool dcp_iomfb_observe_set_shmem_fail_closed"
+):source.index("bool dcp_iomfb_owner_start(")]
+assert "rtkit_alloc_buffer_aligned" in set_shmem_observer
+assert "DCP_IOMFB_RPC_SHMEM_SIZE, 0x10000" in set_shmem_observer
+assert "dcp_iomfb_set_shmem_message" in set_shmem_observer
+assert "DCP_IOMFB_MESSAGE_TYPE_INITIALIZED" in set_shmem_observer
+assert "dcp_iomfb_bootstrap_start" not in set_shmem_observer
+assert "afk_epic_register_raw_handler" not in set_shmem_observer
+assert "return false;" in set_shmem_observer
+
+set_shmem_call = body.index("dcp_iomfb_observe_set_shmem_fail_closed(")
+assert start_endpoint < set_shmem_call < init_piodma, (
+    "SET_SHMEM observer must run immediately after START with early SID4"
+)
+assert "defined(DCP_IOMFB_SET_SHMEM_OBSERVER)" in init_body
 
 print("dcp_iomfb_owner_admission_contract_test: ok")

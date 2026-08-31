@@ -12,6 +12,7 @@
 #define DCP_IOMFB_MSG_CONTEXT_MASK  0xfull
 #define DCP_IOMFB_MSG_OFFSET_MASK   0xffffull
 #define DCP_IOMFB_MSG_ACK           (1ull << 6)
+#define DCP_IOMFB_SET_SHMEM_DVA_MASK 0x0000ffffffffffffull
 
 static bool dcp_iomfb_context_offset(unsigned int context, size_t *offset)
 {
@@ -41,7 +42,8 @@ static bool dcp_iomfb_context_offset(unsigned int context, size_t *offset)
 
 dcp_iomfb_u64 dcp_iomfb_set_shmem_message(dcp_iomfb_u64 dva)
 {
-    return (dva & ~0xffffull) | (4ull << 4) | DCP_IOMFB_MESSAGE_TYPE_SET_SHMEM;
+    return ((dva & DCP_IOMFB_SET_SHMEM_DVA_MASK) << 16) |
+           (4ull << 4) | DCP_IOMFB_MESSAGE_TYPE_SET_SHMEM;
 }
 
 dcp_iomfb_u64 dcp_iomfb_ack_message(enum dcp_iomfb_context context)

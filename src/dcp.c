@@ -245,7 +245,8 @@ static int dcp_iomfb_owner_receive(void *opaque, afk_raw_u8 endpoint,
 #define DCP_IOMFB_START_OBSERVE_USEC 500000u
 
 #if !defined(DCP_IOMFB_START_OBSERVER) && \
-    !defined(DCP_IOMFB_EARLY_PIODMA_OBSERVER)
+    !defined(DCP_IOMFB_EARLY_PIODMA_OBSERVER) && \
+    !defined(DCP_IOMFB_SET_SHMEM_OBSERVER)
 static bool dcp_iomfb_drain_pending_system_traffic(dcp_dev_t *dcp)
 {
     unsigned int processed = 0;
@@ -264,6 +265,57 @@ static bool dcp_iomfb_drain_pending_system_traffic(dcp_dev_t *dcp)
     printf("dcp-iomfb: drained %u pending RTKit system messages before owner START\n",
            processed);
     return true;
+}
+#endif
+
+#ifdef DCP_IOMFB_SET_SHMEM_OBSERVER
+static bool dcp_iomfb_observe_set_shmem_fail_closed(dcp_dev_t *dcp)
+{
+    u64 deadline;
+
+    if (!rtkit_alloc_buffer_aligned(dcp->rtkit, &dcp->iomfb_shmem,
+                                    DCP_IOMFB_RPC_SHMEM_SIZE, 0x10000)) {
+        printf("dcp-iomfb: SET_SHMEM observer allocation failed\n");
+        return false;
+    }
+    memset(dcp->iomfb_shmem.bfr, 0, dcp->iomfb_shmem.sz);
+    if (!dcp_iomfb_send(dcp, DCP_IOMFB_RPC_ENDPOINT,
+                        dcp_iomfb_set_shmem_message(dcp->iomfb_shmem.dva))) {
+        printf("dcp-iomfb: SET_SHMEM observer send failed\n");
+        return false;
+    }
+    printf("dcp-iomfb: SET_SHMEM sent dva=0x%lx size=0x%lx\n",
+           dcp->iomfb_shmem.dva, dcp->iomfb_shmem.sz);
+
+    deadline = timeout_calculate(DCP_IOMFB_START_OBSERVE_USEC);
+    for (unsigned int attempt = 0;
+         attempt < DCP_IOMFB_START_OBSERVE_MAX_POLLS &&
+         !timeout_expired(deadline); attempt++) {
+        struct rtkit_message msg = {.ep = 0xff, .msg = 0};
+        int ret = rtkit_recv_one_quiet(dcp->rtkit, &msg);
+
+        if (ret < 0) {
+            printf("dcp-iomfb: SET_SHMEM observation saw RTKit failure\n");
+            return false;
+        }
+        if (ret > 0) {
+            if (msg.ep == DCP_IOMFB_RPC_ENDPOINT &&
+                (msg.msg & 0xf) == DCP_IOMFB_MESSAGE_TYPE_INITIALIZED)
+                printf("dcp-iomfb: SET_SHMEM admitted; endpoint initialized\n");
+            else
+                printf("dcp-iomfb: SET_SHMEM observation saw ep=0x%02x msg=0x%lx\n",
+                       msg.ep, msg.msg);
+            return false;
+        }
+        if (msg.ep != 0xff) {
+            printf("dcp-iomfb: SET_SHMEM observation saw system ep=0x%02x msg=0x%lx\n",
+                   msg.ep, msg.msg);
+            return false;
+        }
+        udelay(1);
+    }
+    printf("dcp-iomfb: SET_SHMEM observation expired without endpoint response\n");
+    return false;
 }
 #endif
 
@@ -318,7 +370,8 @@ bool dcp_iomfb_owner_start(dcp_dev_t *dcp)
     if (adt_path_offset_trace(adt, "/arm-io/dart-disp0", dart_path) < 0)
         return false;
 #if !defined(DCP_IOMFB_START_OBSERVER) && \
-    !defined(DCP_IOMFB_EARLY_PIODMA_OBSERVER)
+    !defined(DCP_IOMFB_EARLY_PIODMA_OBSERVER) && \
+    !defined(DCP_IOMFB_SET_SHMEM_OBSERVER)
     if (!dcp_iomfb_drain_pending_system_traffic(dcp))
         return false;
 #endif
@@ -332,12 +385,19 @@ bool dcp_iomfb_owner_start(dcp_dev_t *dcp)
     return dcp_iomfb_observe_start_fail_closed(dcp);
 #endif
 
+#ifdef DCP_IOMFB_SET_SHMEM_OBSERVER
+    return dcp_iomfb_observe_set_shmem_fail_closed(dcp);
+#endif
+
+#if !defined(DCP_IOMFB_EARLY_PIODMA_OBSERVER) && \
+    !defined(DCP_IOMFB_SET_SHMEM_OBSERVER)
     dcp->dart_piodma = dart_init_adt("/arm-io/dart-disp0", 0, 4, true);
     if (!dcp->dart_piodma)
         goto fail_endpoint;
     if (dart_setup_pt_region(dcp->dart_piodma, "/arm-io/dart-disp0", 4,
                              dart_vm_base(dcp->dart_dcp)))
         goto fail_endpoint;
+#endif
 
     if (!rtkit_alloc_buffer_aligned(dcp->rtkit, &dcp->iomfb_shmem,
                                     DCP_IOMFB_RPC_SHMEM_SIZE, 0x10000))
@@ -712,7 +772,8 @@ dcp_dev_t *dcp_init(const display_config_t *cfg)
     // set disp0's page tables at dart-dcp's vm-base
     dart_setup_pt_region(dcp->dart_disp, cfg->disp_dart, 0, vm_base);
 
-#ifdef DCP_IOMFB_EARLY_PIODMA_OBSERVER
+#if defined(DCP_IOMFB_EARLY_PIODMA_OBSERVER) || \
+    defined(DCP_IOMFB_SET_SHMEM_OBSERVER)
     /* Linux creates/configures the PIODMA IOMMU child during probe, before
      * dcp_start() starts any RTKit application endpoint.  Preserve that
      * lifecycle for the isolated admission discriminator. */
@@ -778,7 +839,8 @@ out_rtkit:
     rtkit_free(dcp->rtkit);
 out_iovad:
     iovad_shutdown(dcp->iovad_dcp, dcp->dart_dcp);
-#ifdef DCP_IOMFB_EARLY_PIODMA_OBSERVER
+#if defined(DCP_IOMFB_EARLY_PIODMA_OBSERVER) || \
+    defined(DCP_IOMFB_SET_SHMEM_OBSERVER)
 out_dart_piodma:
     dart_shutdown(dcp->dart_piodma);
 out_dart_disp:
