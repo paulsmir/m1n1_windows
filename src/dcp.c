@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: MIT */
 
 #include "../config.h"
+#include "../build/build_cfg.h"
 
 #include "adt.h"
 #include "afk.h"
@@ -240,7 +241,10 @@ static int dcp_iomfb_owner_receive(void *opaque, afk_raw_u8 endpoint,
 }
 
 #define DCP_IOMFB_RTKIT_DRAIN_MAX_MESSAGES 64u
+#define DCP_IOMFB_START_OBSERVE_MAX_POLLS 100000u
+#define DCP_IOMFB_START_OBSERVE_USEC 500000u
 
+#ifndef DCP_IOMFB_START_OBSERVER
 static bool dcp_iomfb_drain_pending_system_traffic(dcp_dev_t *dcp)
 {
     unsigned int processed = 0;
@@ -260,6 +264,43 @@ static bool dcp_iomfb_drain_pending_system_traffic(dcp_dev_t *dcp)
            processed);
     return true;
 }
+#endif
+
+#ifdef DCP_IOMFB_START_OBSERVER
+static bool dcp_iomfb_observe_start_without_piodma(dcp_dev_t *dcp)
+{
+    u64 deadline = timeout_calculate(DCP_IOMFB_START_OBSERVE_USEC);
+
+    for (unsigned int attempt = 0;
+         attempt < DCP_IOMFB_START_OBSERVE_MAX_POLLS &&
+         !timeout_expired(deadline); attempt++) {
+        struct rtkit_message msg = {.ep = 0xff, .msg = 0};
+        int ret = rtkit_recv_one_quiet(dcp->rtkit, &msg);
+
+        if (ret < 0) {
+            printf("dcp-iomfb: START-only observation saw RTKit failure\n");
+            return false;
+        }
+        if (ret > 0) {
+            if (msg.ep == DCP_IOMFB_RPC_ENDPOINT)
+                printf("dcp-iomfb: START-only observation accepted ep=0x%02x msg=0x%lx\n",
+                       msg.ep, msg.msg);
+            else
+                printf("dcp-iomfb: START-only observation saw unrelated ep=0x%02x msg=0x%lx\n",
+                       msg.ep, msg.msg);
+            return false;
+        }
+        if (msg.ep != 0xff) {
+            printf("dcp-iomfb: START-only observation saw system ep=0x%02x msg=0x%lx\n",
+                   msg.ep, msg.msg);
+            return false;
+        }
+        udelay(1);
+    }
+    printf("dcp-iomfb: START-only observation expired without endpoint response\n");
+    return false;
+}
+#endif
 
 bool dcp_iomfb_owner_start(dcp_dev_t *dcp)
 {
@@ -274,11 +315,18 @@ bool dcp_iomfb_owner_start(dcp_dev_t *dcp)
     }
     if (adt_path_offset_trace(adt, "/arm-io/dart-disp0", dart_path) < 0)
         return false;
+#ifndef DCP_IOMFB_START_OBSERVER
     if (!dcp_iomfb_drain_pending_system_traffic(dcp))
         return false;
+#endif
     if (!rtkit_start_ep(dcp->rtkit, DCP_IOMFB_RPC_ENDPOINT))
         return false;
     dcp->iomfb_owner_endpoint_started = true;
+#ifdef DCP_IOMFB_START_OBSERVER
+    /* Receipt-only discriminator: do not touch PIODMA, shared memory, AFK or
+     * RPC state until START itself is classified. Every result fails closed. */
+    return dcp_iomfb_observe_start_without_piodma(dcp);
+#endif
 
     dcp->dart_piodma = dart_init_adt("/arm-io/dart-disp0", 0, 4, true);
     if (!dcp->dart_piodma)

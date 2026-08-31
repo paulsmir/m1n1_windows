@@ -9,23 +9,33 @@ start = source.index("bool dcp_iomfb_owner_start(")
 end = source.index("\nbool dcp_iomfb_owner_supported", start)
 body = source[start:end]
 
-settle_system = body.index("dcp_iomfb_drain_pending_system_traffic(")
 start_endpoint = body.index("rtkit_start_ep(")
+observe_start = body.index("dcp_iomfb_observe_start_without_piodma(")
+settle_system = body.index("dcp_iomfb_drain_pending_system_traffic(")
 init_piodma = body.index("dart_init_adt(")
 allocate_shmem = body.index("rtkit_alloc_buffer_aligned(")
 register_handler = body.index("afk_epic_register_raw_handler(")
 send_shmem = body.index("dcp_iomfb_set_shmem_message(")
 
-assert settle_system < start_endpoint < init_piodma, (
-    "RTKit system traffic must settle before starting the IOMFB endpoint"
+assert start_endpoint < observe_start < init_piodma, (
+    "START-only observation must run before any PIODMA state is touched"
 )
-assert "DCP_IOMFB_RTKIT_DRAIN_MAX_MESSAGES" in source
-settle_body = source[source.index(
-    "static bool dcp_iomfb_drain_pending_system_traffic"
+observe_body = source[source.index(
+    "static bool dcp_iomfb_observe_start_without_piodma"
 ):start]
-assert "rtkit_drain_system_bounded(" in settle_body
-assert "if (!processed)" in settle_body and "return false;" in settle_body, (
-    "the experiment must not start IOMFB when the traffic discriminator is inactive"
+assert "DCP_IOMFB_START_OBSERVE_MAX_POLLS" in source
+assert "DCP_IOMFB_START_OBSERVE_USEC" in source
+assert "timeout_calculate(DCP_IOMFB_START_OBSERVE_USEC)" in observe_body
+assert "timeout_expired(deadline)" in observe_body
+assert "rtkit_recv_one_quiet(" in observe_body
+assert "msg.ep == DCP_IOMFB_RPC_ENDPOINT" in observe_body
+assert "return false;" in observe_body, (
+    "the receipt-only experiment must fail closed for every observation"
+)
+assert "#ifdef DCP_IOMFB_START_OBSERVER" in body
+assert "#ifndef DCP_IOMFB_START_OBSERVER" in body
+assert settle_system < start_endpoint, (
+    "ordinary full-owner builds must retain the accepted pre-START drain"
 )
 assert start_endpoint < init_piodma, (
     "IOMFB endpoint must start before creating its PIODMA mapping"
