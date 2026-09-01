@@ -189,8 +189,17 @@ assert "modeset_reissued" in bootstrap_source
 assert 'dcp_iomfb_properties_match_u64(' in source
 assert '"DPTimingModeId"' in source
 assert "applied timing confirmed id=%u" in source
-assert "one-swap observer proceeding to stronger D589 proof" in source
+assert "deferring applied proof to exact D589 on first present" in source
 assert "timing_status == DCP_IOMFB_TIMING_ABSENT" in source
+post_reissue = source[
+    source.index("timing_status = dcp_iomfb_owner_confirm_timing(", modeset) :
+    source.index("#ifdef DCP_IOMFB_A412_OBSERVER", modeset)
+]
+assert "#ifdef DCP_IOMFB_SWAP_OBSERVER" not in post_reissue, (
+    "hardware-proven D563 absence must admit the normal full owner; exact D589 "
+    "on each present remains the physical completion proof"
+)
+assert "deferring applied proof to exact D589 on first present" in post_reissue
 confirm_start = source.index("dcp_iomfb_owner_confirm_timing(")
 confirm_end = source.index("\nstatic int dcp_iomfb_owner_receive", confirm_start)
 confirm_body = source[confirm_start:confirm_end]

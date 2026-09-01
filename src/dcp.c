@@ -566,16 +566,14 @@ bool dcp_iomfb_owner_start(dcp_dev_t *dcp)
         timing_status = dcp_iomfb_owner_confirm_timing(
             dcp, mode.timing_mode_id);
         if (timing_status != DCP_IOMFB_TIMING_MATCH) {
-#ifdef DCP_IOMFB_SWAP_OBSERVER
             if (timing_status == DCP_IOMFB_TIMING_ABSENT) {
                 printf("dcp-iomfb: D563 absent after accepted A412 pair; "
-                       "one-swap observer proceeding to stronger D589 proof\n");
+                       "deferring applied proof to exact D589 on first present\n");
             } else
-#endif
             {
-            printf("dcp-iomfb: bounded A412 reissue failed closed status=%d\n",
-                   timing_status);
-            goto fail_endpoint;
+                printf("dcp-iomfb: bounded A412 reissue failed closed status=%d\n",
+                       timing_status);
+                goto fail_endpoint;
             }
         }
     }
