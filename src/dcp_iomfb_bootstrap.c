@@ -197,6 +197,7 @@ bool dcp_iomfb_bootstrap_prepare_modeset(
 {
     uint8_t input[0x28] = {0};
     uint32_t result = 0;
+    bool transported;
 
     if (!bootstrap || !bootstrap->call ||
         bootstrap->state != DCP_IOMFB_BOOT_POWERED)
@@ -207,7 +208,10 @@ bool dcp_iomfb_bootstrap_prepare_modeset(
      * inline at byte four and count is the final uint32 at byte 0x24. */
     store_u32(input, 14);
     store_u32(input + 0x24, 1);
-    if (!call_method(bootstrap, 441, "A441", input, &result) || result != 0) {
+    transported = call_method(bootstrap, 441, "A441", input, &result);
+    printf("dcp-iomfb: A441 receipt transport=%u result=%u param=14 count=1\n",
+           transported, result);
+    if (!transported || result != 0) {
         bootstrap->state = DCP_IOMFB_BOOT_FAILED;
         return false;
     }
