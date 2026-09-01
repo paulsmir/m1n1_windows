@@ -12,11 +12,12 @@ struct fixture {
     char tags[32][5];
     uint32_t input_sizes[32];
     uint32_t output_sizes[32];
-    uint8_t inputs[32][16];
+    uint8_t inputs[32][0x40];
     unsigned int calls;
     unsigned int platform_calls;
     unsigned int last_platform_id;
     bool force_bad_display_result;
+    bool force_bad_parameter_result;
     bool force_bad_modeset_result;
 };
 
@@ -51,6 +52,9 @@ static bool record_call(void *opaque, const char tag[4], const void *input,
                sizeof(success));
     } else if (memcmp(tag, "A410", 4) == 0) {
         uint32_t result = fixture->force_bad_display_result ? 0 : 2;
+        memcpy(output, &result, sizeof(result));
+    } else if (memcmp(tag, "A441", 4) == 0) {
+        uint32_t result = fixture->force_bad_parameter_result ? 1 : 0;
         memcpy(output, &result, sizeof(result));
     } else if (memcmp(tag, "A412", 4) == 0) {
         uint32_t result = fixture->force_bad_modeset_result ? 0 : 2;
@@ -186,12 +190,17 @@ int main(void)
     for (unsigned int i = 1; i < 12; i++)
         assert(fixture.inputs[5][i] == 0);
 
+    assert(dcp_iomfb_bootstrap_prepare_modeset(&bootstrap));
+    assert(fixture.calls == 8);
+    expect_call(&fixture, 7, "A441", 0x28, 4);
+    assert(fixture.inputs[7][0] == 14);
+    assert(fixture.inputs[7][0x24] == 1);
     assert(dcp_iomfb_bootstrap_modeset(&bootstrap, 7, 11));
     assert(dcp_iomfb_bootstrap_state(&bootstrap) == DCP_IOMFB_BOOT_MODESET);
-    assert(fixture.calls == 8);
-    expect_call(&fixture, 7, "A412", 8, 4);
-    assert(fixture.inputs[7][0] == 7);
-    assert(fixture.inputs[7][4] == 11);
+    assert(fixture.calls == 9);
+    expect_call(&fixture, 8, "A412", 8, 4);
+    assert(fixture.inputs[8][0] == 7);
+    assert(fixture.inputs[8][4] == 11);
 
     memset(&fixture, 0, sizeof(fixture));
     fixture.force_bad_modeset_result = true;
@@ -199,7 +208,17 @@ int main(void)
                              &fixture);
     assert(dcp_iomfb_bootstrap_start(&bootstrap));
     assert(dcp_iomfb_bootstrap_power_on(&bootstrap));
+    assert(dcp_iomfb_bootstrap_prepare_modeset(&bootstrap));
     assert(!dcp_iomfb_bootstrap_modeset(&bootstrap, 7, 11));
+    assert(dcp_iomfb_bootstrap_state(&bootstrap) == DCP_IOMFB_BOOT_FAILED);
+
+    memset(&fixture, 0, sizeof(fixture));
+    fixture.force_bad_parameter_result = true;
+    dcp_iomfb_bootstrap_init(&bootstrap, record_call, platform_callback,
+                             &fixture);
+    assert(dcp_iomfb_bootstrap_start(&bootstrap));
+    assert(dcp_iomfb_bootstrap_power_on(&bootstrap));
+    assert(!dcp_iomfb_bootstrap_prepare_modeset(&bootstrap));
     assert(dcp_iomfb_bootstrap_state(&bootstrap) == DCP_IOMFB_BOOT_FAILED);
 
     memset(&fixture, 0, sizeof(fixture));

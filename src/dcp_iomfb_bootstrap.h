@@ -17,6 +17,7 @@ enum dcp_iomfb_boot_state {
     DCP_IOMFB_BOOT_ACTIVE,
     DCP_IOMFB_BOOT_POWER_ON,
     DCP_IOMFB_BOOT_POWERED,
+    DCP_IOMFB_BOOT_PARAMETERIZED,
     DCP_IOMFB_BOOT_MODESET,
     DCP_IOMFB_BOOT_FAILED,
 };
@@ -54,6 +55,8 @@ bool dcp_iomfb_bootstrap_power_on_firmware(
 bool dcp_iomfb_bootstrap_select_display(
     struct dcp_iomfb_bootstrap *bootstrap);
 bool dcp_iomfb_bootstrap_power_on(struct dcp_iomfb_bootstrap *bootstrap);
+bool dcp_iomfb_bootstrap_prepare_modeset(
+    struct dcp_iomfb_bootstrap *bootstrap);
 bool dcp_iomfb_bootstrap_modeset(struct dcp_iomfb_bootstrap *bootstrap,
                                  uint32_t color_mode_id,
                                  uint32_t timing_mode_id);

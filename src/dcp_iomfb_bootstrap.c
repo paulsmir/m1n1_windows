@@ -178,7 +178,7 @@ bool dcp_iomfb_bootstrap_modeset(struct dcp_iomfb_bootstrap *bootstrap,
     bool transported;
 
     if (!bootstrap || !bootstrap->call ||
-        bootstrap->state != DCP_IOMFB_BOOT_POWERED)
+        bootstrap->state != DCP_IOMFB_BOOT_PARAMETERIZED)
         return false;
     transported = call_method(bootstrap, 412, "A412", input, &result);
     printf("dcp-iomfb: A412 receipt transport=%u result=%u color=%u timing=%u\n",
@@ -189,6 +189,30 @@ bool dcp_iomfb_bootstrap_modeset(struct dcp_iomfb_bootstrap *bootstrap,
     }
 
     bootstrap->state = DCP_IOMFB_BOOT_MODESET;
+    return true;
+}
+
+bool dcp_iomfb_bootstrap_prepare_modeset(
+    struct dcp_iomfb_bootstrap *bootstrap)
+{
+    uint8_t input[0x28] = {0};
+    uint32_t result = 0;
+
+    if (!bootstrap || !bootstrap->call ||
+        bootstrap->state != DCP_IOMFB_BOOT_POWERED)
+        return false;
+
+    /* Pinned J313/13.5 performs set_parameter_dcp(14, [0], 1) between
+     * set_display_device(0) and SetDigitalOutMode.  SizedArray<4, u64> is
+     * inline at byte four and count is the final uint32 at byte 0x24. */
+    store_u32(input, 14);
+    store_u32(input + 0x24, 1);
+    if (!call_method(bootstrap, 441, "A441", input, &result) || result != 0) {
+        bootstrap->state = DCP_IOMFB_BOOT_FAILED;
+        return false;
+    }
+
+    bootstrap->state = DCP_IOMFB_BOOT_PARAMETERIZED;
     return true;
 }
 

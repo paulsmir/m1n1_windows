@@ -163,10 +163,11 @@ timing_property = body.index(
 )
 select_modes = body.index("dcp_iomfb_select_modes(")
 power_on = body.index("dcp_iomfb_bootstrap_power_on(")
+prepare_modeset = body.index("dcp_iomfb_bootstrap_prepare_modeset(")
 modeset = body.index("dcp_iomfb_bootstrap_modeset(")
-assert bootstrap < color_property < timing_property < select_modes < power_on < modeset, (
+assert bootstrap < color_property < timing_property < select_modes < power_on < prepare_modeset < modeset, (
     "production owner must consume validated DCPAV modes, power the panel and "
-    "perform A412 before it admits presentation"
+    "perform pinned A441 then A412 before it admits presentation"
 )
 
 a412_receipt = body.index("A412 applied; downstream calls disabled")

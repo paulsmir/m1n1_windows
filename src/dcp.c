@@ -520,6 +520,7 @@ bool dcp_iomfb_owner_start(dcp_dev_t *dcp)
         goto fail_endpoint;
     }
     if (!dcp_iomfb_bootstrap_power_on(&dcp->iomfb_bootstrap) ||
+        !dcp_iomfb_bootstrap_prepare_modeset(&dcp->iomfb_bootstrap) ||
         !dcp_iomfb_bootstrap_modeset(&dcp->iomfb_bootstrap,
                                      mode.color_mode_id,
                                      mode.timing_mode_id) ||
