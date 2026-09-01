@@ -227,24 +227,30 @@ static int dcp_iomfb_owner_callback(void *opaque, const char tag[4],
     return result;
 }
 
-static bool dcp_iomfb_owner_confirm_timing(dcp_dev_t *dcp,
-                                            u32 expected_timing_mode_id)
+enum dcp_iomfb_timing_status {
+    DCP_IOMFB_TIMING_ERROR = -1,
+    DCP_IOMFB_TIMING_PENDING = 0,
+    DCP_IOMFB_TIMING_MATCH = 1,
+};
+
+static enum dcp_iomfb_timing_status
+dcp_iomfb_owner_confirm_timing(dcp_dev_t *dcp, u32 expected_timing_mode_id)
 {
     u64 observed = 0;
     bool valid = false;
 
     if (!dcp || !dcp->iomfb_owner_registered)
-        return false;
+        return DCP_IOMFB_TIMING_ERROR;
     for (unsigned int attempt = 0; attempt < 5000; attempt++) {
         valid = dcp_iomfb_properties_find_u64(
             &dcp->iomfb_properties, "DPTimingModeId", &observed);
         if (valid && observed == expected_timing_mode_id) {
             printf("dcp-iomfb: applied timing confirmed id=%u\n",
                    expected_timing_mode_id);
-            return true;
+            return DCP_IOMFB_TIMING_MATCH;
         }
         if (afk_epic_work(dcp->afk, -1) < 0)
-            return false;
+            return DCP_IOMFB_TIMING_ERROR;
         udelay(100);
     }
     if (valid)
@@ -253,7 +259,7 @@ static bool dcp_iomfb_owner_confirm_timing(dcp_dev_t *dcp,
     else
         printf("dcp-iomfb: applied timing property timed out expected=%u\n",
                expected_timing_mode_id);
-    return false;
+    return DCP_IOMFB_TIMING_PENDING;
 }
 
 static int dcp_iomfb_owner_receive(void *opaque, afk_raw_u8 endpoint,
@@ -381,6 +387,7 @@ bool dcp_iomfb_owner_start(dcp_dev_t *dcp)
     size_t color_size;
     size_t timing_size;
     int dart_path[8];
+    enum dcp_iomfb_timing_status timing_status;
 
     if (!dcp || dcp->iomfb_owner_endpoint_started ||
         dcp->iomfb_owner_registered || dcp->iomfb_observer_registered)
@@ -523,10 +530,32 @@ bool dcp_iomfb_owner_start(dcp_dev_t *dcp)
         !dcp_iomfb_bootstrap_prepare_modeset(&dcp->iomfb_bootstrap) ||
         !dcp_iomfb_bootstrap_modeset(&dcp->iomfb_bootstrap,
                                      mode.color_mode_id,
-                                     mode.timing_mode_id) ||
-        !dcp_iomfb_owner_confirm_timing(dcp, mode.timing_mode_id)) {
+                                     mode.timing_mode_id)) {
         printf("dcp-iomfb: panel power/modeset failed closed\n");
         goto fail_endpoint;
+    }
+    timing_status = dcp_iomfb_owner_confirm_timing(dcp,
+                                                    mode.timing_mode_id);
+    if (timing_status == DCP_IOMFB_TIMING_ERROR) {
+        printf("dcp-iomfb: timing confirmation transport failed closed\n");
+        goto fail_endpoint;
+    }
+    if (timing_status == DCP_IOMFB_TIMING_PENDING) {
+        printf("dcp-iomfb: reissuing A412 for unapplied timing id=%u\n",
+               mode.timing_mode_id);
+        if (!dcp_iomfb_bootstrap_remodeset(&dcp->iomfb_bootstrap,
+                                           mode.color_mode_id,
+                                           mode.timing_mode_id)) {
+            printf("dcp-iomfb: bounded A412 reissue failed closed\n");
+            goto fail_endpoint;
+        }
+        timing_status = dcp_iomfb_owner_confirm_timing(
+            dcp, mode.timing_mode_id);
+        if (timing_status != DCP_IOMFB_TIMING_MATCH) {
+            printf("dcp-iomfb: bounded A412 reissue failed closed status=%d\n",
+                   timing_status);
+            goto fail_endpoint;
+        }
     }
 #ifdef DCP_IOMFB_A412_OBSERVER
     printf("dcp-iomfb: A412 applied; downstream calls disabled color=%u timing=%u\n",

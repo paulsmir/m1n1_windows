@@ -175,7 +175,13 @@ single_owner = body.index("single owner MODESET")
 timing_confirm = body.rfind("dcp_iomfb_owner_confirm_timing(", modeset, a412_receipt)
 assert modeset < timing_confirm < a412_receipt < single_owner
 assert "A412 receipt transport=%u result=%u color=%u timing=%u" in bootstrap_source
+assert "A412 reissue receipt transport=%u result=%u color=%u timing=%u" in bootstrap_source
 assert "A441 receipt transport=%u result=%u param=14 count=1" in bootstrap_source
+assert "dcp_iomfb_bootstrap_remodeset(" in source
+assert "bounded A412 reissue failed closed" in source
+assert "DCP_IOMFB_TIMING_ERROR" in source
+assert "timing confirmation transport failed closed" in source
+assert "modeset_reissued" in bootstrap_source
 assert 'dcp_iomfb_properties_find_u64(' in source
 assert '"DPTimingModeId"' in source
 assert "applied timing confirmed id=%u" in source

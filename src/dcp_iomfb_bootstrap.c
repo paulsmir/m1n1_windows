@@ -169,20 +169,29 @@ bool dcp_iomfb_bootstrap_select_display(
     return true;
 }
 
-bool dcp_iomfb_bootstrap_modeset(struct dcp_iomfb_bootstrap *bootstrap,
-                                 uint32_t color_mode_id,
-                                 uint32_t timing_mode_id)
+static bool dcp_iomfb_bootstrap_modeset_call(
+    struct dcp_iomfb_bootstrap *bootstrap, uint32_t color_mode_id,
+    uint32_t timing_mode_id, bool reissue)
 {
     uint32_t input[2] = {color_mode_id, timing_mode_id};
     uint32_t result = 0;
     bool transported;
 
-    if (!bootstrap || !bootstrap->call ||
-        bootstrap->state != DCP_IOMFB_BOOT_PARAMETERIZED)
+    enum dcp_iomfb_boot_state expected =
+        reissue ? DCP_IOMFB_BOOT_MODESET : DCP_IOMFB_BOOT_PARAMETERIZED;
+
+    if (!bootstrap || !bootstrap->call || bootstrap->state != expected ||
+        (reissue && bootstrap->modeset_reissued))
         return false;
+    if (reissue)
+        bootstrap->modeset_reissued = true;
     transported = call_method(bootstrap, 412, "A412", input, &result);
-    printf("dcp-iomfb: A412 receipt transport=%u result=%u color=%u timing=%u\n",
-           transported, result, color_mode_id, timing_mode_id);
+    if (reissue)
+        printf("dcp-iomfb: A412 reissue receipt transport=%u result=%u color=%u timing=%u\n",
+               transported, result, color_mode_id, timing_mode_id);
+    else
+        printf("dcp-iomfb: A412 receipt transport=%u result=%u color=%u timing=%u\n",
+               transported, result, color_mode_id, timing_mode_id);
     if (!transported || result != 2) {
         bootstrap->state = DCP_IOMFB_BOOT_FAILED;
         return false;
@@ -190,6 +199,25 @@ bool dcp_iomfb_bootstrap_modeset(struct dcp_iomfb_bootstrap *bootstrap,
 
     bootstrap->state = DCP_IOMFB_BOOT_MODESET;
     return true;
+}
+
+bool dcp_iomfb_bootstrap_modeset(struct dcp_iomfb_bootstrap *bootstrap,
+                                 uint32_t color_mode_id,
+                                 uint32_t timing_mode_id)
+{
+    return dcp_iomfb_bootstrap_modeset_call(bootstrap, color_mode_id,
+                                            timing_mode_id, false);
+}
+
+bool dcp_iomfb_bootstrap_remodeset(struct dcp_iomfb_bootstrap *bootstrap,
+                                   uint32_t color_mode_id,
+                                   uint32_t timing_mode_id)
+{
+    /* Pinned J313/13.5 reissues SetDigitalOutMode while the firmware's
+     * DPTimingModeId property does not yet match the selected fixed mode.
+     * Keep the production implementation bounded to one explicit reissue. */
+    return dcp_iomfb_bootstrap_modeset_call(bootstrap, color_mode_id,
+                                            timing_mode_id, true);
 }
 
 bool dcp_iomfb_bootstrap_prepare_modeset(

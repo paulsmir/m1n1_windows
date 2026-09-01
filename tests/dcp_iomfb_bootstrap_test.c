@@ -201,6 +201,25 @@ int main(void)
     expect_call(&fixture, 8, "A412", 8, 4);
     assert(fixture.inputs[8][0] == 7);
     assert(fixture.inputs[8][4] == 11);
+    assert(dcp_iomfb_bootstrap_remodeset(&bootstrap, 7, 11));
+    assert(dcp_iomfb_bootstrap_state(&bootstrap) == DCP_IOMFB_BOOT_MODESET);
+    assert(fixture.calls == 10);
+    expect_call(&fixture, 9, "A412", 8, 4);
+    assert(fixture.inputs[9][0] == 7);
+    assert(fixture.inputs[9][4] == 11);
+    assert(!dcp_iomfb_bootstrap_remodeset(&bootstrap, 7, 11));
+    assert(fixture.calls == 10);
+
+    memset(&fixture, 0, sizeof(fixture));
+    dcp_iomfb_bootstrap_init(&bootstrap, record_call, platform_callback,
+                             &fixture);
+    assert(dcp_iomfb_bootstrap_start(&bootstrap));
+    assert(dcp_iomfb_bootstrap_power_on(&bootstrap));
+    assert(dcp_iomfb_bootstrap_prepare_modeset(&bootstrap));
+    assert(dcp_iomfb_bootstrap_modeset(&bootstrap, 7, 11));
+    fixture.force_bad_modeset_result = true;
+    assert(!dcp_iomfb_bootstrap_remodeset(&bootstrap, 7, 11));
+    assert(dcp_iomfb_bootstrap_state(&bootstrap) == DCP_IOMFB_BOOT_FAILED);
 
     memset(&fixture, 0, sizeof(fixture));
     fixture.force_bad_modeset_result = true;

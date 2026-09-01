@@ -37,6 +37,7 @@ struct dcp_iomfb_bootstrap {
     void *opaque;
     enum dcp_iomfb_boot_state state;
     bool main_display;
+    bool modeset_reissued;
 };
 
 void dcp_iomfb_bootstrap_init(struct dcp_iomfb_bootstrap *bootstrap,
@@ -60,6 +61,9 @@ bool dcp_iomfb_bootstrap_prepare_modeset(
 bool dcp_iomfb_bootstrap_modeset(struct dcp_iomfb_bootstrap *bootstrap,
                                  uint32_t color_mode_id,
                                  uint32_t timing_mode_id);
+bool dcp_iomfb_bootstrap_remodeset(struct dcp_iomfb_bootstrap *bootstrap,
+                                   uint32_t color_mode_id,
+                                   uint32_t timing_mode_id);
 int dcp_iomfb_bootstrap_callback(struct dcp_iomfb_bootstrap *bootstrap,
                                  const char tag[4], const void *input,
                                  uint32_t input_size, void *output,
