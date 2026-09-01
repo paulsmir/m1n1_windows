@@ -109,26 +109,13 @@ failed:
 
 bool dcp_iomfb_bootstrap_power_on(struct dcp_iomfb_bootstrap *bootstrap)
 {
-    uint32_t display_device = 0;
-    uint32_t display_result = 0;
-
     if (!bootstrap || !bootstrap->call || !bootstrap->main_display)
         return false;
 
     if (bootstrap->state == DCP_IOMFB_BOOT_ACTIVE &&
         !dcp_iomfb_bootstrap_power_on_firmware(bootstrap))
         return false;
-    if (bootstrap->state != DCP_IOMFB_BOOT_POWER_ON)
-        return false;
-
-    if (!call_method(bootstrap, 410, "A410", &display_device,
-                     &display_result)) {
-        bootstrap->state = DCP_IOMFB_BOOT_FAILED;
-        return false;
-    }
-
-    bootstrap->state = DCP_IOMFB_BOOT_POWERED;
-    return true;
+    return dcp_iomfb_bootstrap_select_display(bootstrap);
 }
 
 bool dcp_iomfb_bootstrap_power_on_firmware(
@@ -152,6 +139,27 @@ bool dcp_iomfb_bootstrap_power_on_firmware(
     }
 
     bootstrap->state = DCP_IOMFB_BOOT_POWER_ON;
+    return true;
+}
+
+bool dcp_iomfb_bootstrap_select_display(
+    struct dcp_iomfb_bootstrap *bootstrap)
+{
+    uint32_t display_device = 0;
+    uint32_t display_result = 0;
+
+    if (!bootstrap || !bootstrap->call || !bootstrap->main_display ||
+        bootstrap->state != DCP_IOMFB_BOOT_POWER_ON)
+        return false;
+
+    if (!call_method(bootstrap, 410, "A410", &display_device,
+                     &display_result) ||
+        display_result != 2) {
+        bootstrap->state = DCP_IOMFB_BOOT_FAILED;
+        return false;
+    }
+
+    bootstrap->state = DCP_IOMFB_BOOT_POWERED;
     return true;
 }
 

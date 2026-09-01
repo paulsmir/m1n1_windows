@@ -16,6 +16,7 @@ struct fixture {
     unsigned int calls;
     unsigned int platform_calls;
     unsigned int last_platform_id;
+    bool force_bad_display_result;
 };
 
 static bool record_call(void *opaque, const char tag[4], const void *input,
@@ -47,6 +48,9 @@ static bool record_call(void *opaque, const char tag[4], const void *input,
         uint32_t success = 0;
         memcpy((uint8_t *)output + sizeof(uint32_t), &success,
                sizeof(success));
+    } else if (memcmp(tag, "A410", 4) == 0) {
+        uint32_t result = fixture->force_bad_display_result ? 0 : 2;
+        memcpy(output, &result, sizeof(result));
     }
     return true;
 }
@@ -186,6 +190,19 @@ int main(void)
            DCP_IOMFB_BOOT_POWER_ON);
     assert(fixture.calls == 6);
     expect_call(&fixture, 5, "A472", 12, 8);
+    assert(dcp_iomfb_bootstrap_select_display(&bootstrap));
+    assert(dcp_iomfb_bootstrap_state(&bootstrap) == DCP_IOMFB_BOOT_POWERED);
+    assert(fixture.calls == 7);
+    expect_call(&fixture, 6, "A410", 4, 4);
+
+    memset(&fixture, 0, sizeof(fixture));
+    fixture.force_bad_display_result = true;
+    dcp_iomfb_bootstrap_init(&bootstrap, record_call, platform_callback,
+                             &fixture);
+    assert(dcp_iomfb_bootstrap_start(&bootstrap));
+    assert(dcp_iomfb_bootstrap_power_on_firmware(&bootstrap));
+    assert(!dcp_iomfb_bootstrap_select_display(&bootstrap));
+    assert(dcp_iomfb_bootstrap_state(&bootstrap) == DCP_IOMFB_BOOT_FAILED);
 
     memset(output, 0, sizeof(output));
     assert(dcp_iomfb_bootstrap_callback(&bootstrap, "D003", output, 4,

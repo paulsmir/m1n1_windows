@@ -51,6 +51,8 @@ bool dcp_iomfb_bootstrap_start_through_first_client_open(
 bool dcp_iomfb_bootstrap_start(struct dcp_iomfb_bootstrap *bootstrap);
 bool dcp_iomfb_bootstrap_power_on_firmware(
     struct dcp_iomfb_bootstrap *bootstrap);
+bool dcp_iomfb_bootstrap_select_display(
+    struct dcp_iomfb_bootstrap *bootstrap);
 bool dcp_iomfb_bootstrap_power_on(struct dcp_iomfb_bootstrap *bootstrap);
 bool dcp_iomfb_bootstrap_modeset(struct dcp_iomfb_bootstrap *bootstrap,
                                  uint32_t color_mode_id,

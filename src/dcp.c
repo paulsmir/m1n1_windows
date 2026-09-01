@@ -463,6 +463,16 @@ bool dcp_iomfb_owner_start(dcp_dev_t *dcp)
     printf("dcp-iomfb: A472 admitted; downstream calls disabled\n");
     return false;
 #endif
+#ifdef DCP_IOMFB_A410_OBSERVER
+    if (!dcp_iomfb_bootstrap_start(&dcp->iomfb_bootstrap) ||
+        !dcp_iomfb_bootstrap_power_on_firmware(&dcp->iomfb_bootstrap) ||
+        !dcp_iomfb_bootstrap_select_display(&dcp->iomfb_bootstrap)) {
+        printf("dcp-iomfb: A410-only observation failed\n");
+        goto fail_endpoint;
+    }
+    printf("dcp-iomfb: A410 admitted; downstream calls disabled\n");
+    return false;
+#endif
     if (!dcp_iomfb_bootstrap_start(&dcp->iomfb_bootstrap)) {
         printf("dcp-iomfb: A401 bootstrap failed closed\n");
         goto fail_endpoint;
