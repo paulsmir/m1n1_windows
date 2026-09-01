@@ -4,6 +4,7 @@ import sys, pathlib
 sys.path.append(str(pathlib.Path(__file__).resolve().parents[1]))
 
 import argparse, pathlib, time
+from construct import Int64ul
 
 parser = argparse.ArgumentParser(description='Mach-O loader for m1n1')
 parser.add_argument('-q', '--quiet', action="store_true", help="Disable framebuffer")
@@ -96,13 +97,21 @@ if args.xnu:
 # monotonic value. Anchor the authoritative host clock to the architectural
 # counter so the next m1n1 stage can advance the value at callback time. The
 # two host samples bound the proxy round-trip skew around the counter read.
+def set_chosen_u64(name, value):
+    chosen = u.adt["chosen"]
+    # A prior chainload may have emitted a small counter/frequency as u32;
+    # replacing only the value would preserve that parsed type and fail once
+    # CNTPCT_EL0 exceeds UINT32_MAX. These private ABI fields are always u64.
+    chosen._properties[name] = value
+    chosen._types[name] = (Int64ul, False)
+
 utc_before_ns = time.time_ns()
 iomfb_utc_cntpct = u.mrs("CNTPCT_EL0")
 utc_after_ns = time.time_ns()
-u.adt["chosen"].m1n1_iomfb_utc_ms = \
-    ((utc_before_ns + utc_after_ns) // 2) // 1_000_000
-u.adt["chosen"].m1n1_iomfb_utc_cntpct = iomfb_utc_cntpct
-u.adt["chosen"].m1n1_iomfb_utc_cntfrq = u.mrs("CNTFRQ_EL0")
+set_chosen_u64("m1n1-iomfb-utc-ms",
+               ((utc_before_ns + utc_after_ns) // 2) // 1_000_000)
+set_chosen_u64("m1n1-iomfb-utc-cntpct", iomfb_utc_cntpct)
+set_chosen_u64("m1n1-iomfb-utc-cntfrq", u.mrs("CNTFRQ_EL0"))
 
 print("Setting secondary CPU RVBARs...")
 
