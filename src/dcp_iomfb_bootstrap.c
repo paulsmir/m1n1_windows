@@ -3,7 +3,13 @@
 #include "dcp_iomfb_bootstrap.h"
 #include "dcp_iomfb_v13_5_abi.h"
 
+#ifdef DCP_IOMFB_BOOTSTRAP_HOST_TEST
+#include <stdio.h>
 #include <string.h>
+#else
+#include "string.h"
+#include "utils.h"
+#endif
 
 static void store_u32(void *output, uint32_t value)
 {
@@ -169,11 +175,15 @@ bool dcp_iomfb_bootstrap_modeset(struct dcp_iomfb_bootstrap *bootstrap,
 {
     uint32_t input[2] = {color_mode_id, timing_mode_id};
     uint32_t result = 0;
+    bool transported;
 
     if (!bootstrap || !bootstrap->call ||
         bootstrap->state != DCP_IOMFB_BOOT_POWERED)
         return false;
-    if (!call_method(bootstrap, 412, "A412", input, &result) || result != 0) {
+    transported = call_method(bootstrap, 412, "A412", input, &result);
+    printf("dcp-iomfb: A412 receipt transport=%u result=%u color=%u timing=%u\n",
+           transported, result, color_mode_id, timing_mode_id);
+    if (!transported || result != 0) {
         bootstrap->state = DCP_IOMFB_BOOT_FAILED;
         return false;
     }

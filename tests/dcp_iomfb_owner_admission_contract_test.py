@@ -8,6 +8,9 @@ source = (Path(__file__).parents[1] / "src" / "dcp.c").read_text()
 main_source = (Path(__file__).parents[1] / "src" / "main.c").read_text()
 display_header = (Path(__file__).parents[1] / "src" / "display.h").read_text()
 makefile = (Path(__file__).parents[1] / "Makefile").read_text()
+bootstrap_source = (
+    Path(__file__).parents[1] / "src" / "dcp_iomfb_bootstrap.c"
+).read_text()
 start = source.index("bool dcp_iomfb_owner_start(")
 end = source.index("\nbool dcp_iomfb_owner_supported", start)
 body = source[start:end]
@@ -169,6 +172,7 @@ assert bootstrap < color_property < timing_property < select_modes < power_on < 
 a412_receipt = body.index("A412 admitted; downstream calls disabled")
 single_owner = body.index("single owner MODESET")
 assert modeset < a412_receipt < single_owner
+assert "A412 receipt transport=%u result=%u color=%u timing=%u" in bootstrap_source
 
 active_start = source.index("bool dcp_iomfb_owner_active(")
 active_end = source.index("\nvoid dcp_iomfb_owner_arm", active_start)
