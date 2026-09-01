@@ -45,6 +45,8 @@ bool dcp_iomfb_bootstrap_start_through_color_remap(
     struct dcp_iomfb_bootstrap *bootstrap);
 bool dcp_iomfb_bootstrap_start_through_video_power_savings(
     struct dcp_iomfb_bootstrap *bootstrap);
+bool dcp_iomfb_bootstrap_start_through_first_client_open(
+    struct dcp_iomfb_bootstrap *bootstrap);
 bool dcp_iomfb_bootstrap_start(struct dcp_iomfb_bootstrap *bootstrap);
 bool dcp_iomfb_bootstrap_power_on(struct dcp_iomfb_bootstrap *bootstrap);
 bool dcp_iomfb_bootstrap_modeset(struct dcp_iomfb_bootstrap *bootstrap,
