@@ -1008,11 +1008,15 @@ int dcp_shutdown(dcp_dev_t *dcp, bool sleep)
 {
     /* dcp/dcp0 on desktop M2 and M2 Pro/Max devices do not wake from sleep */
     bool iomfb_owner = dcp->iomfb_owner_endpoint_started;
+    bool owner_was_registered = dcp->iomfb_owner_registered;
 
     if (iomfb_owner) {
         /* First close every normal EPIC producer while firmware can still
          * acknowledge it.  Then prove global RTKit quiesce.  Failure retains
-         * every owner buffer/mapping until the enclosing SoC reset. */
+         * every owner buffer/mapping until the enclosing SoC reset.  Poison
+         * the public owner state before the first fallible step so a partially
+         * closed endpoint can never be reused as an active scanout backend. */
+        dcp->iomfb_owner_registered = false;
         if (dcp->system_ep && dcp_system_shutdown(dcp->system_ep) < 0)
             return -1;
         dcp->system_ep = NULL;
@@ -1028,7 +1032,7 @@ int dcp_shutdown(dcp_dev_t *dcp, bool sleep)
         }
         free(dcp->phy);
         dcp->phy = NULL;
-        if (dcp->iomfb_owner_registered)
+        if (owner_was_registered)
             afk_epic_unregister_raw_handler(dcp->afk,
                                             DCP_IOMFB_RPC_ENDPOINT,
                                             dcp_iomfb_owner_receive, dcp);

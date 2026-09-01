@@ -242,6 +242,18 @@ assert terminal.index("uartproxy_run(NULL)") < terminal.index(
 )
 assert "payload execution disabled" in terminal
 assert "defined(DCP_IOMFB_SWAP_OBSERVER)" in terminal
+
+shutdown_start = source.index("int dcp_shutdown(dcp_dev_t *dcp, bool sleep)")
+shutdown_end = source.index("\n}", shutdown_start) + 2
+shutdown_body = source[shutdown_start:shutdown_end]
+poison = shutdown_body.index("dcp->iomfb_owner_registered = false;")
+first_close = shutdown_body.index("dcp_system_shutdown(")
+assert poison < first_close, (
+    "IOMFB owner must become non-reusable before the first fallible shutdown "
+    "operation"
+)
+assert "owner_was_registered" in shutdown_body
+assert "if (owner_was_registered)" in shutdown_body
 assert "run_actions(" not in terminal and "next_stage" not in terminal
 assert "bool display_shutdown_complete(void);" in display_header
 
