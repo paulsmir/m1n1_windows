@@ -183,7 +183,7 @@ bool dcp_iomfb_bootstrap_modeset(struct dcp_iomfb_bootstrap *bootstrap,
     transported = call_method(bootstrap, 412, "A412", input, &result);
     printf("dcp-iomfb: A412 receipt transport=%u result=%u color=%u timing=%u\n",
            transported, result, color_mode_id, timing_mode_id);
-    if (!transported || result != 0) {
+    if (!transported || result != 2) {
         bootstrap->state = DCP_IOMFB_BOOT_FAILED;
         return false;
     }
