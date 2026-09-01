@@ -9,8 +9,9 @@
 #define SECONDARY_SURFACES 5u
 #define FORMAT_BGRA 0x42475241u
 #define XFER_SDR 13u
-#define COLORSPACE_NATIVE 12u
+#define COLORSPACE_SRGB 1u
 #define SET_BACKGROUND (1u << 31)
+#define J313_IOMFB_USER_CLIENT 0xfffffe1667ba4a00ull
 struct iomfb_rect { uint32_t x, y, w, h; } __attribute__((packed));
 struct iomfb_component_types { uint8_t count, types[7]; } __attribute__((packed));
 struct iomfb_plane {
@@ -72,11 +73,32 @@ struct iomfb_submit_v13_5 {
     uint8_t unknown_out_bool_null, unknown_u32_pointer_null;
     uint8_t unknown_u32_out_null, padding;
 } __attribute__((packed));
+struct iomfb_swap_start_v13_5 {
+    uint32_t swap_id;
+    uint64_t client_address;
+    uint32_t client_unknown;
+    uint8_t client_flag_1, client_flag_2;
+    uint8_t swap_id_null, client_null;
+    uint8_t padding[4];
+} __attribute__((packed));
 _Static_assert(sizeof(struct iomfb_plane) == 0x50, "plane ABI");
 _Static_assert(sizeof(struct iomfb_surface_base) == 0x1fd, "surface ABI");
 _Static_assert(sizeof(struct iomfb_surface_v13_5) == 0x22c, "v13.5 surface ABI");
 _Static_assert(sizeof(struct iomfb_swap_v13_5) == 0x468, "v13.5 swap ABI");
 _Static_assert(sizeof(struct iomfb_submit_v13_5) == 0x1884, "v13.5 submit ABI");
+_Static_assert(sizeof(struct iomfb_swap_start_v13_5) ==
+               DCP_IOMFB_V13_5_SWAP_START_SIZE, "v13.5 swap-start ABI");
+bool dcp_iomfb_present_build_start_v13_5(void *input, size_t input_size)
+{
+    struct iomfb_swap_start_v13_5 *wire = input;
+
+    if (!wire || input_size != sizeof(*wire))
+        return false;
+    memset(wire, 0, sizeof(*wire));
+    wire->client_address = J313_IOMFB_USER_CLIENT;
+    wire->client_flag_2 = 1;
+    return true;
+}
 bool dcp_iomfb_present_build_v13_5(struct dcp_iomfb_present_request *request,
                                    uint64_t iova, uint32_t width,
                                    uint32_t height, uint32_t stride,
@@ -91,34 +113,33 @@ bool dcp_iomfb_present_build_v13_5(struct dcp_iomfb_present_request *request,
         return false;
     memset(request, 0, sizeof(*request));
     wire = (struct iomfb_submit_v13_5 *)request->bytes;
+    wire->swap.flags_1 = 0x861202;
+    wire->swap.flags_2 = 0x04;
+    wire->swap.surface_ids[0] = 3;
     wire->swap.source[0] = (struct iomfb_rect){0, 0, width, height};
+    wire->swap.surface_flags[0] = 1;
     wire->swap.destination[0] = (struct iomfb_rect){0, 0, width, height};
     wire->swap.swap_enabled = clear_boot_surfaces ?
         (SET_BACKGROUND | 0x7u) : 1u;
     wire->swap.swap_completed = wire->swap.swap_enabled;
-    if (clear_boot_surfaces)
-        wire->swap.background_color = 0xff000000u;
+    wire->swap.backlight_unknown = 1;
+    wire->swap.backlight_value = 0x58f058d0;
+    wire->swap.backlight_power = 0x40;
     for (unsigned i = 1; i < SURFACES; i++) wire->surface_null[i] = 1;
     for (unsigned i = 0; i < SECONDARY_SURFACES; i++) wire->secondary_null[i] = 1;
     wire->unknown_u32_pointer_null = wire->unknown_u32_out_null = 1;
     surface = &wire->surfaces[0].base;
-    surface->is_premultiplied = 1;
-    surface->plane_count = surface->plane_count_2 = 1;
     surface->format = FORMAT_BGRA;
     surface->transfer_function = XFER_SDR;
-    surface->colorspace = COLORSPACE_NATIVE;
+    surface->colorspace = COLORSPACE_SRGB;
     surface->stride = stride;
-    surface->pixel_size = surface->pel_width = surface->pel_height = 1;
+    surface->pixel_size = 4;
+    surface->pel_width = surface->pel_height = 1;
     surface->width = width;
     surface->height = height;
     surface->buffer_size = (uint32_t)total;
+    surface->surface_id = 3;
     surface->has_components = surface->has_planes = 1;
-    surface->planes[0].width = width;
-    surface->planes[0].height = height;
-    surface->planes[0].stride = stride;
-    surface->planes[0].size = (uint32_t)total;
-    surface->planes[0].tile_size = surface->planes[0].tile_w =
-        surface->planes[0].tile_h = 1;
     wire->surface_iova[0] = iova;
     return true;
 }

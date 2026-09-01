@@ -228,8 +228,9 @@ static int dcp_iomfb_owner_callback(void *opaque, const char tag[4],
 }
 
 enum dcp_iomfb_timing_status {
-    DCP_IOMFB_TIMING_ERROR = -1,
-    DCP_IOMFB_TIMING_PENDING = 0,
+    DCP_IOMFB_TIMING_ERROR = -2,
+    DCP_IOMFB_TIMING_MISMATCH = -1,
+    DCP_IOMFB_TIMING_ABSENT = 0,
     DCP_IOMFB_TIMING_MATCH = 1,
 };
 
@@ -237,14 +238,15 @@ static enum dcp_iomfb_timing_status
 dcp_iomfb_owner_confirm_timing(dcp_dev_t *dcp, u32 expected_timing_mode_id)
 {
     u64 observed = 0;
-    bool valid = false;
+    enum dcp_iomfb_scalar_match property_status = DCP_IOMFB_SCALAR_ABSENT;
 
     if (!dcp || !dcp->iomfb_owner_registered)
         return DCP_IOMFB_TIMING_ERROR;
     for (unsigned int attempt = 0; attempt < 5000; attempt++) {
-        valid = dcp_iomfb_properties_find_u64(
-            &dcp->iomfb_properties, "DPTimingModeId", &observed);
-        if (valid && observed == expected_timing_mode_id) {
+        property_status = dcp_iomfb_properties_match_u64(
+            &dcp->iomfb_properties, "DPTimingModeId",
+            expected_timing_mode_id, &observed);
+        if (property_status == DCP_IOMFB_SCALAR_MATCH) {
             printf("dcp-iomfb: applied timing confirmed id=%u\n",
                    expected_timing_mode_id);
             return DCP_IOMFB_TIMING_MATCH;
@@ -253,13 +255,25 @@ dcp_iomfb_owner_confirm_timing(dcp_dev_t *dcp, u32 expected_timing_mode_id)
             return DCP_IOMFB_TIMING_ERROR;
         udelay(100);
     }
-    if (valid)
+    /* The final pump may have delivered D563. Re-sample after it so an
+     * explicit mismatch can never be mistaken for an absent property. */
+    property_status = dcp_iomfb_properties_match_u64(
+        &dcp->iomfb_properties, "DPTimingModeId", expected_timing_mode_id,
+        &observed);
+    if (property_status == DCP_IOMFB_SCALAR_MATCH) {
+        printf("dcp-iomfb: applied timing confirmed id=%u\n",
+               expected_timing_mode_id);
+        return DCP_IOMFB_TIMING_MATCH;
+    }
+    if (property_status == DCP_IOMFB_SCALAR_MISMATCH) {
         printf("dcp-iomfb: applied timing mismatch expected=%u observed=%lu\n",
                expected_timing_mode_id, observed);
-    else
+        return DCP_IOMFB_TIMING_MISMATCH;
+    } else {
         printf("dcp-iomfb: applied timing property timed out expected=%u\n",
                expected_timing_mode_id);
-    return DCP_IOMFB_TIMING_PENDING;
+        return DCP_IOMFB_TIMING_ABSENT;
+    }
 }
 
 static int dcp_iomfb_owner_receive(void *opaque, afk_raw_u8 endpoint,
@@ -540,7 +554,7 @@ bool dcp_iomfb_owner_start(dcp_dev_t *dcp)
         printf("dcp-iomfb: timing confirmation transport failed closed\n");
         goto fail_endpoint;
     }
-    if (timing_status == DCP_IOMFB_TIMING_PENDING) {
+    if (timing_status != DCP_IOMFB_TIMING_MATCH) {
         printf("dcp-iomfb: reissuing A412 for unapplied timing id=%u\n",
                mode.timing_mode_id);
         if (!dcp_iomfb_bootstrap_remodeset(&dcp->iomfb_bootstrap,
@@ -552,9 +566,17 @@ bool dcp_iomfb_owner_start(dcp_dev_t *dcp)
         timing_status = dcp_iomfb_owner_confirm_timing(
             dcp, mode.timing_mode_id);
         if (timing_status != DCP_IOMFB_TIMING_MATCH) {
+#ifdef DCP_IOMFB_SWAP_OBSERVER
+            if (timing_status == DCP_IOMFB_TIMING_ABSENT) {
+                printf("dcp-iomfb: D563 absent after accepted A412 pair; "
+                       "one-swap observer proceeding to stronger D589 proof\n");
+            } else
+#endif
+            {
             printf("dcp-iomfb: bounded A412 reissue failed closed status=%d\n",
                    timing_status);
             goto fail_endpoint;
+            }
         }
     }
 #ifdef DCP_IOMFB_A412_OBSERVER
@@ -615,12 +637,14 @@ int dcp_iomfb_owner_poll_latch(dcp_dev_t *dcp, u32 expected_swap_id)
 int dcp_iomfb_owner_present(dcp_dev_t *dcp, u64 surface_iova, u32 width,
                             u32 height, u32 stride)
 {
-    u8 start_input[DCP_IOMFB_V13_5_SWAP_START_SIZE] = {0};
+    u8 start_input[DCP_IOMFB_V13_5_SWAP_START_SIZE];
     u8 start_output[DCP_IOMFB_V13_5_SWAP_START_SIZE] = {0};
     u8 submit_output[DCP_IOMFB_V13_5_SWAP_SUBMIT_OUTPUT_SIZE] = {0};
     u32 swap_id = 0;
 
     if (!dcp_iomfb_owner_active(dcp) || dcp->iomfb_expected_swap_id ||
+        !dcp_iomfb_present_build_start_v13_5(start_input,
+                                              sizeof(start_input)) ||
         !dcp_iomfb_present_build_v13_5(&dcp->iomfb_present_request,
                                         surface_iova, width, height, stride,
                                         !dcp->iomfb_surfaces_cleared))

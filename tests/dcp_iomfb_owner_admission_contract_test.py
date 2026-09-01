@@ -88,6 +88,8 @@ assert "IOMFB_A411_OBSERVER requires IOMFB_FULL_OWNER=1" in makefile
 assert "IOMFB_A472_OBSERVER requires IOMFB_FULL_OWNER=1" in makefile
 assert "IOMFB_A410_OBSERVER requires IOMFB_FULL_OWNER=1" in makefile
 assert "IOMFB_A412_OBSERVER requires IOMFB_FULL_OWNER=1" in makefile
+assert "IOMFB_SWAP_OBSERVER requires IOMFB_FULL_OWNER=1" in makefile
+assert "IOMFB_SWAP_OBSERVER is mutually exclusive with admission observers" in makefile
 assert "IOMFB_START_OBSERVER and IOMFB_SET_SHMEM_OBSERVER are mutually exclusive" in makefile
 assert "IOMFB_EARLY_PIODMA_OBSERVER and IOMFB_SET_SHMEM_OBSERVER are mutually exclusive" in makefile
 assert "IOMFB_A401_OBSERVER is mutually exclusive with earlier IOMFB observers" in makefile
@@ -180,11 +182,35 @@ assert "A441 receipt transport=%u result=%u param=14 count=1" in bootstrap_sourc
 assert "dcp_iomfb_bootstrap_remodeset(" in source
 assert "bounded A412 reissue failed closed" in source
 assert "DCP_IOMFB_TIMING_ERROR" in source
+assert "DCP_IOMFB_TIMING_MISMATCH" in source
+assert "DCP_IOMFB_TIMING_ABSENT" in source
 assert "timing confirmation transport failed closed" in source
 assert "modeset_reissued" in bootstrap_source
-assert 'dcp_iomfb_properties_find_u64(' in source
+assert 'dcp_iomfb_properties_match_u64(' in source
 assert '"DPTimingModeId"' in source
 assert "applied timing confirmed id=%u" in source
+assert "one-swap observer proceeding to stronger D589 proof" in source
+assert "timing_status == DCP_IOMFB_TIMING_ABSENT" in source
+confirm_start = source.index("dcp_iomfb_owner_confirm_timing(")
+confirm_end = source.index("\nstatic int dcp_iomfb_owner_receive", confirm_start)
+confirm_body = source[confirm_start:confirm_end]
+assert confirm_body.count("dcp_iomfb_properties_match_u64(") == 2, (
+    "timing confirmation must re-sample after the final endpoint pump"
+)
+assert confirm_body.rfind("dcp_iomfb_properties_match_u64(") > confirm_body.index(
+    "for (unsigned int attempt"
+)
+
+display_source = (Path(__file__).parents[1] / "src" / "display.c").read_text()
+swap_observer_start = display_source.index(
+    "static bool display_iomfb_swap_observer_run(void)"
+)
+swap_observer_end = display_source.index("\n#endif", swap_observer_start)
+swap_observer = display_source[swap_observer_start:swap_observer_end]
+assert swap_observer.count("dcp_iomfb_owner_present(") == 1
+assert "dcp_iomfb_owner_poll_latch(" in swap_observer
+assert "D589=%s" in swap_observer
+assert "return latch > 0;" in swap_observer
 
 active_start = source.index("bool dcp_iomfb_owner_active(")
 active_end = source.index("\nvoid dcp_iomfb_owner_arm", active_start)
@@ -206,6 +232,7 @@ assert terminal.index("uartproxy_run(NULL)") < terminal.index(
     'panic("IOMFB admission observer proxy returned'
 )
 assert "payload execution disabled" in terminal
+assert "defined(DCP_IOMFB_SWAP_OBSERVER)" in terminal
 assert "run_actions(" not in terminal and "next_stage" not in terminal
 assert "bool display_shutdown_complete(void);" in display_header
 

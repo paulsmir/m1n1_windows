@@ -51,6 +51,9 @@ int main(void)
     uint32_t value;
 
     dcp_iomfb_properties_init(&properties, &ops, &fixture);
+    assert(dcp_iomfb_properties_match_u64(&properties, "DPTimingModeId", 11,
+                                           &scalar) ==
+           DCP_IOMFB_SCALAR_ABSENT);
 
     /* Firmware includes one non-payload terminator in the start length. */
     value = 7;
@@ -118,6 +121,13 @@ int main(void)
     assert(dcp_iomfb_properties_find_u64(&properties, "DPTimingModeId",
                                          &scalar));
     assert(scalar == 11);
+    assert(dcp_iomfb_properties_match_u64(&properties, "DPTimingModeId", 12,
+                                           &scalar) ==
+           DCP_IOMFB_SCALAR_MISMATCH);
+    assert(scalar == 11);
+    assert(dcp_iomfb_properties_match_u64(&properties, "DPTimingModeId", 11,
+                                           &scalar) ==
+           DCP_IOMFB_SCALAR_MATCH);
 
     input[0x48] = 1;
     memset(output, 0xff, sizeof(output));

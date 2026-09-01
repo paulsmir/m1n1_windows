@@ -14,6 +14,7 @@
 struct dcp_iomfb_present_request {
     uint8_t bytes[DCP_IOMFB_V13_5_SWAP_SUBMIT_INPUT_SIZE];
 };
+bool dcp_iomfb_present_build_start_v13_5(void *input, size_t input_size);
 bool dcp_iomfb_present_build_v13_5(struct dcp_iomfb_present_request *request,
                                    uint64_t surface_iova, uint32_t width,
                                    uint32_t height, uint32_t stride,

@@ -44,6 +44,12 @@ struct dcp_iomfb_properties {
     struct dcp_iomfb_scalar_record scalars[DCP_IOMFB_SCALAR_MAX_RECORDS];
 };
 
+enum dcp_iomfb_scalar_match {
+    DCP_IOMFB_SCALAR_MISMATCH = -1,
+    DCP_IOMFB_SCALAR_ABSENT = 0,
+    DCP_IOMFB_SCALAR_MATCH = 1,
+};
+
 void dcp_iomfb_properties_init(struct dcp_iomfb_properties *properties,
                                const struct dcp_iomfb_property_ops *ops,
                                void *opaque);
@@ -62,5 +68,8 @@ int dcp_iomfb_properties_scalar_callback(
 bool dcp_iomfb_properties_find_u64(
     const struct dcp_iomfb_properties *properties, const char *key,
     uint64_t *value);
+enum dcp_iomfb_scalar_match dcp_iomfb_properties_match_u64(
+    const struct dcp_iomfb_properties *properties, const char *key,
+    uint64_t expected, uint64_t *observed);
 
 #endif

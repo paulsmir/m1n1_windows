@@ -265,3 +265,19 @@ bool dcp_iomfb_properties_find_u64(
     }
     return false;
 }
+
+enum dcp_iomfb_scalar_match dcp_iomfb_properties_match_u64(
+    const struct dcp_iomfb_properties *properties, const char *key,
+    uint64_t expected, uint64_t *observed)
+{
+    uint64_t value = 0;
+
+    if (observed)
+        *observed = 0;
+    if (!dcp_iomfb_properties_find_u64(properties, key, &value))
+        return DCP_IOMFB_SCALAR_ABSENT;
+    if (observed)
+        *observed = value;
+    return value == expected ? DCP_IOMFB_SCALAR_MATCH :
+                               DCP_IOMFB_SCALAR_MISMATCH;
+}

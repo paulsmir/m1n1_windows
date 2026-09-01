@@ -384,6 +384,36 @@ int display_start_dcp(void)
     return 0;
 }
 
+#ifdef DCP_IOMFB_SWAP_OBSERVER
+static bool display_iomfb_swap_observer_run(void)
+{
+    int swap_id;
+    int latch = 0;
+
+    if (!dcp_iomfb_owner_active(dcp) || !fb_dva ||
+        !cur_boot_args.video.width || !cur_boot_args.video.height ||
+        (u64)cur_boot_args.video.stride <
+            (u64)cur_boot_args.video.width * 4)
+        return false;
+    swap_id = dcp_iomfb_owner_present(dcp, fb_dva,
+                                      cur_boot_args.video.width,
+                                      cur_boot_args.video.height,
+                                      cur_boot_args.video.stride);
+    if (swap_id <= 0) {
+        printf("display: one-swap observer rejected before A408\n");
+        return false;
+    }
+    for (unsigned int attempt = 0; attempt < 5000 && latch == 0; ++attempt) {
+        latch = dcp_iomfb_owner_poll_latch(dcp, (u32)swap_id);
+        if (latch == 0)
+            udelay(100);
+    }
+    printf("display: one-swap observer swap_id=%d D589=%s\n", swap_id,
+           latch > 0 ? "MATCHED" : latch == 0 ? "TIMEOUT" : "FAILED");
+    return latch > 0;
+}
+#endif
+
 struct display_options {
     bool retina;
 };
@@ -874,8 +904,15 @@ int display_configure(const char *config)
         return ret;
 #ifdef DCP_IOMFB_FULL_OWNER
     if (!iboot) {
+#ifdef DCP_IOMFB_SWAP_OBSERVER
+        if (!display_iomfb_swap_observer_run())
+            return -1;
+        printf("display: one-swap observer complete; downstream payload disabled\n");
+        return 0;
+#else
         printf("display: IOMFB bootstrap trace active; legacy iBoot modeset is disabled\n");
         return 0;
+#endif
     }
 #endif
 
