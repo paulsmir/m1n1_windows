@@ -243,6 +243,46 @@ assert terminal.index("uartproxy_run(NULL)") < terminal.index(
 assert "payload execution disabled" in terminal
 assert "defined(DCP_IOMFB_SWAP_OBSERVER)" in terminal
 
+initial_display_start = main_source.index("        display_init();")
+initial_display_end = main_source.index("        // On idevice", initial_display_start)
+initial_display = main_source[initial_display_start:initial_display_end]
+retain_guard = initial_display.index(
+    "#if defined(DCP_IOMFB_FULL_OWNER) && !DCP_IOMFB_TERMINAL_OBSERVER"
+)
+retain_message = initial_display.index(
+    "display: retaining initial IOMFB owner for HV scanout"
+)
+legacy_shutdown = initial_display.index(
+    "display_shutdown(DCP_SLEEP_IF_EXTERNAL);", retain_message
+)
+assert retain_guard < retain_message < legacy_shutdown
+assert "#else" in initial_display[retain_message:legacy_shutdown], (
+    "only the normal full-owner profile may retain the first owner"
+)
+assert "#define DCP_IOMFB_TERMINAL_OBSERVER 1" in main_source
+for observer in (
+    "DCP_IOMFB_START_OBSERVER",
+    "DCP_IOMFB_EARLY_PIODMA_OBSERVER",
+    "DCP_IOMFB_SET_SHMEM_OBSERVER",
+    "DCP_IOMFB_A401_OBSERVER",
+    "DCP_IOMFB_A426_OBSERVER",
+    "DCP_IOMFB_A449_OBSERVER",
+    "DCP_IOMFB_A456_OBSERVER",
+    "DCP_IOMFB_A411_OBSERVER",
+    "DCP_IOMFB_A472_OBSERVER",
+    "DCP_IOMFB_A410_OBSERVER",
+    "DCP_IOMFB_A412_OBSERVER",
+    "DCP_IOMFB_SWAP_OBSERVER",
+):
+    assert observer in main_source[:initial_display_start]
+
+explicit_shutdown = main_source.index(
+    "display_shutdown(DCP_SLEEP_IF_EXTERNAL);", initial_display_end
+)
+assert explicit_shutdown > main_source.index("run_actions();"), (
+    "the next-stage stop path must remain explicit and unchanged"
+)
+
 shutdown_start = source.index("int dcp_shutdown(dcp_dev_t *dcp, bool sleep)")
 shutdown_end = source.index("\n}", shutdown_start) + 2
 shutdown_body = source[shutdown_start:shutdown_end]

@@ -35,6 +35,17 @@
 #include "wdt.h"
 #include "xnuboot.h"
 
+#if defined(DCP_IOMFB_START_OBSERVER) || defined(DCP_IOMFB_EARLY_PIODMA_OBSERVER) || \
+    defined(DCP_IOMFB_SET_SHMEM_OBSERVER) || defined(DCP_IOMFB_A401_OBSERVER) || \
+    defined(DCP_IOMFB_A426_OBSERVER) || defined(DCP_IOMFB_A449_OBSERVER) || \
+    defined(DCP_IOMFB_A456_OBSERVER) || defined(DCP_IOMFB_A411_OBSERVER) || \
+    defined(DCP_IOMFB_A472_OBSERVER) || defined(DCP_IOMFB_A410_OBSERVER) || \
+    defined(DCP_IOMFB_A412_OBSERVER) || defined(DCP_IOMFB_SWAP_OBSERVER)
+#define DCP_IOMFB_TERMINAL_OBSERVER 1
+#else
+#define DCP_IOMFB_TERMINAL_OBSERVER 0
+#endif
+
 struct vector_args next_stage;
 
 const char version_tag[] = "##m1n1_ver##" BUILD_TAG;
@@ -206,9 +217,17 @@ void m1n1_main(void)
     } else {
         display_init();
         boot_display_initialized = true;
+#if defined(DCP_IOMFB_FULL_OWNER) && !DCP_IOMFB_TERMINAL_OBSERVER
+        /* The HV scanout owner is the same logical owner initialized here.
+         * Closing and immediately reconstructing it can strand the DCP
+         * endpoint in the same boot stage.  Keep it live until the explicit
+         * next-stage or rollback shutdown path below. */
+        printf("display: retaining initial IOMFB owner for HV scanout\n");
+#else
         // Kick DCP to sleep, so dodgy monitors which cause reconnect cycles don't cause us to lose
         // the framebuffer.
         display_shutdown(DCP_SLEEP_IF_EXTERNAL);
+#endif
 #if defined(DCP_IOMFB_A401_OBSERVER) || defined(DCP_IOMFB_A426_OBSERVER) || \
     defined(DCP_IOMFB_A449_OBSERVER) || defined(DCP_IOMFB_A456_OBSERVER) || \
     defined(DCP_IOMFB_A411_OBSERVER) || defined(DCP_IOMFB_A472_OBSERVER) || \
