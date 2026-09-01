@@ -78,10 +78,12 @@ assert "IOMFB_START_OBSERVER and IOMFB_EARLY_PIODMA_OBSERVER are mutually exclus
 assert "IOMFB_SET_SHMEM_OBSERVER requires IOMFB_FULL_OWNER=1" in makefile
 assert "IOMFB_A401_OBSERVER requires IOMFB_FULL_OWNER=1" in makefile
 assert "IOMFB_A426_OBSERVER requires IOMFB_FULL_OWNER=1" in makefile
+assert "IOMFB_A449_OBSERVER requires IOMFB_FULL_OWNER=1" in makefile
 assert "IOMFB_START_OBSERVER and IOMFB_SET_SHMEM_OBSERVER are mutually exclusive" in makefile
 assert "IOMFB_EARLY_PIODMA_OBSERVER and IOMFB_SET_SHMEM_OBSERVER are mutually exclusive" in makefile
 assert "IOMFB_A401_OBSERVER is mutually exclusive with earlier IOMFB observers" in makefile
 assert "IOMFB_A426_OBSERVER is mutually exclusive with earlier IOMFB observers" in makefile
+assert "IOMFB_A449_OBSERVER is mutually exclusive with earlier IOMFB observers" in makefile
 
 set_shmem_observer = source[source.index(
     "static bool dcp_iomfb_observe_set_shmem_fail_closed"
@@ -101,6 +103,7 @@ assert start_endpoint < set_shmem_call < init_piodma, (
 assert "defined(DCP_IOMFB_SET_SHMEM_OBSERVER)" in init_body
 assert "defined(DCP_IOMFB_A401_OBSERVER)" in init_body
 assert "defined(DCP_IOMFB_A426_OBSERVER)" in init_body
+assert "defined(DCP_IOMFB_A449_OBSERVER)" in init_body
 
 a401 = body.index('dcp_iomfb_owner_call(dcp, "A401"')
 bootstrap = body.index("dcp_iomfb_bootstrap_start(")
@@ -115,9 +118,13 @@ assert send_shmem < a426 < bootstrap, (
 )
 assert "A426 admitted; downstream calls disabled" in body
 
-terminal_start = main_source.index(
-    "#if defined(DCP_IOMFB_A401_OBSERVER) || defined(DCP_IOMFB_A426_OBSERVER)"
+a449 = body.index("dcp_iomfb_bootstrap_start_through_video_power_savings(")
+assert a426 < a449 < bootstrap, (
+    "A449-only observer must extend the accepted A426 step and stop before A456/A411"
 )
+assert "A449 admitted; downstream calls disabled" in body
+
+terminal_start = main_source.index("#if defined(DCP_IOMFB_A401_OBSERVER)")
 terminal_end = main_source.index("#endif", terminal_start)
 terminal = main_source[terminal_start:terminal_end]
 assert terminal.index("display_shutdown_complete()") < terminal.index("uartproxy_run(NULL)")

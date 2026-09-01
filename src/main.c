@@ -209,7 +209,8 @@ void m1n1_main(void)
         // Kick DCP to sleep, so dodgy monitors which cause reconnect cycles don't cause us to lose
         // the framebuffer.
         display_shutdown(DCP_SLEEP_IF_EXTERNAL);
-#if defined(DCP_IOMFB_A401_OBSERVER) || defined(DCP_IOMFB_A426_OBSERVER)
+#if defined(DCP_IOMFB_A401_OBSERVER) || defined(DCP_IOMFB_A426_OBSERVER) || \
+    defined(DCP_IOMFB_A449_OBSERVER)
         if (!display_shutdown_complete())
             panic("IOMFB admission observer could not prove DCP quiesce\n");
         printf("IOMFB admission observer complete; payload execution disabled\n");

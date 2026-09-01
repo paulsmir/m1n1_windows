@@ -84,12 +84,10 @@ failed:
 bool dcp_iomfb_bootstrap_start(struct dcp_iomfb_bootstrap *bootstrap)
 {
     uint32_t result = 0;
-    uint32_t zero = 0;
 
-    if (!dcp_iomfb_bootstrap_start_through_color_remap(bootstrap))
+    if (!dcp_iomfb_bootstrap_start_through_video_power_savings(bootstrap))
         return false;
-    if (!call_method(bootstrap, 449, "A449", &zero, &result) ||
-        !call_method(bootstrap, 456, "A456", NULL, NULL) ||
+    if (!call_method(bootstrap, 456, "A456", NULL, NULL) ||
         !call_method(bootstrap, 411, "A411", NULL, &result))
         goto failed;
 
@@ -100,6 +98,21 @@ bool dcp_iomfb_bootstrap_start(struct dcp_iomfb_bootstrap *bootstrap)
 failed:
     bootstrap->state = DCP_IOMFB_BOOT_FAILED;
     return false;
+}
+
+bool dcp_iomfb_bootstrap_start_through_video_power_savings(
+    struct dcp_iomfb_bootstrap *bootstrap)
+{
+    uint32_t result = 0;
+    uint32_t zero = 0;
+
+    if (!dcp_iomfb_bootstrap_start_through_color_remap(bootstrap))
+        return false;
+    if (!call_method(bootstrap, 449, "A449", &zero, &result)) {
+        bootstrap->state = DCP_IOMFB_BOOT_FAILED;
+        return false;
+    }
+    return true;
 }
 
 int dcp_iomfb_bootstrap_callback(struct dcp_iomfb_bootstrap *bootstrap,

@@ -41,6 +41,8 @@ void dcp_iomfb_bootstrap_init(struct dcp_iomfb_bootstrap *bootstrap,
                               void *opaque);
 bool dcp_iomfb_bootstrap_start_through_color_remap(
     struct dcp_iomfb_bootstrap *bootstrap);
+bool dcp_iomfb_bootstrap_start_through_video_power_savings(
+    struct dcp_iomfb_bootstrap *bootstrap);
 bool dcp_iomfb_bootstrap_start(struct dcp_iomfb_bootstrap *bootstrap);
 int dcp_iomfb_bootstrap_callback(struct dcp_iomfb_bootstrap *bootstrap,
                                  const char tag[4], const void *input,

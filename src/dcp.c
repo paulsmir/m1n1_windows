@@ -248,7 +248,8 @@ static int dcp_iomfb_owner_receive(void *opaque, afk_raw_u8 endpoint,
     !defined(DCP_IOMFB_EARLY_PIODMA_OBSERVER) && \
     !defined(DCP_IOMFB_SET_SHMEM_OBSERVER) && \
     !defined(DCP_IOMFB_A401_OBSERVER) && \
-    !defined(DCP_IOMFB_A426_OBSERVER)
+    !defined(DCP_IOMFB_A426_OBSERVER) && \
+    !defined(DCP_IOMFB_A449_OBSERVER)
 static bool dcp_iomfb_drain_pending_system_traffic(dcp_dev_t *dcp)
 {
     unsigned int processed = 0;
@@ -375,7 +376,8 @@ bool dcp_iomfb_owner_start(dcp_dev_t *dcp)
     !defined(DCP_IOMFB_EARLY_PIODMA_OBSERVER) && \
     !defined(DCP_IOMFB_SET_SHMEM_OBSERVER) && \
     !defined(DCP_IOMFB_A401_OBSERVER) && \
-    !defined(DCP_IOMFB_A426_OBSERVER)
+    !defined(DCP_IOMFB_A426_OBSERVER) && \
+    !defined(DCP_IOMFB_A449_OBSERVER)
     if (!dcp_iomfb_drain_pending_system_traffic(dcp))
         return false;
 #endif
@@ -396,7 +398,8 @@ bool dcp_iomfb_owner_start(dcp_dev_t *dcp)
 #if !defined(DCP_IOMFB_EARLY_PIODMA_OBSERVER) && \
     !defined(DCP_IOMFB_SET_SHMEM_OBSERVER) && \
     !defined(DCP_IOMFB_A401_OBSERVER) && \
-    !defined(DCP_IOMFB_A426_OBSERVER)
+    !defined(DCP_IOMFB_A426_OBSERVER) && \
+    !defined(DCP_IOMFB_A449_OBSERVER)
     dcp->dart_piodma = dart_init_adt("/arm-io/dart-disp0", 0, 4, true);
     if (!dcp->dart_piodma)
         goto fail_endpoint;
@@ -458,6 +461,15 @@ bool dcp_iomfb_owner_start(dcp_dev_t *dcp)
         goto fail_endpoint;
     }
     printf("dcp-iomfb: A426 admitted; downstream calls disabled\n");
+    return false;
+#endif
+#ifdef DCP_IOMFB_A449_OBSERVER
+    if (!dcp_iomfb_bootstrap_start_through_video_power_savings(
+            &dcp->iomfb_bootstrap)) {
+        printf("dcp-iomfb: A449-only observation failed\n");
+        goto fail_endpoint;
+    }
+    printf("dcp-iomfb: A449 admitted; downstream calls disabled\n");
     return false;
 #endif
     if (!dcp_iomfb_bootstrap_start(&dcp->iomfb_bootstrap)) {
@@ -804,7 +816,8 @@ dcp_dev_t *dcp_init(const display_config_t *cfg)
 #if defined(DCP_IOMFB_EARLY_PIODMA_OBSERVER) || \
     defined(DCP_IOMFB_SET_SHMEM_OBSERVER) || \
     defined(DCP_IOMFB_A401_OBSERVER) || \
-    defined(DCP_IOMFB_A426_OBSERVER)
+    defined(DCP_IOMFB_A426_OBSERVER) || \
+    defined(DCP_IOMFB_A449_OBSERVER)
     /* Linux creates/configures the PIODMA IOMMU child during probe, before
      * dcp_start() starts any RTKit application endpoint.  Preserve that
      * lifecycle for the isolated admission discriminator. */
@@ -873,7 +886,8 @@ out_iovad:
 #if defined(DCP_IOMFB_EARLY_PIODMA_OBSERVER) || \
     defined(DCP_IOMFB_SET_SHMEM_OBSERVER) || \
     defined(DCP_IOMFB_A401_OBSERVER) || \
-    defined(DCP_IOMFB_A426_OBSERVER)
+    defined(DCP_IOMFB_A426_OBSERVER) || \
+    defined(DCP_IOMFB_A449_OBSERVER)
 out_dart_piodma:
     dart_shutdown(dcp->dart_piodma);
 out_dart_disp:
