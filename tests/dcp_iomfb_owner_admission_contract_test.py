@@ -81,12 +81,14 @@ assert "IOMFB_A401_OBSERVER requires IOMFB_FULL_OWNER=1" in makefile
 assert "IOMFB_A426_OBSERVER requires IOMFB_FULL_OWNER=1" in makefile
 assert "IOMFB_A449_OBSERVER requires IOMFB_FULL_OWNER=1" in makefile
 assert "IOMFB_A456_OBSERVER requires IOMFB_FULL_OWNER=1" in makefile
+assert "IOMFB_A411_OBSERVER requires IOMFB_FULL_OWNER=1" in makefile
 assert "IOMFB_START_OBSERVER and IOMFB_SET_SHMEM_OBSERVER are mutually exclusive" in makefile
 assert "IOMFB_EARLY_PIODMA_OBSERVER and IOMFB_SET_SHMEM_OBSERVER are mutually exclusive" in makefile
 assert "IOMFB_A401_OBSERVER is mutually exclusive with earlier IOMFB observers" in makefile
 assert "IOMFB_A426_OBSERVER is mutually exclusive with earlier IOMFB observers" in makefile
 assert "IOMFB_A449_OBSERVER is mutually exclusive with earlier IOMFB observers" in makefile
 assert "IOMFB_A456_OBSERVER is mutually exclusive with earlier IOMFB observers" in makefile
+assert "IOMFB_A411_OBSERVER is mutually exclusive with earlier IOMFB observers" in makefile
 
 set_shmem_observer = source[source.index(
     "static bool dcp_iomfb_observe_set_shmem_fail_closed"
@@ -129,6 +131,12 @@ assert a449 < a456 < bootstrap, (
     "A456-only observer must extend the accepted A449 step and stop before A411"
 )
 assert "A456 admitted; downstream calls disabled" in body
+
+a411 = body.index("A411 admitted main_display=%u; downstream calls disabled")
+assert a456 < bootstrap < a411, (
+    "A411-only observer must use the full accepted bootstrap before production continues"
+)
+assert body.rfind("dcp_iomfb_bootstrap_start(", 0, a411) > a456
 
 color_property = body.index(
     'dcp_iomfb_properties_find(&dcp->iomfb_properties, "ColorElements"'

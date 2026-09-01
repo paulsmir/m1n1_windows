@@ -210,7 +210,8 @@ void m1n1_main(void)
         // the framebuffer.
         display_shutdown(DCP_SLEEP_IF_EXTERNAL);
 #if defined(DCP_IOMFB_A401_OBSERVER) || defined(DCP_IOMFB_A426_OBSERVER) || \
-    defined(DCP_IOMFB_A449_OBSERVER) || defined(DCP_IOMFB_A456_OBSERVER)
+    defined(DCP_IOMFB_A449_OBSERVER) || defined(DCP_IOMFB_A456_OBSERVER) || \
+    defined(DCP_IOMFB_A411_OBSERVER)
         if (!display_shutdown_complete())
             panic("IOMFB admission observer could not prove DCP quiesce\n");
         printf("IOMFB admission observer complete; payload execution disabled\n");
