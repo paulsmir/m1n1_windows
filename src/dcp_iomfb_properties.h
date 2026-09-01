@@ -15,6 +15,7 @@
 #define DCP_IOMFB_PROPERTY_CHUNK_SIZE   0x1000u
 #define DCP_IOMFB_PROPERTY_MAX_SIZE     0x100000u
 #define DCP_IOMFB_PROPERTY_MAX_RECORDS  8u
+#define DCP_IOMFB_SCALAR_MAX_RECORDS    16u
 
 struct dcp_iomfb_property_ops {
     void *(*allocate)(void *opaque, size_t size);
@@ -27,6 +28,12 @@ struct dcp_iomfb_property_record {
     size_t size;
 };
 
+struct dcp_iomfb_scalar_record {
+    char key[DCP_IOMFB_PROPERTY_KEY_SIZE];
+    uint64_t value;
+    bool valid;
+};
+
 struct dcp_iomfb_properties {
     const struct dcp_iomfb_property_ops *ops;
     void *opaque;
@@ -34,6 +41,7 @@ struct dcp_iomfb_properties {
     size_t incoming_size;
     size_t incoming_offset;
     struct dcp_iomfb_property_record records[DCP_IOMFB_PROPERTY_MAX_RECORDS];
+    struct dcp_iomfb_scalar_record scalars[DCP_IOMFB_SCALAR_MAX_RECORDS];
 };
 
 void dcp_iomfb_properties_init(struct dcp_iomfb_properties *properties,
@@ -47,5 +55,12 @@ int dcp_iomfb_properties_callback(struct dcp_iomfb_properties *properties,
 bool dcp_iomfb_properties_find(const struct dcp_iomfb_properties *properties,
                                const char *key, const void **data,
                                size_t *size);
+int dcp_iomfb_properties_scalar_callback(
+    struct dcp_iomfb_properties *properties, unsigned int callback_id,
+    const void *input, uint32_t input_size, void *output,
+    uint32_t output_size);
+bool dcp_iomfb_properties_find_u64(
+    const struct dcp_iomfb_properties *properties, const char *key,
+    uint64_t *value);
 
 #endif

@@ -15,6 +15,13 @@ static uint32_t load_u32(const void *pointer)
     return value;
 }
 
+static uint64_t load_u64(const void *pointer)
+{
+    uint64_t value;
+    memcpy(&value, pointer, sizeof(value));
+    return value;
+}
+
 static void store_result(void *output, uint32_t output_size, bool success)
 {
     uint32_t result = success ? 1 : 0;
@@ -191,6 +198,68 @@ bool dcp_iomfb_properties_find(const struct dcp_iomfb_properties *properties,
             strcmp(properties->records[i].key, key) == 0) {
             *data = properties->records[i].data;
             *size = properties->records[i].size;
+            return true;
+        }
+    }
+    return false;
+}
+
+int dcp_iomfb_properties_scalar_callback(
+    struct dcp_iomfb_properties *properties, unsigned int callback_id,
+    const void *input, uint32_t input_size, void *output,
+    uint32_t output_size)
+{
+    const uint8_t *bytes = input;
+    struct dcp_iomfb_scalar_record *record = NULL;
+    size_t key_length = 0;
+    unsigned int i;
+
+    if (!properties || callback_id != 563 || !input || !output ||
+        input_size != 0x4c || output_size != 4) {
+        store_result(output, output_size, false);
+        return -1;
+    }
+    while (key_length < DCP_IOMFB_PROPERTY_KEY_SIZE && bytes[key_length])
+        key_length++;
+    /* D563 is key[0x40], inline uint64 value, nullable marker, padding. */
+    if (!key_length || key_length == DCP_IOMFB_PROPERTY_KEY_SIZE ||
+        bytes[0x48] != 0) {
+        store_result(output, output_size, false);
+        return -1;
+    }
+    for (i = 0; i < DCP_IOMFB_SCALAR_MAX_RECORDS; i++) {
+        if (properties->scalars[i].valid &&
+            strcmp(properties->scalars[i].key, (const char *)bytes) == 0) {
+            record = &properties->scalars[i];
+            break;
+        }
+        if (!record && !properties->scalars[i].valid)
+            record = &properties->scalars[i];
+    }
+    if (!record) {
+        store_result(output, output_size, false);
+        return -1;
+    }
+    memset(record, 0, sizeof(*record));
+    memcpy(record->key, bytes, key_length);
+    record->value = load_u64(bytes + DCP_IOMFB_PROPERTY_KEY_SIZE);
+    record->valid = true;
+    store_result(output, output_size, true);
+    return 0;
+}
+
+bool dcp_iomfb_properties_find_u64(
+    const struct dcp_iomfb_properties *properties, const char *key,
+    uint64_t *value)
+{
+    unsigned int i;
+
+    if (!properties || !key || !value)
+        return false;
+    for (i = 0; i < DCP_IOMFB_SCALAR_MAX_RECORDS; i++) {
+        if (properties->scalars[i].valid &&
+            strcmp(properties->scalars[i].key, key) == 0) {
+            *value = properties->scalars[i].value;
             return true;
         }
     }

@@ -169,10 +169,14 @@ assert bootstrap < color_property < timing_property < select_modes < power_on < 
     "perform A412 before it admits presentation"
 )
 
-a412_receipt = body.index("A412 admitted; downstream calls disabled")
+a412_receipt = body.index("A412 applied; downstream calls disabled")
 single_owner = body.index("single owner MODESET")
-assert modeset < a412_receipt < single_owner
+timing_confirm = body.rfind("dcp_iomfb_owner_confirm_timing(", modeset, a412_receipt)
+assert modeset < timing_confirm < a412_receipt < single_owner
 assert "A412 receipt transport=%u result=%u color=%u timing=%u" in bootstrap_source
+assert 'dcp_iomfb_properties_find_u64(' in source
+assert '"DPTimingModeId"' in source
+assert "applied timing confirmed id=%u" in source
 
 active_start = source.index("bool dcp_iomfb_owner_active(")
 active_end = source.index("\nvoid dcp_iomfb_owner_arm", active_start)

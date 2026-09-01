@@ -47,6 +47,7 @@ int main(void)
     uint8_t output[4] = {0};
     const void *data;
     size_t size;
+    uint64_t scalar;
     uint32_t value;
 
     dcp_iomfb_properties_init(&properties, &ops, &fixture);
@@ -100,6 +101,28 @@ int main(void)
     memset(output, 0xff, sizeof(output));
     assert(dcp_iomfb_properties_callback(&properties, 127, input, 0x1008,
                                          output, 4) != 0);
+    assert(load_u32(output) == 0);
+
+    /* D563 is setProperty_int(key[0x40], InPtr<uint64_t>).  The nullable
+     * marker follows the inline value and is zero for a present pointer. */
+    memset(input, 0, sizeof(input));
+    memcpy(input, "DPTimingModeId", 14);
+    scalar = 11;
+    memcpy(input + 0x40, &scalar, sizeof(scalar));
+    input[0x48] = 0;
+    memset(output, 0, sizeof(output));
+    assert(dcp_iomfb_properties_scalar_callback(&properties, 563, input,
+                                                 0x4c, output, 4) == 0);
+    assert(load_u32(output) == 1);
+    scalar = 0;
+    assert(dcp_iomfb_properties_find_u64(&properties, "DPTimingModeId",
+                                         &scalar));
+    assert(scalar == 11);
+
+    input[0x48] = 1;
+    memset(output, 0xff, sizeof(output));
+    assert(dcp_iomfb_properties_scalar_callback(&properties, 563, input,
+                                                 0x4c, output, 4) != 0);
     assert(load_u32(output) == 0);
 
     dcp_iomfb_properties_destroy(&properties);

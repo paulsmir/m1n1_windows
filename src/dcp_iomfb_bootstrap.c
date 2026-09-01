@@ -292,6 +292,7 @@ int dcp_iomfb_bootstrap_callback(struct dcp_iomfb_bootstrap *bootstrap,
     case 454:
     case 455:
     case 456:
+    case 563:
         if (!bootstrap->platform ||
             bootstrap->platform(bootstrap->opaque, id, input, input_size,
                                 output, output_size) != 0)
@@ -335,7 +336,6 @@ int dcp_iomfb_bootstrap_callback(struct dcp_iomfb_bootstrap *bootstrap,
     case 415:
     case 552:
     case 561:
-    case 563:
     case 565:
     case 567:
         store_u32(output, 1);

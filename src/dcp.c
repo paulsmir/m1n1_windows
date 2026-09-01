@@ -169,6 +169,10 @@ static int dcp_iomfb_owner_platform(void *opaque, unsigned int callback_id,
         return dcp_iomfb_properties_callback(&dcp->iomfb_properties,
                                               callback_id, input, input_size,
                                               output, output_size);
+    if (callback_id == 563)
+        return dcp_iomfb_properties_scalar_callback(
+            &dcp->iomfb_properties, callback_id, input, input_size, output,
+            output_size);
     if (callback_id == 209) {
         int chosen = adt_path_offset(adt, "/chosen");
         struct dcp_iomfb_clock_anchor anchor = {0};
@@ -221,6 +225,35 @@ static int dcp_iomfb_owner_callback(void *opaque, const char tag[4],
         printf("dcp-iomfb: callback %.4s (%u/%u) failed closed\n", tag,
                input_size, output_size);
     return result;
+}
+
+static bool dcp_iomfb_owner_confirm_timing(dcp_dev_t *dcp,
+                                            u32 expected_timing_mode_id)
+{
+    u64 observed = 0;
+    bool valid = false;
+
+    if (!dcp || !dcp->iomfb_owner_registered)
+        return false;
+    for (unsigned int attempt = 0; attempt < 5000; attempt++) {
+        valid = dcp_iomfb_properties_find_u64(
+            &dcp->iomfb_properties, "DPTimingModeId", &observed);
+        if (valid && observed == expected_timing_mode_id) {
+            printf("dcp-iomfb: applied timing confirmed id=%u\n",
+                   expected_timing_mode_id);
+            return true;
+        }
+        if (afk_epic_work(dcp->afk, -1) < 0)
+            return false;
+        udelay(100);
+    }
+    if (valid)
+        printf("dcp-iomfb: applied timing mismatch expected=%u observed=%lu\n",
+               expected_timing_mode_id, observed);
+    else
+        printf("dcp-iomfb: applied timing property timed out expected=%u\n",
+               expected_timing_mode_id);
+    return false;
 }
 
 static int dcp_iomfb_owner_receive(void *opaque, afk_raw_u8 endpoint,
@@ -489,12 +522,13 @@ bool dcp_iomfb_owner_start(dcp_dev_t *dcp)
     if (!dcp_iomfb_bootstrap_power_on(&dcp->iomfb_bootstrap) ||
         !dcp_iomfb_bootstrap_modeset(&dcp->iomfb_bootstrap,
                                      mode.color_mode_id,
-                                     mode.timing_mode_id)) {
+                                     mode.timing_mode_id) ||
+        !dcp_iomfb_owner_confirm_timing(dcp, mode.timing_mode_id)) {
         printf("dcp-iomfb: panel power/modeset failed closed\n");
         goto fail_endpoint;
     }
 #ifdef DCP_IOMFB_A412_OBSERVER
-    printf("dcp-iomfb: A412 admitted; downstream calls disabled color=%u timing=%u\n",
+    printf("dcp-iomfb: A412 applied; downstream calls disabled color=%u timing=%u\n",
            mode.color_mode_id, mode.timing_mode_id);
     return false;
 #endif

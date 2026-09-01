@@ -67,6 +67,13 @@ static int platform_callback(void *opaque, unsigned int callback_id,
 
     fixture->platform_calls++;
     fixture->last_platform_id = callback_id;
+    if (callback_id == 563) {
+        uint32_t success = 1;
+        assert(input_size == 0x4c && output_size == 4);
+        assert(input != NULL && output != NULL);
+        memcpy(output, &success, sizeof(success));
+        return 0;
+    }
     if (callback_id == 589) {
         assert(input_size == 0x6f0 && output_size == 0);
         assert(input != NULL && output == NULL);
@@ -99,6 +106,7 @@ int main(void)
     uint8_t d124_output[0x24];
     uint8_t d576_input[0x54];
     uint8_t d576_output[0x4c];
+    uint8_t d563_input[0x4c];
 
     memset(&fixture, 0, sizeof(fixture));
     dcp_iomfb_bootstrap_init(&bootstrap, record_call, platform_callback,
@@ -223,6 +231,14 @@ int main(void)
     assert(output[0] == 0xa5);
     assert(fixture.platform_calls == 1);
 
+    memset(d563_input, 0, sizeof(d563_input));
+    memcpy(d563_input, "DPTimingModeId", 14);
+    memset(output, 0, 4);
+    assert(dcp_iomfb_bootstrap_callback(&bootstrap, "D563", d563_input,
+                                         sizeof(d563_input), output, 4) == 0);
+    assert(output[0] == 1);
+    assert(fixture.platform_calls == 2 && fixture.last_platform_id == 563);
+
     assert(dcp_iomfb_bootstrap_callback(&bootstrap, "D100", NULL, 0,
                                          NULL, 0) == 0);
     expect_call(&fixture, fixture.calls - 1, "A374", 0, 4);
@@ -248,7 +264,7 @@ int main(void)
     assert(dcp_iomfb_bootstrap_callback(&bootstrap, "D589", d589, 0x6f0,
                                          NULL, 0) == 0);
     assert(fixture.last_platform_id == 589);
-    assert(fixture.platform_calls == 2);
+    assert(fixture.platform_calls == 3);
 
     memset(d124_input, 0, sizeof(d124_input));
     memset(d124_output, 0, sizeof(d124_output));
