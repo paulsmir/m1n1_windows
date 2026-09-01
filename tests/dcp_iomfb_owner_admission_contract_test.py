@@ -77,9 +77,11 @@ assert "IOMFB_EARLY_PIODMA_OBSERVER requires IOMFB_FULL_OWNER=1" in makefile
 assert "IOMFB_START_OBSERVER and IOMFB_EARLY_PIODMA_OBSERVER are mutually exclusive" in makefile
 assert "IOMFB_SET_SHMEM_OBSERVER requires IOMFB_FULL_OWNER=1" in makefile
 assert "IOMFB_A401_OBSERVER requires IOMFB_FULL_OWNER=1" in makefile
+assert "IOMFB_A426_OBSERVER requires IOMFB_FULL_OWNER=1" in makefile
 assert "IOMFB_START_OBSERVER and IOMFB_SET_SHMEM_OBSERVER are mutually exclusive" in makefile
 assert "IOMFB_EARLY_PIODMA_OBSERVER and IOMFB_SET_SHMEM_OBSERVER are mutually exclusive" in makefile
 assert "IOMFB_A401_OBSERVER is mutually exclusive with earlier IOMFB observers" in makefile
+assert "IOMFB_A426_OBSERVER is mutually exclusive with earlier IOMFB observers" in makefile
 
 set_shmem_observer = source[source.index(
     "static bool dcp_iomfb_observe_set_shmem_fail_closed"
@@ -98,6 +100,7 @@ assert start_endpoint < set_shmem_call < init_piodma, (
 )
 assert "defined(DCP_IOMFB_SET_SHMEM_OBSERVER)" in init_body
 assert "defined(DCP_IOMFB_A401_OBSERVER)" in init_body
+assert "defined(DCP_IOMFB_A426_OBSERVER)" in init_body
 
 a401 = body.index('dcp_iomfb_owner_call(dcp, "A401"')
 bootstrap = body.index("dcp_iomfb_bootstrap_start(")
@@ -106,12 +109,20 @@ assert send_shmem < a401 < bootstrap, (
 )
 assert "A401 admitted result=%u; downstream calls disabled" in body
 
-terminal_start = main_source.index("#ifdef DCP_IOMFB_A401_OBSERVER")
+a426 = body.index("dcp_iomfb_bootstrap_start_through_color_remap(")
+assert send_shmem < a426 < bootstrap, (
+    "A426-only observer must reuse proven SET_SHMEM and stop before the remaining bootstrap"
+)
+assert "A426 admitted; downstream calls disabled" in body
+
+terminal_start = main_source.index(
+    "#if defined(DCP_IOMFB_A401_OBSERVER) || defined(DCP_IOMFB_A426_OBSERVER)"
+)
 terminal_end = main_source.index("#endif", terminal_start)
 terminal = main_source[terminal_start:terminal_end]
 assert terminal.index("display_shutdown_complete()") < terminal.index("uartproxy_run(NULL)")
 assert terminal.index("uartproxy_run(NULL)") < terminal.index(
-    'panic("A401 observer proxy returned'
+    'panic("IOMFB admission observer proxy returned'
 )
 assert "payload execution disabled" in terminal
 assert "run_actions(" not in terminal and "next_stage" not in terminal

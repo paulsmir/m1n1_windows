@@ -209,15 +209,15 @@ void m1n1_main(void)
         // Kick DCP to sleep, so dodgy monitors which cause reconnect cycles don't cause us to lose
         // the framebuffer.
         display_shutdown(DCP_SLEEP_IF_EXTERNAL);
-#ifdef DCP_IOMFB_A401_OBSERVER
+#if defined(DCP_IOMFB_A401_OBSERVER) || defined(DCP_IOMFB_A426_OBSERVER)
         if (!display_shutdown_complete())
-            panic("A401 observer could not prove DCP quiesce\n");
-        printf("A401 observer complete; payload execution disabled\n");
+            panic("IOMFB admission observer could not prove DCP quiesce\n");
+        printf("IOMFB admission observer complete; payload execution disabled\n");
         usb_init();
         usb_iodev_init();
         printf("Running proxy...\n");
         uartproxy_run(NULL);
-        panic("A401 observer proxy returned\n");
+        panic("IOMFB admission observer proxy returned\n");
 #endif
         // On idevice we need to always clear, because otherwise it looks scuffed on white devices
         fb_init(!is_mac);

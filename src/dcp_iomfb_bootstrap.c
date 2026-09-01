@@ -56,12 +56,12 @@ void dcp_iomfb_bootstrap_init(struct dcp_iomfb_bootstrap *bootstrap,
     bootstrap->state = DCP_IOMFB_BOOT_OFF;
 }
 
-bool dcp_iomfb_bootstrap_start(struct dcp_iomfb_bootstrap *bootstrap)
+bool dcp_iomfb_bootstrap_start_through_color_remap(
+    struct dcp_iomfb_bootstrap *bootstrap)
 {
     uint32_t result = 0;
     uint32_t mode[2] = {6, 0};
     uint32_t mode_result[2] = {0, 0};
-    uint32_t zero = 0;
 
     if (!bootstrap || !bootstrap->call ||
         bootstrap->state == DCP_IOMFB_BOOT_FAILED)
@@ -72,8 +72,23 @@ bool dcp_iomfb_bootstrap_start(struct dcp_iomfb_bootstrap *bootstrap)
         goto failed;
 
     bootstrap->state = DCP_IOMFB_BOOT_POST_INIT;
-    if (!call_method(bootstrap, 426, "A426", mode, mode_result) ||
-        !call_method(bootstrap, 449, "A449", &zero, &result) ||
+    if (!call_method(bootstrap, 426, "A426", mode, mode_result))
+        goto failed;
+    return true;
+
+failed:
+    bootstrap->state = DCP_IOMFB_BOOT_FAILED;
+    return false;
+}
+
+bool dcp_iomfb_bootstrap_start(struct dcp_iomfb_bootstrap *bootstrap)
+{
+    uint32_t result = 0;
+    uint32_t zero = 0;
+
+    if (!dcp_iomfb_bootstrap_start_through_color_remap(bootstrap))
+        return false;
+    if (!call_method(bootstrap, 449, "A449", &zero, &result) ||
         !call_method(bootstrap, 456, "A456", NULL, NULL) ||
         !call_method(bootstrap, 411, "A411", NULL, &result))
         goto failed;

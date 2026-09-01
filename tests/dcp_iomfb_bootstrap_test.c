@@ -104,6 +104,19 @@ int main(void)
     expect_call(&fixture, 4, "A000", 4, 4);
     expect_call(&fixture, 5, "A463", 0, 4);
 
+    memset(&fixture, 0, sizeof(fixture));
+    dcp_iomfb_bootstrap_init(&bootstrap, record_call, platform_callback,
+                             &fixture);
+    assert(dcp_iomfb_bootstrap_start_through_color_remap(&bootstrap));
+    assert(dcp_iomfb_bootstrap_state(&bootstrap) ==
+           DCP_IOMFB_BOOT_POST_INIT);
+    assert(fixture.calls == 2);
+    expect_call(&fixture, 0, "A401", 0, 4);
+    expect_call(&fixture, 1, "A426", 8, 8);
+
+    memset(&fixture, 0, sizeof(fixture));
+    dcp_iomfb_bootstrap_init(&bootstrap, record_call, platform_callback,
+                             &fixture);
     fixture.calls = 0;
     assert(dcp_iomfb_bootstrap_start(&bootstrap));
     assert(dcp_iomfb_bootstrap_state(&bootstrap) == DCP_IOMFB_BOOT_ACTIVE);
