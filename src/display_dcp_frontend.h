@@ -12,5 +12,7 @@ enum display_dcp_frontend {
 
 enum display_dcp_frontend display_dcp_frontend_select(bool full_owner,
                                                        bool external);
+bool display_dcp_frontend_has_latch_source(enum display_dcp_frontend frontend,
+                                           bool owner_active);
 
 #endif

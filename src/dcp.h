@@ -10,6 +10,7 @@
 #include "dcp_iomfb_transport.h"
 #include "dcp_iomfb_rpc.h"
 #include "dcp_iomfb_bootstrap.h"
+#include "dcp_iomfb_mode_select.h"
 #include "dcp_iomfb_properties.h"
 #include "dcp_iomfb_present.h"
 #include "dcp_iomfb_resources.h"
@@ -57,6 +58,7 @@ typedef struct dcp_dev {
     struct dcp_iomfb_resources iomfb_resources;
     u32 iomfb_expected_swap_id;
     u32 iomfb_latched_swap_id;
+    bool iomfb_surfaces_cleared;
     u32 die;
     u32 dp2hdmi_pwr_gpio;
     u32 hdmi_pwr_gpio;

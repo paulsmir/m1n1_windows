@@ -11,10 +11,12 @@ int main(void)
     struct dcp_iomfb_present_request req;
     uint8_t start[0x18] = {0}, submit[0xc] = {0};
     uint32_t swap_id = 0;
-    assert(!dcp_iomfb_present_build_v13_5(&req, 0x100000, 2560, 1600, 10176));
-    assert(!dcp_iomfb_present_build_v13_5(&req, 0x100000, UINT32_MAX, 2, UINT32_MAX));
-    assert(dcp_iomfb_present_build_v13_5(&req, 0x12340000, 2560, 1600, 10240));
-    assert(u32at(req.bytes + 0x104) == 1 && u32at(req.bytes + 0x108) == 1);
+    assert(!dcp_iomfb_present_build_v13_5(&req, 0x100000, 2560, 1600, 10176, true));
+    assert(!dcp_iomfb_present_build_v13_5(&req, 0x100000, UINT32_MAX, 2, UINT32_MAX, true));
+    assert(dcp_iomfb_present_build_v13_5(&req, 0x12340000, 2560, 1600, 10240, true));
+    assert(u32at(req.bytes + 0x104) == 0x80000007u);
+    assert(u32at(req.bytes + 0x108) == 0x80000007u);
+    assert(u32at(req.bytes + 0x10c) == 0xff000000u);
     assert(u32at(req.bytes + 0x64 + 8) == 2560);
     assert(u32at(req.bytes + 0x64 + 12) == 1600);
     assert(u64at(req.bytes + 0xd18) == 0x12340000);
@@ -22,6 +24,9 @@ int main(void)
     assert(req.bytes[0x1878] == 1 && req.bytes[0x187b] == 1);
     assert(req.bytes[0x1880] == 0 && req.bytes[0x1881] == 1);
     assert(req.bytes[0x1882] == 1 && req.bytes[0x1883] == 0);
+    assert(dcp_iomfb_present_build_v13_5(&req, 0x12340000, 2560, 1600, 10240, false));
+    assert(u32at(req.bytes + 0x104) == 1 && u32at(req.bytes + 0x108) == 1);
+    assert(u32at(req.bytes + 0x10c) == 0);
     assert(dcp_iomfb_present_set_swap_id_v13_5(&req, 0x42));
     assert(u32at(req.bytes + 0x50) == 0x42);
     memcpy(start, &(uint32_t){0x42}, 4);

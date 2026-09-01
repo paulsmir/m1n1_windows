@@ -215,7 +215,9 @@ OBJECTS := \
 	dcp.o \
 	dcp_endpoint_owner.o \
 	dcp_iboot.o \
+	dcp_iomfb_clock.o \
 	dcp_iomfb_latch.o \
+	dcp_iomfb_mode_select.o \
 	dcp_iomfb_rpc.o \
 	dcp_iomfb_v13_5_abi.o \
 	dcp_iomfb_bootstrap.o \

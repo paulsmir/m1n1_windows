@@ -6,6 +6,7 @@
 #include "adt.h"
 #include "afk.h"
 #include "dcp.h"
+#include "dcp_iomfb_clock.h"
 #include "firmware.h"
 #include "malloc.h"
 #include "pmgr.h"
@@ -170,11 +171,19 @@ static int dcp_iomfb_owner_platform(void *opaque, unsigned int callback_id,
                                               output, output_size);
     if (callback_id == 209) {
         int chosen = adt_path_offset(adt, "/chosen");
-        u64 utc_ms = 0;
+        struct dcp_iomfb_clock_anchor anchor = {0};
+        u64 utc_ms;
         if (chosen < 0 ||
-            ADT_GETPROP(adt, chosen, "m1n1-iomfb-utc-ms", &utc_ms) < 0 ||
-            input_size != 0 || output_size != sizeof(utc_ms)) {
-            printf("dcp-iomfb: D209 has no authoritative UTC snapshot\n");
+            ADT_GETPROP(adt, chosen, "m1n1-iomfb-utc-ms",
+                        &anchor.utc_ms) < 0 ||
+            ADT_GETPROP(adt, chosen, "m1n1-iomfb-utc-cntpct",
+                        &anchor.counter) < 0 ||
+            ADT_GETPROP(adt, chosen, "m1n1-iomfb-utc-cntfrq",
+                        &anchor.frequency) < 0 ||
+            input_size != 0 || output_size != sizeof(utc_ms) ||
+            !dcp_iomfb_clock_now(&anchor, mrs(CNTPCT_EL0),
+                                 mrs(CNTFRQ_EL0), &utc_ms)) {
+            printf("dcp-iomfb: D209 has no authoritative UTC counter anchor\n");
             return -1;
         }
         memcpy(output, &utc_ms, sizeof(utc_ms));
@@ -240,36 +249,8 @@ static int dcp_iomfb_owner_receive(void *opaque, afk_raw_u8 endpoint,
     return 0;
 }
 
-#define DCP_IOMFB_RTKIT_DRAIN_MAX_MESSAGES 64u
 #define DCP_IOMFB_START_OBSERVE_MAX_POLLS 100000u
 #define DCP_IOMFB_START_OBSERVE_USEC 500000u
-
-#if !defined(DCP_IOMFB_START_OBSERVER) && \
-    !defined(DCP_IOMFB_EARLY_PIODMA_OBSERVER) && \
-    !defined(DCP_IOMFB_SET_SHMEM_OBSERVER) && \
-    !defined(DCP_IOMFB_A401_OBSERVER) && \
-    !defined(DCP_IOMFB_A426_OBSERVER) && \
-    !defined(DCP_IOMFB_A449_OBSERVER)
-static bool dcp_iomfb_drain_pending_system_traffic(dcp_dev_t *dcp)
-{
-    unsigned int processed = 0;
-
-    if (!rtkit_drain_system_bounded(dcp->rtkit,
-                                    DCP_IOMFB_RTKIT_DRAIN_MAX_MESSAGES,
-                                    &processed)) {
-        printf("dcp-iomfb: bounded RTKit system drain failed after %u messages\n",
-               processed);
-        return false;
-    }
-    if (!processed) {
-        printf("dcp-iomfb: no pending RTKit system traffic; discriminator not active\n");
-        return false;
-    }
-    printf("dcp-iomfb: drained %u pending RTKit system messages before owner START\n",
-           processed);
-    return true;
-}
-#endif
 
 #ifdef DCP_IOMFB_SET_SHMEM_OBSERVER
 static bool dcp_iomfb_observe_set_shmem_fail_closed(dcp_dev_t *dcp)
@@ -361,6 +342,11 @@ static bool dcp_iomfb_observe_start_fail_closed(dcp_dev_t *dcp)
 
 bool dcp_iomfb_owner_start(dcp_dev_t *dcp)
 {
+    struct dcp_iomfb_mode_choice mode;
+    const void *color_blob;
+    const void *timing_blob;
+    size_t color_size;
+    size_t timing_size;
     int dart_path[8];
 
     if (!dcp || dcp->iomfb_owner_endpoint_started ||
@@ -372,15 +358,6 @@ bool dcp_iomfb_owner_start(dcp_dev_t *dcp)
     }
     if (adt_path_offset_trace(adt, "/arm-io/dart-disp0", dart_path) < 0)
         return false;
-#if !defined(DCP_IOMFB_START_OBSERVER) && \
-    !defined(DCP_IOMFB_EARLY_PIODMA_OBSERVER) && \
-    !defined(DCP_IOMFB_SET_SHMEM_OBSERVER) && \
-    !defined(DCP_IOMFB_A401_OBSERVER) && \
-    !defined(DCP_IOMFB_A426_OBSERVER) && \
-    !defined(DCP_IOMFB_A449_OBSERVER)
-    if (!dcp_iomfb_drain_pending_system_traffic(dcp))
-        return false;
-#endif
     if (!rtkit_start_ep(dcp->rtkit, DCP_IOMFB_RPC_ENDPOINT))
         return false;
     dcp->iomfb_owner_endpoint_started = true;
@@ -393,19 +370,6 @@ bool dcp_iomfb_owner_start(dcp_dev_t *dcp)
 
 #ifdef DCP_IOMFB_SET_SHMEM_OBSERVER
     return dcp_iomfb_observe_set_shmem_fail_closed(dcp);
-#endif
-
-#if !defined(DCP_IOMFB_EARLY_PIODMA_OBSERVER) && \
-    !defined(DCP_IOMFB_SET_SHMEM_OBSERVER) && \
-    !defined(DCP_IOMFB_A401_OBSERVER) && \
-    !defined(DCP_IOMFB_A426_OBSERVER) && \
-    !defined(DCP_IOMFB_A449_OBSERVER)
-    dcp->dart_piodma = dart_init_adt("/arm-io/dart-disp0", 0, 4, true);
-    if (!dcp->dart_piodma)
-        goto fail_endpoint;
-    if (dart_setup_pt_region(dcp->dart_piodma, "/arm-io/dart-disp0", 4,
-                             dart_vm_base(dcp->dart_dcp)))
-        goto fail_endpoint;
 #endif
 
     if (!rtkit_alloc_buffer_aligned(dcp->rtkit, &dcp->iomfb_shmem,
@@ -476,8 +440,25 @@ bool dcp_iomfb_owner_start(dcp_dev_t *dcp)
         printf("dcp-iomfb: A401 bootstrap failed closed\n");
         goto fail_endpoint;
     }
-    printf("dcp-iomfb: single owner ACTIVE main_display=%u\n",
-           dcp_iomfb_bootstrap_main_display(&dcp->iomfb_bootstrap));
+    if (!dcp_iomfb_properties_find(&dcp->iomfb_properties, "ColorElements",
+                                    &color_blob, &color_size) ||
+        !dcp_iomfb_properties_find(&dcp->iomfb_properties, "TimingElements",
+                                    &timing_blob, &timing_size) ||
+        !dcp_iomfb_select_modes(color_blob, color_size, timing_blob,
+                                timing_size, &mode)) {
+        printf("dcp-iomfb: no validated fixed-panel mode; owner failed closed\n");
+        goto fail_endpoint;
+    }
+    if (!dcp_iomfb_bootstrap_power_on(&dcp->iomfb_bootstrap) ||
+        !dcp_iomfb_bootstrap_modeset(&dcp->iomfb_bootstrap,
+                                     mode.color_mode_id,
+                                     mode.timing_mode_id)) {
+        printf("dcp-iomfb: panel power/modeset failed closed\n");
+        goto fail_endpoint;
+    }
+    printf("dcp-iomfb: single owner MODESET main_display=%u color=%u timing=%u\n",
+           dcp_iomfb_bootstrap_main_display(&dcp->iomfb_bootstrap),
+           mode.color_mode_id, mode.timing_mode_id);
     return true;
 
 fail_endpoint:
@@ -502,7 +483,7 @@ bool dcp_iomfb_owner_active(const dcp_dev_t *dcp)
 {
     return dcp && dcp->iomfb_owner_registered &&
            dcp_iomfb_bootstrap_state(&dcp->iomfb_bootstrap) ==
-               DCP_IOMFB_BOOT_ACTIVE;
+               DCP_IOMFB_BOOT_MODESET;
 }
 
 void dcp_iomfb_owner_arm(dcp_dev_t *dcp, u32 swap_id)
@@ -518,7 +499,7 @@ int dcp_iomfb_owner_poll_latch(dcp_dev_t *dcp, u32 expected_swap_id)
     if (dcp->iomfb_latched_swap_id == expected_swap_id)
         return 1;
     if (dcp_iomfb_bootstrap_state(&dcp->iomfb_bootstrap) !=
-        DCP_IOMFB_BOOT_ACTIVE)
+        DCP_IOMFB_BOOT_MODESET)
         return -1;
     if (afk_epic_work(dcp->afk, -1) < 0)
         return -1;
@@ -535,7 +516,8 @@ int dcp_iomfb_owner_present(dcp_dev_t *dcp, u64 surface_iova, u32 width,
 
     if (!dcp_iomfb_owner_active(dcp) || dcp->iomfb_expected_swap_id ||
         !dcp_iomfb_present_build_v13_5(&dcp->iomfb_present_request,
-                                        surface_iova, width, height, stride))
+                                        surface_iova, width, height, stride,
+                                        !dcp->iomfb_surfaces_cleared))
         return -1;
     if (!dcp_iomfb_owner_call(dcp, "A407", start_input, sizeof(start_input),
                                start_output, sizeof(start_output)) ||
@@ -557,6 +539,7 @@ int dcp_iomfb_owner_present(dcp_dev_t *dcp, u64 surface_iova, u32 width,
     }
     printf("dcp-iomfb: A408 APPLIED swap_id=%u; awaiting exact D589 latch\n",
            swap_id);
+    dcp->iomfb_surfaces_cleared = true;
     return (int)swap_id;
 }
 
@@ -813,14 +796,11 @@ dcp_dev_t *dcp_init(const display_config_t *cfg)
     // set disp0's page tables at dart-dcp's vm-base
     dart_setup_pt_region(dcp->dart_disp, cfg->disp_dart, 0, vm_base);
 
-#if defined(DCP_IOMFB_EARLY_PIODMA_OBSERVER) || \
-    defined(DCP_IOMFB_SET_SHMEM_OBSERVER) || \
-    defined(DCP_IOMFB_A401_OBSERVER) || \
-    defined(DCP_IOMFB_A426_OBSERVER) || \
-    defined(DCP_IOMFB_A449_OBSERVER)
+#ifdef DCP_IOMFB_FULL_OWNER
     /* Linux creates/configures the PIODMA IOMMU child during probe, before
-     * dcp_start() starts any RTKit application endpoint.  Preserve that
-     * lifecycle for the isolated admission discriminator. */
+     * dcp_start() starts any RTKit application endpoint. EXP246 hardware-
+     * proved this ordering on J313, so it is a production full-owner
+     * invariant rather than an observer-only discriminator. */
     dcp->dart_piodma = dart_init_adt("/arm-io/dart-disp0", 0, 4, true);
     if (!dcp->dart_piodma) {
         printf("dcp-iomfb: failed to initialize early PIODMA DART\n");
@@ -883,11 +863,7 @@ out_rtkit:
     rtkit_free(dcp->rtkit);
 out_iovad:
     iovad_shutdown(dcp->iovad_dcp, dcp->dart_dcp);
-#if defined(DCP_IOMFB_EARLY_PIODMA_OBSERVER) || \
-    defined(DCP_IOMFB_SET_SHMEM_OBSERVER) || \
-    defined(DCP_IOMFB_A401_OBSERVER) || \
-    defined(DCP_IOMFB_A426_OBSERVER) || \
-    defined(DCP_IOMFB_A449_OBSERVER)
+#ifdef DCP_IOMFB_FULL_OWNER
 out_dart_piodma:
     dart_shutdown(dcp->dart_piodma);
 out_dart_disp:

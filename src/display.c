@@ -462,6 +462,29 @@ static u64 display_guest_map(void *opaque, u64 base, u64 size)
     return DART_IS_ERR(iova) ? 0 : iova;
 }
 
+static u32 display_guest_owner_present_begin(void *opaque, u64 iova,
+                                             u32 width, u32 height,
+                                             u32 stride)
+{
+    int swap_id;
+
+    (void)opaque;
+    swap_id = dcp_iomfb_owner_present(dcp, iova, width, height, stride);
+    return swap_id > 0 ? (u32)swap_id : 0;
+}
+
+static int display_guest_owner_latch_poll(void *opaque, u32 expected_swap_id)
+{
+    (void)opaque;
+    return dcp_iomfb_owner_poll_latch(dcp, expected_swap_id);
+}
+
+static void display_guest_owner_wait(void *opaque)
+{
+    (void)opaque;
+    udelay(100);
+}
+
 static bool display_guest_present(void *opaque, u64 iova, u32 width, u32 height, u32 stride)
 {
     (void)opaque;
@@ -569,6 +592,16 @@ bool display_scanout_ready(void)
     return (iboot || dcp_iomfb_owner_active(dcp)) && dcp && dcp->dart_dcp &&
            dcp->dart_disp && dcp->iovad_dcp &&
            !display_is_external;
+}
+
+bool display_scanout_latch_source_proven(void)
+{
+#ifdef DCP_IOMFB_FULL_OWNER
+    return display_dcp_frontend_has_latch_source(
+        DISPLAY_DCP_FRONTEND_IOMFB, dcp_iomfb_owner_active(dcp));
+#else
+    return false;
+#endif
 }
 
 bool display_scanout_reserve_iova(u64 size, u64 alignment, u64 *iova)
@@ -759,8 +792,43 @@ int display_prepare_guest_surface(u64 base, u64 size, u32 width, u32 height, u32
         printf("display: guest surface handoff only supports the internal panel\n");
         return 0;
     }
+    if (dcp_iomfb_owner_active(dcp)) {
+        const struct display_guest_owner_ops owner_ops = {
+            .map = display_guest_map,
+            .present_begin = display_guest_owner_present_begin,
+            .latch_poll = display_guest_owner_latch_poll,
+            .wait = display_guest_owner_wait,
+        };
+        u64 new_dva = 0;
+        enum display_guest_owner_result result;
+
+        if (width != cur_boot_args.video.width ||
+            height != cur_boot_args.video.height ||
+            stride != cur_boot_args.video.stride) {
+            printf("display: IOMFB owner requires exact POST geometry\n");
+            return 0;
+        }
+        result = display_guest_prepare_owner(
+            base, size, width, height, stride, depth, &owner_ops, NULL,
+            5000, &new_dva);
+        if (result != DISPLAY_GUEST_OWNER_LATCHED) {
+            if (new_dva)
+                printf("display: IOMFB guest surface not proven latched; retaining DVA=%#lx until reset\n",
+                       new_dva);
+            else
+                printf("display: rejected IOMFB guest surface before publication\n");
+            return 0;
+        }
+        if (guest_fb_dva)
+            display_guest_unmap(NULL, guest_fb_dva, guest_fb_size);
+        guest_fb_dva = new_dva;
+        guest_fb_size = size;
+        printf("display: IOMFB guest surface latched PA=%#lx DVA=%#lx size=%#lx %ux%u stride=%u\n",
+               base, new_dva, size, width, height, stride);
+        return 1;
+    }
     if (!iboot) {
-        printf("display: IOMFB owner scanout is not admitted yet; guest present fails closed\n");
+        printf("display: no admitted DCP frontend for guest present\n");
         return 0;
     }
 

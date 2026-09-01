@@ -93,10 +93,16 @@ if args.xnu:
                 remove_oslog(nub)
 
 # IOMFB D209 requires calendar milliseconds rather than a fabricated
-# monotonic value. Assisted chainloads have an authoritative host clock, so
-# carry one exact snapshot in the copied ADT. The next m1n1 stage owns this
-# copy; the source ADT and every unrelated launch property remain unchanged.
-u.adt["chosen"].m1n1_iomfb_utc_ms = time.time_ns() // 1_000_000
+# monotonic value. Anchor the authoritative host clock to the architectural
+# counter so the next m1n1 stage can advance the value at callback time. The
+# two host samples bound the proxy round-trip skew around the counter read.
+utc_before_ns = time.time_ns()
+iomfb_utc_cntpct = u.mrs("CNTPCT_EL0")
+utc_after_ns = time.time_ns()
+u.adt["chosen"].m1n1_iomfb_utc_ms = \
+    ((utc_before_ns + utc_after_ns) // 2) // 1_000_000
+u.adt["chosen"].m1n1_iomfb_utc_cntpct = iomfb_utc_cntpct
+u.adt["chosen"].m1n1_iomfb_utc_cntfrq = u.mrs("CNTFRQ_EL0")
 
 print("Setting secondary CPU RVBARs...")
 

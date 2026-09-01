@@ -10,6 +10,14 @@ static void store_u32(void *output, uint32_t value)
     memcpy(output, &value, sizeof(value));
 }
 
+static uint32_t load_u32(const void *input)
+{
+    uint32_t value;
+
+    memcpy(&value, input, sizeof(value));
+    return value;
+}
+
 static bool parse_callback_id(const char tag[4], unsigned int *id)
 {
     unsigned int value = 0;
@@ -98,6 +106,52 @@ bool dcp_iomfb_bootstrap_start(struct dcp_iomfb_bootstrap *bootstrap)
 failed:
     bootstrap->state = DCP_IOMFB_BOOT_FAILED;
     return false;
+}
+
+bool dcp_iomfb_bootstrap_power_on(struct dcp_iomfb_bootstrap *bootstrap)
+{
+    uint32_t display_device = 0;
+    uint32_t display_result = 0;
+    uint8_t power_input[12] = {0};
+    uint8_t power_output[8] = {0};
+
+    if (!bootstrap || !bootstrap->call || !bootstrap->main_display ||
+        bootstrap->state != DCP_IOMFB_BOOT_ACTIVE)
+        return false;
+
+    /* Asahi's integrated-panel power-on path selects display device zero,
+     * then calls setPowerState(1, false, &result).  The nullable output marker
+     * at byte 9 is zero because the result pointer is present. */
+    store_u32(power_input, 1);
+    if (!call_method(bootstrap, 410, "A410", &display_device,
+                     &display_result) ||
+        !call_method(bootstrap, 472, "A472", power_input, power_output) ||
+        load_u32(power_output + sizeof(uint32_t)) != 0) {
+        bootstrap->state = DCP_IOMFB_BOOT_FAILED;
+        return false;
+    }
+
+    bootstrap->state = DCP_IOMFB_BOOT_POWERED;
+    return true;
+}
+
+bool dcp_iomfb_bootstrap_modeset(struct dcp_iomfb_bootstrap *bootstrap,
+                                 uint32_t color_mode_id,
+                                 uint32_t timing_mode_id)
+{
+    uint32_t input[2] = {color_mode_id, timing_mode_id};
+    uint32_t result = 0;
+
+    if (!bootstrap || !bootstrap->call ||
+        bootstrap->state != DCP_IOMFB_BOOT_POWERED)
+        return false;
+    if (!call_method(bootstrap, 412, "A412", input, &result) || result != 0) {
+        bootstrap->state = DCP_IOMFB_BOOT_FAILED;
+        return false;
+    }
+
+    bootstrap->state = DCP_IOMFB_BOOT_MODESET;
+    return true;
 }
 
 bool dcp_iomfb_bootstrap_start_through_video_power_savings(

@@ -198,7 +198,6 @@ bool hv_agx_g2_resources_map(void)
     }
 
     hv_agx_power_broker_init(&broker, hv_agx_power_j313_ops(), NULL);
-    hv_agx_scanout_broker_init(&scanout_broker);
     hv_agx_scanout_service_init(&scanout_service, &scanout_ops, NULL);
     completion_route = hv_irq_route_from_vintid(HV_AGX_SCANOUT_GUEST_VINTID);
     if (!completion_route ||
@@ -208,8 +207,16 @@ bool hv_agx_g2_resources_map(void)
                HV_AGX_SCANOUT_GUEST_VINTID);
         return false;
     }
-    if (display_start_dcp() < 0)
+    if (display_start_dcp() < 0) {
         printf("HV: AGX scanout DCP backend unavailable; requests fail closed\n");
+        hv_agx_scanout_broker_init(&scanout_broker);
+    } else if (display_scanout_latch_source_proven()) {
+        hv_agx_scanout_broker_init_v2(&scanout_broker, true);
+        printf("HV: AGX scanout ABI v2 enabled with proven IOMFB latch source\n");
+    } else {
+        hv_agx_scanout_broker_init(&scanout_broker);
+        printf("HV: AGX scanout stays ABI v1 without a proven latch source\n");
+    }
     config_snapshot_valid = hv_agx_config_snapshot_from_adt(adt, &config_snapshot);
     if (!config_snapshot_valid)
         printf("HV: AGX boot config snapshot unavailable; firmware start must fail closed\n");

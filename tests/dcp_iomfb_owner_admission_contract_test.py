@@ -14,13 +14,11 @@ body = source[start:end]
 
 start_endpoint = body.index("rtkit_start_ep(")
 observe_start = body.index("dcp_iomfb_observe_start_fail_closed(")
-settle_system = body.index("dcp_iomfb_drain_pending_system_traffic(")
-init_piodma = body.index("dart_init_adt(")
 allocate_shmem = body.index("rtkit_alloc_buffer_aligned(")
 register_handler = body.index("afk_epic_register_raw_handler(")
 send_shmem = body.index("dcp_iomfb_set_shmem_message(")
 
-assert start_endpoint < observe_start < init_piodma, (
+assert start_endpoint < observe_start < allocate_shmem, (
     "START-only observation must run before any PIODMA state is touched"
 )
 observe_body = source[source.index(
@@ -37,12 +35,15 @@ assert "return false;" in observe_body, (
 )
 assert "defined(DCP_IOMFB_START_OBSERVER)" in body
 assert "defined(DCP_IOMFB_EARLY_PIODMA_OBSERVER)" in body
-assert "defined(DCP_IOMFB_SET_SHMEM_OBSERVER)" in body
-assert settle_system < start_endpoint, (
-    "ordinary full-owner builds must retain the accepted pre-START drain"
+assert "DCP_IOMFB_SET_SHMEM_OBSERVER" in body
+assert "dcp_iomfb_drain_pending_system_traffic(" not in body, (
+    "production admission must not depend on opportunistic pre-START traffic"
 )
-assert start_endpoint < init_piodma, (
-    "IOMFB endpoint must start before creating its PIODMA mapping"
+assert "discriminator not active" not in source, (
+    "an empty RTKit queue is a valid protocol state, not a production failure"
+)
+assert 'dart_init_adt("/arm-io/dart-disp0", 0, 4, true)' not in body, (
+    "full-owner PIODMA must already exist before application endpoint START"
 )
 assert start_endpoint < allocate_shmem < send_shmem, (
     "IOMFB shared memory must be allocated only after endpoint start and before SET_SHMEM"
@@ -65,13 +66,13 @@ assert "return false;" in fail_body, (
 init_start = source.index("dcp_dev_t *dcp_init(")
 init_end = source.index("\nint dcp_shutdown", init_start)
 init_body = source[init_start:init_end]
-early_init = init_body.index("DCP_IOMFB_EARLY_PIODMA_OBSERVER")
+early_init = init_body.index("DCP_IOMFB_FULL_OWNER")
 early_piodma = init_body.index(
     'dart_init_adt("/arm-io/dart-disp0", 0, 4, true)', early_init
 )
 rtkit_boot = init_body.index("rtkit_boot(")
 assert early_init < early_piodma < rtkit_boot, (
-    "the early PIODMA discriminator must configure SID4 before RTKit boot"
+    "every full-owner build must configure SID4 before RTKit boot"
 )
 assert "IOMFB_EARLY_PIODMA_OBSERVER requires IOMFB_FULL_OWNER=1" in makefile
 assert "IOMFB_START_OBSERVER and IOMFB_EARLY_PIODMA_OBSERVER are mutually exclusive" in makefile
@@ -97,13 +98,10 @@ assert "afk_epic_register_raw_handler" not in set_shmem_observer
 assert "return false;" in set_shmem_observer
 
 set_shmem_call = body.index("dcp_iomfb_observe_set_shmem_fail_closed(")
-assert start_endpoint < set_shmem_call < init_piodma, (
+assert start_endpoint < set_shmem_call < allocate_shmem, (
     "SET_SHMEM observer must run immediately after START with early SID4"
 )
-assert "defined(DCP_IOMFB_SET_SHMEM_OBSERVER)" in init_body
-assert "defined(DCP_IOMFB_A401_OBSERVER)" in init_body
-assert "defined(DCP_IOMFB_A426_OBSERVER)" in init_body
-assert "defined(DCP_IOMFB_A449_OBSERVER)" in init_body
+assert "#ifdef DCP_IOMFB_FULL_OWNER" in init_body
 
 a401 = body.index('dcp_iomfb_owner_call(dcp, "A401"')
 bootstrap = body.index("dcp_iomfb_bootstrap_start(")
@@ -123,6 +121,32 @@ assert a426 < a449 < bootstrap, (
     "A449-only observer must extend the accepted A426 step and stop before A456/A411"
 )
 assert "A449 admitted; downstream calls disabled" in body
+
+color_property = body.index(
+    'dcp_iomfb_properties_find(&dcp->iomfb_properties, "ColorElements"'
+)
+timing_property = body.index(
+    'dcp_iomfb_properties_find(&dcp->iomfb_properties, "TimingElements"'
+)
+select_modes = body.index("dcp_iomfb_select_modes(")
+power_on = body.index("dcp_iomfb_bootstrap_power_on(")
+modeset = body.index("dcp_iomfb_bootstrap_modeset(")
+assert bootstrap < color_property < timing_property < select_modes < power_on < modeset, (
+    "production owner must consume validated DCPAV modes, power the panel and "
+    "perform A412 before it admits presentation"
+)
+
+active_start = source.index("bool dcp_iomfb_owner_active(")
+active_end = source.index("\nvoid dcp_iomfb_owner_arm", active_start)
+active_body = source[active_start:active_end]
+assert "DCP_IOMFB_BOOT_MODESET" in active_body
+assert "DCP_IOMFB_BOOT_ACTIVE" not in active_body
+
+poll_start = source.index("int dcp_iomfb_owner_poll_latch(")
+poll_end = source.index("\nint dcp_iomfb_owner_present", poll_start)
+poll_body = source[poll_start:poll_end]
+assert "DCP_IOMFB_BOOT_MODESET" in poll_body
+assert "DCP_IOMFB_BOOT_ACTIVE" not in poll_body
 
 terminal_start = main_source.index("#if defined(DCP_IOMFB_A401_OBSERVER)")
 terminal_end = main_source.index("#endif", terminal_start)

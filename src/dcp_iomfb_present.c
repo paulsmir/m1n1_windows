@@ -10,6 +10,7 @@
 #define FORMAT_BGRA 0x42475241u
 #define XFER_SDR 13u
 #define COLORSPACE_NATIVE 12u
+#define SET_BACKGROUND (1u << 31)
 struct iomfb_rect { uint32_t x, y, w, h; } __attribute__((packed));
 struct iomfb_component_types { uint8_t count, types[7]; } __attribute__((packed));
 struct iomfb_plane {
@@ -78,7 +79,8 @@ _Static_assert(sizeof(struct iomfb_swap_v13_5) == 0x468, "v13.5 swap ABI");
 _Static_assert(sizeof(struct iomfb_submit_v13_5) == 0x1884, "v13.5 submit ABI");
 bool dcp_iomfb_present_build_v13_5(struct dcp_iomfb_present_request *request,
                                    uint64_t iova, uint32_t width,
-                                   uint32_t height, uint32_t stride)
+                                   uint32_t height, uint32_t stride,
+                                   bool clear_boot_surfaces)
 {
     struct iomfb_submit_v13_5 *wire;
     struct iomfb_surface_base *surface;
@@ -91,7 +93,11 @@ bool dcp_iomfb_present_build_v13_5(struct dcp_iomfb_present_request *request,
     wire = (struct iomfb_submit_v13_5 *)request->bytes;
     wire->swap.source[0] = (struct iomfb_rect){0, 0, width, height};
     wire->swap.destination[0] = (struct iomfb_rect){0, 0, width, height};
-    wire->swap.swap_enabled = wire->swap.swap_completed = 1;
+    wire->swap.swap_enabled = clear_boot_surfaces ?
+        (SET_BACKGROUND | 0x7u) : 1u;
+    wire->swap.swap_completed = wire->swap.swap_enabled;
+    if (clear_boot_surfaces)
+        wire->swap.background_color = 0xff000000u;
     for (unsigned i = 1; i < SURFACES; i++) wire->surface_null[i] = 1;
     for (unsigned i = 0; i < SECONDARY_SURFACES; i++) wire->secondary_null[i] = 1;
     wire->unknown_u32_pointer_null = wire->unknown_u32_out_null = 1;

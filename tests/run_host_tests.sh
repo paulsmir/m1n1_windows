@@ -20,7 +20,10 @@ display_guest_test
 display_dcp_frontend_test
 dcp_endpoint_owner_test
 dcp_iomfb_owner_admission_contract_test
+dcp_iomfb_clock_test
+dcp_iomfb_clock_anchor_contract_test
 dcp_iomfb_latch_test
+dcp_iomfb_mode_select_test
 dcp_iomfb_transport_test
 dcp_iomfb_rpc_test
 dcp_iomfb_v13_5_abi_test
@@ -80,6 +83,7 @@ ringbuffer_test
 rtkit_deferred_test
 rtkit_endpoint_map_test
 rtkit_power_ack_contract_test
+rtkit_tracekit_contract_test
 uartproxy_event_test
 usb_dwc3_bulk_state_test
 "
@@ -90,6 +94,11 @@ if [ "$#" -eq 0 ]; then
 fi
 
 for name in "$@"; do
+    if [ "$name" = dcp_iomfb_clock_anchor_contract_test ]; then
+        echo "  PYTEST  $name"
+        python3 tests/dcp_iomfb_clock_anchor_contract_test.py
+        continue
+    fi
     if [ "$name" = afk_tx_reservation_contract_test ]; then
         echo "  PYTEST  $name"
         python3 tests/afk_tx_reservation_contract_test.py
@@ -98,6 +107,11 @@ for name in "$@"; do
     if [ "$name" = rtkit_power_ack_contract_test ]; then
         echo "  PYTEST  $name"
         python3 tests/rtkit_power_ack_contract_test.py
+        continue
+    fi
+    if [ "$name" = rtkit_tracekit_contract_test ]; then
+        echo "  PYTEST  $name"
+        python3 tests/rtkit_tracekit_contract_test.py
         continue
     fi
     if [ "$name" = dcp_iomfb_owner_admission_contract_test ]; then
@@ -144,9 +158,16 @@ for name in "$@"; do
         dcp_endpoint_owner_test)
             sources="$sources src/dcp_endpoint_owner.c"
             ;;
+        dcp_iomfb_clock_test)
+            definitions="-DDCP_IOMFB_CLOCK_HOST_TEST"
+            ;;
         dcp_iomfb_latch_test)
             definitions="-DDCP_IOMFB_LATCH_HOST_TEST"
             sources="$sources src/dcp_iomfb_latch.c"
+            ;;
+        dcp_iomfb_mode_select_test)
+            definitions="-DDCP_IOMFB_MODE_SELECT_HOST_TEST"
+            sources="$sources src/dcp_iomfb_mode_select.c"
             ;;
         dcp_iomfb_transport_test)
             definitions="-DDCP_IOMFB_LATCH_HOST_TEST -DDCP_IOMFB_TRANSPORT_HOST_TEST"

@@ -25,6 +25,7 @@ const display_config_t *display_get_config(void);
 
 /* Non-blocking fixed-panel backend used by the EL2 scanout broker. */
 bool display_scanout_ready(void);
+bool display_scanout_latch_source_proven(void);
 bool display_scanout_reserve_iova(u64 size, u64 alignment, u64 *iova);
 void display_scanout_free_iova(u64 iova, u64 size);
 bool display_scanout_map(unsigned dart_index, u64 iova, u64 pa, u64 size);

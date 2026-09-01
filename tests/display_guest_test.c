@@ -10,6 +10,11 @@ struct fake_display {
     unsigned unmaps;
     uint64_t mapped_iova;
     bool present_ok;
+    uint32_t owner_swap_id;
+    int owner_latch_results[4];
+    unsigned owner_latch_count;
+    unsigned owner_latch_index;
+    unsigned waits;
 };
 
 static uint64_t fake_map(void *opaque, uint64_t base, uint64_t size)
@@ -39,6 +44,30 @@ static void fake_unmap(void *opaque, uint64_t iova, uint64_t size)
     assert(iova == fake->mapped_iova);
     assert(size == UINT64_C(0x3e8000));
     fake->unmaps++;
+}
+
+static uint32_t fake_owner_present_begin(void *opaque, uint64_t iova,
+                                         uint32_t width, uint32_t height,
+                                         uint32_t stride)
+{
+    struct fake_display *fake = opaque;
+    assert(iova == fake->mapped_iova);
+    assert(width == 1280 && height == 800 && stride == 5120);
+    fake->presents++;
+    return fake->owner_swap_id;
+}
+
+static int fake_owner_latch_poll(void *opaque, uint32_t expected_swap_id)
+{
+    struct fake_display *fake = opaque;
+    assert(expected_swap_id == fake->owner_swap_id);
+    assert(fake->owner_latch_index < fake->owner_latch_count);
+    return fake->owner_latch_results[fake->owner_latch_index++];
+}
+
+static void fake_owner_wait(void *opaque)
+{
+    ((struct fake_display *)opaque)->waits++;
 }
 
 int main(void)
@@ -91,6 +120,51 @@ int main(void)
     fake = (struct fake_display){.mapped_iova = UINT64_C(0x12340000), .present_ok = true};
     assert(!display_guest_prepare(base, size - 1, 1280, 800, 5120, 32, &ops, &fake, &iova));
     assert(fake.maps == 0 && fake.presents == 0 && fake.unmaps == 0);
+
+    const struct display_guest_owner_ops owner_ops = {
+        .map = fake_map,
+        .present_begin = fake_owner_present_begin,
+        .latch_poll = fake_owner_latch_poll,
+        .wait = fake_owner_wait,
+    };
+    fake = (struct fake_display){
+        .mapped_iova = UINT64_C(0x12340000),
+        .owner_swap_id = 41,
+        .owner_latch_results = {0, 0, 1},
+        .owner_latch_count = 3,
+    };
+    assert(display_guest_prepare_owner(base, size, 1280, 800, 5120, 32,
+                                       &owner_ops, &fake, 4, &iova) ==
+           DISPLAY_GUEST_OWNER_LATCHED);
+    assert(iova == fake.mapped_iova);
+    assert(fake.maps == 1 && fake.presents == 1 && fake.waits == 2);
+
+    fake = (struct fake_display){
+        .mapped_iova = UINT64_C(0x12340000),
+        .owner_swap_id = 42,
+        .owner_latch_results = {0, 0},
+        .owner_latch_count = 2,
+    };
+    assert(display_guest_prepare_owner(base, size, 1280, 800, 5120, 32,
+                                       &owner_ops, &fake, 2, &iova) ==
+           DISPLAY_GUEST_OWNER_UNCERTAIN);
+    assert(iova == fake.mapped_iova);
+    assert(fake.unmaps == 0);
+
+    fake = (struct fake_display){
+        .mapped_iova = UINT64_C(0x12340000),
+        .owner_swap_id = 0,
+    };
+    assert(display_guest_prepare_owner(base, size, 1280, 800, 5120, 32,
+                                       &owner_ops, &fake, 2, &iova) ==
+           DISPLAY_GUEST_OWNER_UNCERTAIN);
+    assert(iova == fake.mapped_iova && fake.unmaps == 0);
+
+    fake = (struct fake_display){.mapped_iova = UINT64_C(0x12340000)};
+    assert(display_guest_prepare_owner(base, size - 1, 1280, 800, 5120, 32,
+                                       &owner_ops, &fake, 2, &iova) ==
+           DISPLAY_GUEST_OWNER_REJECTED);
+    assert(iova == 0 && fake.maps == 0 && fake.presents == 0);
 
     puts("display_guest_test: ok");
     return 0;

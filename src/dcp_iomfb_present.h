@@ -16,7 +16,8 @@ struct dcp_iomfb_present_request {
 };
 bool dcp_iomfb_present_build_v13_5(struct dcp_iomfb_present_request *request,
                                    uint64_t surface_iova, uint32_t width,
-                                   uint32_t height, uint32_t stride);
+                                   uint32_t height, uint32_t stride,
+                                   bool clear_boot_surfaces);
 bool dcp_iomfb_present_set_swap_id_v13_5(
     struct dcp_iomfb_present_request *request, uint32_t swap_id);
 bool dcp_iomfb_present_parse_start_v13_5(

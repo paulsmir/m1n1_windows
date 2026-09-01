@@ -12,6 +12,7 @@ struct fixture {
     char tags[32][5];
     uint32_t input_sizes[32];
     uint32_t output_sizes[32];
+    uint8_t inputs[32][16];
     unsigned int calls;
     unsigned int platform_calls;
     unsigned int last_platform_id;
@@ -28,6 +29,10 @@ static bool record_call(void *opaque, const char tag[4], const void *input,
     fixture->tags[fixture->calls][4] = 0;
     fixture->input_sizes[fixture->calls] = input_size;
     fixture->output_sizes[fixture->calls] = output_size;
+    if (input_size) {
+        assert(input_size <= sizeof(fixture->inputs[fixture->calls]));
+        memcpy(fixture->inputs[fixture->calls], input, input_size);
+    }
     fixture->calls++;
     if (input_size)
         assert(input != NULL);
@@ -38,6 +43,10 @@ static bool record_call(void *opaque, const char tag[4], const void *input,
     if (memcmp(tag, "A411", 4) == 0) {
         uint32_t main_display = 1;
         memcpy(output, &main_display, sizeof(main_display));
+    } else if (memcmp(tag, "A472", 4) == 0) {
+        uint32_t success = 0;
+        memcpy((uint8_t *)output + sizeof(uint32_t), &success,
+               sizeof(success));
     }
     return true;
 }
@@ -138,6 +147,23 @@ int main(void)
     expect_call(&fixture, 2, "A449", 4, 4);
     expect_call(&fixture, 3, "A456", 0, 0);
     expect_call(&fixture, 4, "A411", 0, 4);
+
+    assert(dcp_iomfb_bootstrap_power_on(&bootstrap));
+    assert(dcp_iomfb_bootstrap_state(&bootstrap) == DCP_IOMFB_BOOT_POWERED);
+    assert(fixture.calls == 7);
+    expect_call(&fixture, 5, "A410", 4, 4);
+    expect_call(&fixture, 6, "A472", 12, 8);
+    assert(fixture.inputs[5][0] == 0);
+    assert(fixture.inputs[6][0] == 1);
+    for (unsigned int i = 1; i < 12; i++)
+        assert(fixture.inputs[6][i] == 0);
+
+    assert(dcp_iomfb_bootstrap_modeset(&bootstrap, 7, 11));
+    assert(dcp_iomfb_bootstrap_state(&bootstrap) == DCP_IOMFB_BOOT_MODESET);
+    assert(fixture.calls == 8);
+    expect_call(&fixture, 7, "A412", 8, 4);
+    assert(fixture.inputs[7][0] == 7);
+    assert(fixture.inputs[7][4] == 11);
 
     memset(output, 0, sizeof(output));
     assert(dcp_iomfb_bootstrap_callback(&bootstrap, "D003", output, 4,

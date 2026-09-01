@@ -27,6 +27,7 @@
 #define RTKIT_EP_DEBUG    3
 #define RTKIT_EP_IOREPORT 4
 #define RTKIT_EP_OSLOG    8
+#define RTKIT_EP_TRACEKIT 0xa
 
 #define MGMT_TYPE GENMASK(59, 52)
 
@@ -781,6 +782,7 @@ bool rtkit_boot(rtkit_dev_t *rtk)
     bool has_ioreport = false;
     bool has_syslog = false;
     bool has_oslog = false;
+    bool has_tracekit = false;
     bool got_epmap = false;
     while (!got_epmap) {
         if (!asc_recv_timeout(rtk->asc, &msg, USEC_PER_SEC)) {
@@ -828,6 +830,10 @@ bool rtkit_boot(rtkit_dev_t *rtk)
                         break;
                     case RTKIT_EP_OSLOG:
                         has_oslog = true;
+                        break;
+                    case RTKIT_EP_TRACEKIT:
+                        has_tracekit = true;
+                        break;
                     case RTKIT_EP_MGMT:
                         break;
                     default:
@@ -855,15 +861,17 @@ bool rtkit_boot(rtkit_dev_t *rtk)
     }
 
     /* start all required system endpoints */
-    if (has_debug && !rtkit_start_ep(rtk, RTKIT_EP_DEBUG))
-        return false;
     if (has_crashlog && !rtkit_start_ep(rtk, RTKIT_EP_CRASHLOG))
         return false;
     if (has_syslog && !rtkit_start_ep(rtk, RTKIT_EP_SYSLOG))
         return false;
+    if (has_debug && !rtkit_start_ep(rtk, RTKIT_EP_DEBUG))
+        return false;
     if (has_ioreport && !rtkit_start_ep(rtk, RTKIT_EP_IOREPORT))
         return false;
     if (has_oslog && !rtkit_start_ep(rtk, RTKIT_EP_OSLOG))
+        return false;
+    if (has_tracekit && !rtkit_start_ep(rtk, RTKIT_EP_TRACEKIT))
         return false;
 
     while (rtk->iop_power != RTKIT_POWER_ON) {
