@@ -163,12 +163,12 @@ int main(void)
     assert(dcp_iomfb_bootstrap_power_on(&bootstrap));
     assert(dcp_iomfb_bootstrap_state(&bootstrap) == DCP_IOMFB_BOOT_POWERED);
     assert(fixture.calls == 7);
-    expect_call(&fixture, 5, "A410", 4, 4);
-    expect_call(&fixture, 6, "A472", 12, 8);
-    assert(fixture.inputs[5][0] == 0);
-    assert(fixture.inputs[6][0] == 1);
+    expect_call(&fixture, 5, "A472", 12, 8);
+    expect_call(&fixture, 6, "A410", 4, 4);
+    assert(fixture.inputs[5][0] == 1);
+    assert(fixture.inputs[6][0] == 0);
     for (unsigned int i = 1; i < 12; i++)
-        assert(fixture.inputs[6][i] == 0);
+        assert(fixture.inputs[5][i] == 0);
 
     assert(dcp_iomfb_bootstrap_modeset(&bootstrap, 7, 11));
     assert(dcp_iomfb_bootstrap_state(&bootstrap) == DCP_IOMFB_BOOT_MODESET);
@@ -176,6 +176,16 @@ int main(void)
     expect_call(&fixture, 7, "A412", 8, 4);
     assert(fixture.inputs[7][0] == 7);
     assert(fixture.inputs[7][4] == 11);
+
+    memset(&fixture, 0, sizeof(fixture));
+    dcp_iomfb_bootstrap_init(&bootstrap, record_call, platform_callback,
+                             &fixture);
+    assert(dcp_iomfb_bootstrap_start(&bootstrap));
+    assert(dcp_iomfb_bootstrap_power_on_firmware(&bootstrap));
+    assert(dcp_iomfb_bootstrap_state(&bootstrap) ==
+           DCP_IOMFB_BOOT_POWER_ON);
+    assert(fixture.calls == 6);
+    expect_call(&fixture, 5, "A472", 12, 8);
 
     memset(output, 0, sizeof(output));
     assert(dcp_iomfb_bootstrap_callback(&bootstrap, "D003", output, 4,

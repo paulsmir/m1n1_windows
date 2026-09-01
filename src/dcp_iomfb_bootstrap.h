@@ -15,6 +15,7 @@ enum dcp_iomfb_boot_state {
     DCP_IOMFB_BOOT_BOOTSTRAP,
     DCP_IOMFB_BOOT_POST_INIT,
     DCP_IOMFB_BOOT_ACTIVE,
+    DCP_IOMFB_BOOT_POWER_ON,
     DCP_IOMFB_BOOT_POWERED,
     DCP_IOMFB_BOOT_MODESET,
     DCP_IOMFB_BOOT_FAILED,
@@ -48,6 +49,8 @@ bool dcp_iomfb_bootstrap_start_through_video_power_savings(
 bool dcp_iomfb_bootstrap_start_through_first_client_open(
     struct dcp_iomfb_bootstrap *bootstrap);
 bool dcp_iomfb_bootstrap_start(struct dcp_iomfb_bootstrap *bootstrap);
+bool dcp_iomfb_bootstrap_power_on_firmware(
+    struct dcp_iomfb_bootstrap *bootstrap);
 bool dcp_iomfb_bootstrap_power_on(struct dcp_iomfb_bootstrap *bootstrap);
 bool dcp_iomfb_bootstrap_modeset(struct dcp_iomfb_bootstrap *bootstrap,
                                  uint32_t color_mode_id,

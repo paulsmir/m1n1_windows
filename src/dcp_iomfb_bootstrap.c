@@ -111,6 +111,29 @@ bool dcp_iomfb_bootstrap_power_on(struct dcp_iomfb_bootstrap *bootstrap)
 {
     uint32_t display_device = 0;
     uint32_t display_result = 0;
+
+    if (!bootstrap || !bootstrap->call || !bootstrap->main_display)
+        return false;
+
+    if (bootstrap->state == DCP_IOMFB_BOOT_ACTIVE &&
+        !dcp_iomfb_bootstrap_power_on_firmware(bootstrap))
+        return false;
+    if (bootstrap->state != DCP_IOMFB_BOOT_POWER_ON)
+        return false;
+
+    if (!call_method(bootstrap, 410, "A410", &display_device,
+                     &display_result)) {
+        bootstrap->state = DCP_IOMFB_BOOT_FAILED;
+        return false;
+    }
+
+    bootstrap->state = DCP_IOMFB_BOOT_POWERED;
+    return true;
+}
+
+bool dcp_iomfb_bootstrap_power_on_firmware(
+    struct dcp_iomfb_bootstrap *bootstrap)
+{
     uint8_t power_input[12] = {0};
     uint8_t power_output[8] = {0};
 
@@ -118,19 +141,17 @@ bool dcp_iomfb_bootstrap_power_on(struct dcp_iomfb_bootstrap *bootstrap)
         bootstrap->state != DCP_IOMFB_BOOT_ACTIVE)
         return false;
 
-    /* Asahi's integrated-panel power-on path selects display device zero,
-     * then calls setPowerState(1, false, &result).  The nullable output marker
-     * at byte 9 is zero because the result pointer is present. */
+    /* The pinned integrated-panel path calls setPowerState(1, false, &result)
+     * before selecting display device zero. The nullable output marker at
+     * byte 9 is zero because the result pointer is present. */
     store_u32(power_input, 1);
-    if (!call_method(bootstrap, 410, "A410", &display_device,
-                     &display_result) ||
-        !call_method(bootstrap, 472, "A472", power_input, power_output) ||
+    if (!call_method(bootstrap, 472, "A472", power_input, power_output) ||
         load_u32(power_output + sizeof(uint32_t)) != 0) {
         bootstrap->state = DCP_IOMFB_BOOT_FAILED;
         return false;
     }
 
-    bootstrap->state = DCP_IOMFB_BOOT_POWERED;
+    bootstrap->state = DCP_IOMFB_BOOT_POWER_ON;
     return true;
 }
 
