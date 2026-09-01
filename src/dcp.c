@@ -493,6 +493,11 @@ bool dcp_iomfb_owner_start(dcp_dev_t *dcp)
         printf("dcp-iomfb: panel power/modeset failed closed\n");
         goto fail_endpoint;
     }
+#ifdef DCP_IOMFB_A412_OBSERVER
+    printf("dcp-iomfb: A412 admitted; downstream calls disabled color=%u timing=%u\n",
+           mode.color_mode_id, mode.timing_mode_id);
+    return false;
+#endif
     printf("dcp-iomfb: single owner MODESET main_display=%u color=%u timing=%u\n",
            dcp_iomfb_bootstrap_main_display(&dcp->iomfb_bootstrap),
            mode.color_mode_id, mode.timing_mode_id);

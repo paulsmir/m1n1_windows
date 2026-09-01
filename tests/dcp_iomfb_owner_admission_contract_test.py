@@ -84,6 +84,7 @@ assert "IOMFB_A456_OBSERVER requires IOMFB_FULL_OWNER=1" in makefile
 assert "IOMFB_A411_OBSERVER requires IOMFB_FULL_OWNER=1" in makefile
 assert "IOMFB_A472_OBSERVER requires IOMFB_FULL_OWNER=1" in makefile
 assert "IOMFB_A410_OBSERVER requires IOMFB_FULL_OWNER=1" in makefile
+assert "IOMFB_A412_OBSERVER requires IOMFB_FULL_OWNER=1" in makefile
 assert "IOMFB_START_OBSERVER and IOMFB_SET_SHMEM_OBSERVER are mutually exclusive" in makefile
 assert "IOMFB_EARLY_PIODMA_OBSERVER and IOMFB_SET_SHMEM_OBSERVER are mutually exclusive" in makefile
 assert "IOMFB_A401_OBSERVER is mutually exclusive with earlier IOMFB observers" in makefile
@@ -93,6 +94,7 @@ assert "IOMFB_A456_OBSERVER is mutually exclusive with earlier IOMFB observers" 
 assert "IOMFB_A411_OBSERVER is mutually exclusive with earlier IOMFB observers" in makefile
 assert "IOMFB_A472_OBSERVER is mutually exclusive with earlier IOMFB observers" in makefile
 assert "IOMFB_A410_OBSERVER is mutually exclusive with earlier IOMFB observers" in makefile
+assert "IOMFB_A412_OBSERVER is mutually exclusive with earlier IOMFB observers" in makefile
 
 set_shmem_observer = source[source.index(
     "static bool dcp_iomfb_observe_set_shmem_fail_closed"
@@ -163,6 +165,10 @@ assert bootstrap < color_property < timing_property < select_modes < power_on < 
     "production owner must consume validated DCPAV modes, power the panel and "
     "perform A412 before it admits presentation"
 )
+
+a412_receipt = body.index("A412 admitted; downstream calls disabled")
+single_owner = body.index("single owner MODESET")
+assert modeset < a412_receipt < single_owner
 
 active_start = source.index("bool dcp_iomfb_owner_active(")
 active_end = source.index("\nvoid dcp_iomfb_owner_arm", active_start)
