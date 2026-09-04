@@ -3,11 +3,11 @@
 #include "hv.h"
 #include "adt.h"
 #include "hv_agx_config_snapshot.h"
+#include "hv_agx_abi_admission.generated.h"
 #include "hv_agx_g2.generated.h"
 #include "hv_agx_power_broker.h"
 #include "hv_agx_scanout_broker.h"
 #include "hv_agx_scanout_service.h"
-#include "hv_irq_routes.h"
 #include "hv_vgic.h"
 #include "display.h"
 #include "utils.h"
@@ -22,8 +22,8 @@ static DECLARE_SPINLOCK(broker_lock);
 static DECLARE_SPINLOCK(service_lock);
 static bool resources_mapped;
 
-#define HV_AGX_SCANOUT_GUEST_VINTID 887u
-#define HV_AGX_SCANOUT_PHYSICAL_INTID 578u
+#define HV_AGX_SCANOUT_GUEST_VINTID                                      \
+    HV_AGX_ABI_ADMISSION_SYNTHETIC_SCANOUT_GUEST_INTID
 
 u64 hv_ipa_to_pa(u64 ipa);
 
@@ -184,7 +184,6 @@ static bool handle_agx_power_broker(struct exc_info *ctx, u64 addr, u64 *value, 
 
 bool hv_agx_g2_resources_map(void)
 {
-    const struct hv_irq_route *completion_route;
     int ret;
 
     if (resources_mapped)
@@ -199,14 +198,6 @@ bool hv_agx_g2_resources_map(void)
 
     hv_agx_power_broker_init(&broker, hv_agx_power_j313_ops(), NULL);
     hv_agx_scanout_service_init(&scanout_service, &scanout_ops, NULL);
-    completion_route = hv_irq_route_from_vintid(HV_AGX_SCANOUT_GUEST_VINTID);
-    if (!completion_route ||
-        completion_route->hw_irq != HV_AGX_SCANOUT_PHYSICAL_INTID) {
-        printf("HV: AGX scanout IRQ route missing: expected %u -> %u\n",
-               HV_AGX_SCANOUT_PHYSICAL_INTID,
-               HV_AGX_SCANOUT_GUEST_VINTID);
-        return false;
-    }
     if (display_start_dcp() < 0) {
         printf("HV: AGX scanout DCP backend unavailable; requests fail closed\n");
         hv_agx_scanout_broker_init(&scanout_broker);
