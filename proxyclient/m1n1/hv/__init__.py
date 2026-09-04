@@ -87,6 +87,7 @@ class HV(Reloadable):
         self._bp_hooks = dict()
         self._wps = [None, None, None, None]
         self._wpcs = [0, 0, 0, 0]
+        self._dabort_fipa_recorded = False
         self.sym_offset = 0
         self.symbols = []
         self.symbol_dict = {}
@@ -1223,6 +1224,16 @@ class HV(Reloadable):
     def handle_dabort(self, ctx):
         insn = self.p.read32(ctx.elr_phys)
         far_phys = self.p.hv_translate(ctx.far, True, False)
+
+        if (os.environ.get("WOM1_DABORT_FIPA_RECEIPT") == "1" and
+                not self._dabort_fipa_recorded):
+            self._dabort_fipa_recorded = True
+            hpfar = self.u.mrs(HPFAR_EL2)
+            fipa = ((hpfar & 0xfffffffff0) << 8) | (ctx.far & 0xfff)
+            self.log(
+                f"DABORT_FIPA_RECEIPT far={ctx.far:#x} hpfar={hpfar:#x} "
+                f"fipa={fipa:#x} translated_pa={far_phys:#x}"
+            )
 
         if insn & 0x3b200c00 == 0x38200000:
             page = far_phys & ~0x3fff
