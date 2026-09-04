@@ -139,12 +139,9 @@ bool hv_agx_config_snapshot_mmio(const struct hv_agx_config_snapshot *snapshot,
 
     if (!snapshot || !value || write || !hv_agx_config_snapshot_validate(snapshot))
         return false;
-    if (width == 2)
-        bytes = sizeof(uint32_t);
-    else if (width == 3)
-        bytes = sizeof(uint64_t);
-    else
+    if (width > 3)
         return false;
+    bytes = (size_t)1u << width;
     if ((offset & (bytes - 1)) != 0 || offset > sizeof(*snapshot) - bytes)
         return false;
 

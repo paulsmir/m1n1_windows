@@ -160,6 +160,10 @@ static void test_mmio_is_read_only_bounded_and_exact(void)
 
     reset_fixture();
     assert(hv_agx_config_snapshot_from_adt((void *)1, &snapshot));
+    assert(hv_agx_config_snapshot_mmio(&snapshot, 1, &value, false, 0));
+    assert(value == 0x58);
+    assert(hv_agx_config_snapshot_mmio(&snapshot, 2, &value, false, 1));
+    assert(value == 0x4347);
     assert(hv_agx_config_snapshot_mmio(&snapshot, 0, &value, false, 2));
     assert(value == HV_AGX_CONFIG_MAGIC);
     assert(hv_agx_config_snapshot_mmio(&snapshot, 0x28, &value, false, 3));
@@ -168,7 +172,10 @@ static void test_mmio_is_read_only_bounded_and_exact(void)
     assert((uint32_t)value == 0);
     assert((uint32_t)(value >> 32) == 400);
     assert(!hv_agx_config_snapshot_mmio(&snapshot, 0, &value, true, 2));
+    assert(!hv_agx_config_snapshot_mmio(&snapshot, 0, &value, true, 0));
     assert(!hv_agx_config_snapshot_mmio(&snapshot, 2, &value, false, 2));
+    assert(hv_agx_config_snapshot_mmio(&snapshot, sizeof(snapshot) - 1,
+                                       &value, false, 0));
     assert(!hv_agx_config_snapshot_mmio(&snapshot, sizeof(snapshot), &value, false, 2));
     snapshot.flags = 0;
     assert(!hv_agx_config_snapshot_mmio(&snapshot, 0, &value, false, 2));
