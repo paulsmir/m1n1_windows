@@ -182,7 +182,7 @@ int hv_agx_retained_prepare(struct hv_agx_retained_root *core,
     core->Allocator = (APPLE_AGX_UAT_ALLOCATOR){core, allocate_page, release_page};
     core->Inventory = (APPLE_AGX_UAT_INVENTORY){
         core->Pages, HV_AGX_RETAINED_MAX_PAGES, 0,
-        core->UatMappings, HV_AGX_RETAINED_MAX_MAPPINGS + 1, 0};
+        core->UatMappings, HV_AGX_RETAINED_MAX_MAPPINGS + 1 + HV_AGX_RETAINED_IO_RANGES, 0};
     if (!allocate_page(core, &root))
         return HV_AGX_RETAINED_ALLOCATION;
     core->Pages[0] = root;
@@ -378,6 +378,111 @@ tainted:
     return HV_AGX_RETAINED_TAINTED;
 }
 
+static unsigned long long io_length(const AGX_FW_IO_DESCRIPTOR *d)
+{
+    return (d->Size + (d->Phys & (PAGE_BYTES - 1)) + PAGE_BYTES - 1) & ~(PAGE_BYTES - 1);
+}
+
+/* Check actual owned descriptors, including the guard after each IO range.
+ * Partial preparation validates only the obligations recorded as mapped. */
+static int check_io(struct hv_agx_retained_root *c, unsigned char complete)
+{
+    unsigned int slot, expected_slots = 0;
+    for (slot = 0; slot < AGX_FW_IO_SLOTS; ++slot) {
+        AGX_FW_IO_DESCRIPTOR d;
+        unsigned long long offset, length, va, *leaf;
+        if (!AgxFwIoProfile(slot, &d))
+            goto tainted;
+        if (!d.Size)
+            continue;
+        expected_slots |= 1u << slot;
+        if (!(c->IoMappedSlots & (1u << slot)))
+            continue;
+        length = io_length(&d);
+        va = d.Virt & ~(PAGE_BYTES - 1);
+        for (offset = 0; offset < length; offset += PAGE_BYTES)
+            if (check_leaf(c, va + offset, (d.Phys & ~(PAGE_BYTES - 1)) + offset,
+                           AppleAgxUatFirmwareDeviceReadWrite))
+                goto tainted;
+        if (owned_leaf(c, va + length, &leaf) || (leaf && *leaf))
+            goto tainted;
+    }
+    if ((c->IoMappedSlots & ~expected_slots) ||
+        (complete && c->IoMappedSlots != expected_slots))
+        goto tainted;
+    return HV_AGX_RETAINED_OK;
+tainted:
+    c->Tainted = 1;
+    return HV_AGX_RETAINED_TAINTED;
+}
+
+int hv_agx_retained_io_prepare(struct hv_agx_retained_root *c, unsigned long long epoch)
+{
+    unsigned int slot;
+    int result = active_epoch(c, epoch);
+    if (result)
+        return result;
+    if (c->IoAttempted)
+        return c->IoReady ? check_io(c, 1) : HV_AGX_RETAINED_STATE;
+    c->IoAttempted = 1;
+    for (slot = 0; slot < AGX_FW_IO_SLOTS; ++slot) {
+        AGX_FW_IO_DESCRIPTOR d;
+        APPLE_AGX_UAT_RESULT mapped;
+        if (!AgxFwIoProfile(slot, &d))
+            return HV_AGX_RETAINED_INVALID;
+        if (!d.Size)
+            continue;
+        mapped = AppleAgxUatMap(0, &c->Roots, d.Virt & ~(PAGE_BYTES - 1),
+            d.Phys & ~(PAGE_BYTES - 1), io_length(&d), AppleAgxUatFirmwareDeviceReadWrite,
+            &c->Allocator, &c->Inventory);
+        if (mapped == AppleAgxUatResultOk)
+            c->IoMappedSlots |= 1u << slot;
+        c->Ops.Sync(c->Ops.Context);
+        if (check_tables(c))
+            return HV_AGX_RETAINED_TAINTED;
+        /* A failed attempt is never published or retried while active. Shared
+         * map unwinds only its own incomplete range. Earlier successful IO
+         * ranges remain recorded until stopped CLOSE; MMIO backing is borrowed. */
+        if (mapped != AppleAgxUatResultOk)
+            return map_result(mapped);
+    }
+    result = check_io(c, 1);
+    if (!result)
+        c->IoReady = 1;
+    return result;
+}
+
+int hv_agx_retained_io_manifest(struct hv_agx_retained_root *c, unsigned long long epoch,
+                               AGX_FW_IO_MANIFEST *out)
+{
+    AGX_FW_IO_MANIFEST manifest = {0};
+    unsigned int slot;
+    int result;
+    if (!out)
+        return HV_AGX_RETAINED_INVALID;
+    *out = manifest;
+    result = active_epoch(c, epoch);
+    if (result)
+        return result;
+    if (!c->IoReady)
+        return HV_AGX_RETAINED_STATE;
+    result = check_io(c, 1);
+    if (result)
+        return result;
+    manifest.Magic = AGX_FW_IO_MAGIC;
+    manifest.Version = AGX_FW_IO_VERSION;
+    manifest.Bytes = AGX_FW_IO_BYTES;
+    manifest.Chip = 0x8103;
+    manifest.Epoch = c->Epoch;
+    manifest.Root = c->RetainedPa;
+    manifest.Ready = 1;
+    manifest.Count = AGX_FW_IO_SLOTS;
+    for (slot = 0; slot < AGX_FW_IO_SLOTS; ++slot)
+        (void)AgxFwIoProfile(slot, &manifest.Records[slot]);
+    *out = manifest;
+    return HV_AGX_RETAINED_OK;
+}
+
 int hv_agx_retained_query(struct hv_agx_retained_root *c, unsigned long long epoch,
                          unsigned long long handle, unsigned long long va,
                          unsigned long long ipa, unsigned long long length,
@@ -452,6 +557,7 @@ int hv_agx_retained_verify_absent(struct hv_agx_retained_root *c,
 int hv_agx_retained_close(struct hv_agx_retained_root *c, unsigned long long epoch,
                          unsigned char cpu_stopped)
 {
+    unsigned int slot;
     int result;
     if (!c)
         return HV_AGX_RETAINED_INVALID;
@@ -470,11 +576,27 @@ int hv_agx_retained_close(struct hv_agx_retained_root *c, unsigned long long epo
         if (result)
             return result;
     }
+    result = check_io(c, c->IoReady);
+    if (result)
+        return result;
     while (c->MappingCount) {
         struct hv_agx_retained_mapping m = c->Mappings[c->MappingCount - 1];
         result = hv_agx_retained_unmap(c, epoch, m.Handle, m.Va, m.Ipa, m.Length);
         if (result)
             return result;
+    }
+    for (slot = AGX_FW_IO_SLOTS; slot-- > 0;) {
+        AGX_FW_IO_DESCRIPTOR d;
+        if (!(c->IoMappedSlots & (1u << slot)))
+            continue;
+        (void)AgxFwIoProfile(slot, &d);
+        if (AppleAgxUatUnmap(0, &c->Roots, d.Virt & ~(PAGE_BYTES - 1), io_length(&d),
+                            &c->Allocator, &c->Inventory) != AppleAgxUatResultOk) {
+            c->Tainted = 1;
+            return HV_AGX_RETAINED_TAINTED;
+        }
+        c->IoMappedSlots &= ~(1u << slot);
+        c->Ops.Sync(c->Ops.Context);
     }
     if (c->SystemBytes) {
         if (AppleAgxUatUnmap(0, &c->Roots, c->SystemVa, c->SystemBytes,
@@ -500,5 +622,6 @@ int hv_agx_retained_close(struct hv_agx_retained_root *c, unsigned long long epo
     c->SystemVa = c->SystemBytes = 0;
     c->Active = c->Prepared = 0;
     c->LastUnmap = (struct hv_agx_retained_mapping){0};
+    c->IoAttempted = c->IoReady = 0;
     return HV_AGX_RETAINED_OK;
 }

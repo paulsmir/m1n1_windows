@@ -2,9 +2,11 @@
 #define HV_AGX_RETAINED_ROOT_H
 
 #include "../../drivers/apple-agx/shared/include/apple_agx_uat_table.h"
+#include "../../drivers/apple-agx/shared/include/apple_agx_firmware_io.h"
 
 #define HV_AGX_RETAINED_MAX_MAPPINGS 256u
 #define HV_AGX_RETAINED_MAX_PAGES 24u
+#define HV_AGX_RETAINED_IO_RANGES 10u
 #define HV_AGX_RETAINED_WINDOWS_VA 0xffffffa000000000ULL
 #define HV_AGX_RETAINED_WINDOWS_END 0xffffffa020000000ULL
 #define HV_AGX_RETAINED_SYSTEM_VA 0xffffffa080000000ULL
@@ -48,17 +50,25 @@ struct hv_agx_retained_root {
     APPLE_AGX_UAT_ALLOCATOR Allocator;
     APPLE_AGX_UAT_INVENTORY Inventory;
     APPLE_AGX_UAT_PAGE Pages[HV_AGX_RETAINED_MAX_PAGES];
-    APPLE_AGX_UAT_MAPPING UatMappings[HV_AGX_RETAINED_MAX_MAPPINGS + 1u];
+    APPLE_AGX_UAT_MAPPING UatMappings[HV_AGX_RETAINED_MAX_MAPPINGS + 1u +
+                                     HV_AGX_RETAINED_IO_RANGES];
     struct hv_agx_retained_mapping Mappings[HV_AGX_RETAINED_MAX_MAPPINGS];
     /* Exact successful UNMAP receipt, valid only in the current active epoch. */
     struct hv_agx_retained_mapping LastUnmap;
     APPLE_AGX_UAT_PAGE SystemPage;
+    /* Firmware IO never uses guest handles. Failed preparation retains its
+     * mapped-slot obligations until CLOSE confirms the ASC CPU is stopped. */
+    unsigned int IoMappedSlots;
+    unsigned char IoAttempted, IoReady;
 };
 
 int hv_agx_retained_prepare(struct hv_agx_retained_root *, unsigned long long,
                            unsigned long long *, unsigned long long,
                            unsigned long long, const struct hv_agx_retained_ops *);
 int hv_agx_retained_activate(struct hv_agx_retained_root *);
+int hv_agx_retained_io_prepare(struct hv_agx_retained_root *, unsigned long long);
+int hv_agx_retained_io_manifest(struct hv_agx_retained_root *, unsigned long long,
+                               AGX_FW_IO_MANIFEST *);
 int hv_agx_retained_map(struct hv_agx_retained_root *, unsigned long long,
                        unsigned long long, unsigned long long,
                        unsigned long long, unsigned long long *);
