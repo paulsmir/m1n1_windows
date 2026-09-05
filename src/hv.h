@@ -62,6 +62,9 @@ int hv_map_sw(u64 from, u64 to, u64 size);
 int hv_map_hook(u64 from, hv_hook_t *hook, u64 size);
 u64 hv_translate(u64 addr, bool s1only, bool w, u64 *par_out);
 u64 hv_pt_walk(u64 addr);
+/* Raw authoritative HW leaf only. Caller holds stage-2 mapping lifetime lock.
+ * No offset folding/attribute stripping. shift=14 page or25 block. */
+bool hv_stage2_get_leaf(u64 ipa, u64 *descriptor, u8 *shift);
 bool hv_handle_dabort(struct exc_info *ctx);
 bool hv_pa_write(struct exc_info *ctx, u64 addr, u64 *val, int width);
 bool hv_pa_read(struct exc_info *ctx, u64 addr, u64 *val, int width);
