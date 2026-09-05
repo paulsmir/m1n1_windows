@@ -2,6 +2,9 @@
 #include "hv_agx_retained_platform.h"
 #include "hv_agx_retained_root.h"
 #include "hv_agx_retained_mmio.h"
+#include "hv_agx_retained_backing.h"
+#include "hv_launch_j313.h"
+#include "hv_autonomous_layout.generated.h"
 #include "hv_agx_g2.generated.h"
 #include "adt.h"
 #include "utils.h"
@@ -13,6 +16,8 @@ static struct hv_agx_retained_root root_owner;
 static struct hv_agx_retained_mmio wire;
 static u64 root_base, root_length, asc_base, next_epoch;
 static bool request_powered;
+static struct hv_contract_snapshot launch_memory;
+static bool launch_memory_valid;
 extern u64 hv_ipa_to_pa(u64 ipa);
 
 static unsigned char allocate_page(void *context, APPLE_AGX_UAT_PAGE *page)
@@ -44,6 +49,9 @@ static unsigned long long translate_guest(void *context, unsigned long long ipa)
     if (!pa || (pa & 0x3fff) || pa < base || length < 0x4000 ||
         pa - base > length - 0x4000 || pa >= (1ULL << 40) ||
         (pa < root_base + root_length && pa + 0x4000 > root_base))
+        return 0;
+    if (!launch_memory_valid || !hv_agx_retained_backing_allowed(&launch_memory,pa,0x4000,
+            J313_AUTONOMOUS_LAYOUT.ramdisk_base,J313_AUTONOMOUS_LAYOUT.ramdisk_max_size))
         return 0;
     for (offset = 0; offset < 0x4000; offset += 0x1000)
         if (hv_ipa_to_pa(ipa + offset) != pa + offset ||
@@ -149,6 +157,13 @@ bool hv_agx_retained_platform_init(u64 root, u64 length)
     if (node < 0 || adt_get_reg(adt,path,"reg",0,&asc_base,&size) < 0 || size < 0x48)
         return false;
     root_base = root; root_length = length;
+    launch_memory_valid = hv_launch_j313_capture_base(HV_CONTRACT_PRE_HV_INIT,1,&launch_memory) &&
+        launch_memory.boot.ram_base == J313_AUTONOMOUS_LAYOUT.phys_base;
+    if (!launch_memory_valid) return false;
+    printf("HV: retained backing guest RAM=0x%llx..0x%llx reserved regions=%u\n",
+           (unsigned long long)launch_memory.boot.ram_base,
+           (unsigned long long)(launch_memory.boot.ram_base+launch_memory.boot.ram_size),
+           launch_memory.region_count);
     return root_base != 0;
 }
 
