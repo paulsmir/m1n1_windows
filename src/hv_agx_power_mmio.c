@@ -246,8 +246,8 @@ bool hv_agx_g2_resources_map(void)
             firmware_root_length = length;
             if (!hv_agx_retained_platform_init(base, length))
                 return false;
-            printf("HV: AGX retained-root broker v1 root=0x%lx size=0x%lx broker+0x%x\n",
-                   base, length, AGX_RR_OFFSET);
+            printf("HV: AGX retained-root broker v%u root=0x%lx size=0x%lx broker+0x%x\n",
+                   AGX_RR_ABI_VERSION, base, length, AGX_RR_OFFSET);
         }
     }
     if (!config_snapshot_valid)
