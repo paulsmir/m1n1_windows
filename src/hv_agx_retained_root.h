@@ -3,8 +3,8 @@
 
 #include "../../drivers/apple-agx/shared/include/apple_agx_uat_table.h"
 
-#define HV_AGX_RETAINED_MAX_MAPPINGS 16u
-#define HV_AGX_RETAINED_MAX_PAGES 20u
+#define HV_AGX_RETAINED_MAX_MAPPINGS 256u
+#define HV_AGX_RETAINED_MAX_PAGES 24u
 #define HV_AGX_RETAINED_WINDOWS_VA 0xffffffa000000000ULL
 #define HV_AGX_RETAINED_WINDOWS_END 0xffffffa020000000ULL
 #define HV_AGX_RETAINED_SYSTEM_VA 0xffffffa080000000ULL
@@ -50,6 +50,8 @@ struct hv_agx_retained_root {
     APPLE_AGX_UAT_PAGE Pages[HV_AGX_RETAINED_MAX_PAGES];
     APPLE_AGX_UAT_MAPPING UatMappings[HV_AGX_RETAINED_MAX_MAPPINGS + 1u];
     struct hv_agx_retained_mapping Mappings[HV_AGX_RETAINED_MAX_MAPPINGS];
+    /* Exact successful UNMAP receipt, valid only in the current active epoch. */
+    struct hv_agx_retained_mapping LastUnmap;
     APPLE_AGX_UAT_PAGE SystemPage;
 };
 
@@ -67,6 +69,9 @@ int hv_agx_retained_query(struct hv_agx_retained_root *, unsigned long long,
 int hv_agx_retained_unmap(struct hv_agx_retained_root *, unsigned long long,
                          unsigned long long, unsigned long long,
                          unsigned long long, unsigned long long);
+int hv_agx_retained_verify_absent(struct hv_agx_retained_root *, unsigned long long,
+                                 unsigned long long, unsigned long long,
+                                 unsigned long long, unsigned long long);
 int hv_agx_retained_close(struct hv_agx_retained_root *, unsigned long long,
                          unsigned char);
 unsigned char hv_agx_retained_prefix_unchanged(struct hv_agx_retained_root *);
