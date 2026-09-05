@@ -7,6 +7,8 @@
 #include "hv_autonomous_layout.generated.h"
 #include "hv_agx_g2.generated.h"
 #include "adt.h"
+#include "firmware.h"
+#include "../../drivers/apple-agx/shared/include/apple_agx_hwdata_profile.h"
 #include "utils.h"
 #include "xnuboot.h"
 #include <malloc.h>
@@ -18,6 +20,7 @@ static u64 root_base, root_length, asc_base, next_epoch;
 static bool request_powered;
 static struct hv_contract_snapshot launch_memory;
 static bool launch_memory_valid;
+static bool profile_inputs_valid;
 extern u64 hv_ipa_to_pa(u64 ipa);
 
 static unsigned char allocate_page(void *context, APPLE_AGX_UAT_PAGE *page)
@@ -77,6 +80,12 @@ static bool cpu_stopped(void)
     return asc_base && !(read32(asc_base + 0x44) & BIT(4));
 }
 
+static const unsigned char *read_profile_property(void *context,const char *name,
+                                                 unsigned int *length)
+{
+    return adt_getprop(adt,*(int *)context,name,length);
+}
+
 static void execute(void *context, const AGX_RR_REQUEST *q, AGX_RR_RESPONSE *r)
 {
     static const struct hv_agx_retained_ops ops = {
@@ -87,7 +96,7 @@ static void execute(void *context, const AGX_RR_REQUEST *q, AGX_RR_RESPONSE *r)
     switch (q->Command) {
     case AGX_RR_PREPARE:
         if (q->Epoch || q->Va || q->Ipa || q->Length || q->Handle ||
-            !cpu_stopped() || next_epoch == ~0ULL) break;
+            !cpu_stopped() || next_epoch == ~0ULL || !profile_inputs_valid) break;
         status = hv_agx_retained_prepare(&root_owner, root_base, (void *)root_base,
                                          root_length, ++next_epoch, &ops);
         break;
@@ -162,6 +171,12 @@ bool hv_agx_retained_platform_init(u64 root, u64 length)
     int node = adt_path_offset_trace(adt, "/arm-io/gfx-asc", path);
     u64 size;
     if (chip_id != 0x8103 || board_id != 0x26) return false;
+    {
+        int sgx = adt_path_offset(adt,"/arm-io/sgx");
+        profile_inputs_valid = sgx >= 0 && os_firmware.version == V13_5 &&
+                              AgxHwdataInputsMatch(read_profile_property,&sgx);
+        printf("HV: retained Hwdata input profile matched=%u\n",profile_inputs_valid);
+    }
     if (node < 0 || adt_get_reg(adt,path,"reg",0,&asc_base,&size) < 0 || size < 0x48)
         return false;
     root_base = root; root_length = length;
@@ -197,6 +212,28 @@ bool hv_agx_retained_platform_io(u64 offset,u64 *value,bool write,
         read64(HV_AGX_G2_GPU_BASE) == (root_owner.Roots.Ttbr0PhysicalAddress | 1ULL))
         (void)hv_agx_retained_io_manifest(&root_owner,root_owner.Epoch,&manifest);
     if (!AgxFwIoReadWord(&manifest,offset,&data,0,width)) return false;
+    *value = data;
+    return true;
+}
+
+bool hv_agx_retained_platform_profile(u64 offset,u64 *value,bool write,
+                                      unsigned width,bool powered)
+{
+    AGX_HWDATA_RECEIPT receipt = {0};
+    AGX_FW_IO_MANIFEST manifest = {0};
+    unsigned long long data = *value;
+    if (write || width > 3 || (offset & ((1u << width)-1)) ||
+        offset > AGX_HWDATA_RECEIPT_BYTES-(1u << width)) return false;
+    if (profile_inputs_valid && powered && root_owner.Active &&
+        read64(HV_AGX_G2_GPU_BASE + 8) == (root_base | 1ULL) &&
+        read64(HV_AGX_G2_GPU_BASE) == (root_owner.Roots.Ttbr0PhysicalAddress | 1ULL) &&
+        hv_agx_retained_io_manifest(&root_owner,root_owner.Epoch,&manifest) == 0) {
+        receipt.Magic = AGX_HWDATA_RECEIPT_MAGIC;
+        receipt.Version = 1; receipt.Bytes = sizeof(receipt); receipt.Chip = chip_id;
+        receipt.Epoch = root_owner.Epoch; receipt.Root = root_base;
+        memcpy(receipt.ProfileId,AgxHwdataProfileId,sizeof(receipt.ProfileId));
+    }
+    if (!AgxHwdataReceiptWord(&receipt,offset,&data,0,width)) return false;
     *value = data;
     return true;
 }

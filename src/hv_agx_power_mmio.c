@@ -6,6 +6,7 @@
 #include "hv_agx_firmware_prefix.h"
 #include "hv_agx_retained_platform.h"
 #include "../../drivers/apple-agx/shared/include/apple_agx_firmware_io.h"
+#include "../../drivers/apple-agx/shared/include/apple_agx_hwdata_profile_abi.h"
 #include "hv_agx_retained_mmio.h"
 #include "hv_agx_abi_admission.generated.h"
 #include "hv_agx_g2.generated.h"
@@ -156,6 +157,14 @@ static bool handle_agx_power_broker(struct exc_info *ctx, u64 addr, u64 *value, 
         return false;
 
     offset = addr - HV_AGX_G2_POWER_BROKER_BASE;
+    if (offset >= AGX_HWDATA_RECEIPT_OFFSET &&
+        offset < AGX_HWDATA_RECEIPT_OFFSET+AGX_HWDATA_RECEIPT_BYTES) {
+        spin_lock(&broker_lock);
+        handled = hv_agx_retained_platform_profile(offset-AGX_HWDATA_RECEIPT_OFFSET,
+                    value,write,(unsigned)width,broker.state == HV_AGX_POWER_ON);
+        spin_unlock(&broker_lock);
+        return handled;
+    }
     if (offset >= AGX_FW_IO_OFFSET && offset < AGX_FW_IO_OFFSET+AGX_FW_IO_BYTES) {
         spin_lock(&broker_lock);
         handled = hv_agx_retained_platform_io(offset-AGX_FW_IO_OFFSET,value,
