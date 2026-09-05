@@ -3,6 +3,7 @@
 #include "hv.h"
 #include "adt.h"
 #include "hv_agx_config_snapshot.h"
+#include "hv_agx_firmware_prefix.h"
 #include "hv_agx_abi_admission.generated.h"
 #include "hv_agx_g2.generated.h"
 #include "hv_agx_power_broker.h"
@@ -21,6 +22,21 @@ static bool config_snapshot_valid;
 static DECLARE_SPINLOCK(broker_lock);
 static DECLARE_SPINLOCK(service_lock);
 static bool resources_mapped;
+static u64 firmware_root_base, firmware_root_length;
+
+static unsigned char read_firmware_prefix(void *opaque, unsigned long long base,
+                                          unsigned long long entries[2])
+{
+    (void)opaque;
+    if (base != firmware_root_base || !AgxFwPrefixGeometry(base, firmware_root_length))
+        return 0;
+    /* Only retained root descriptors, never dereference the private subtrees. */
+    dma_rmb();
+    entries[0] = read64(base);
+    entries[1] = read64(base + 8);
+    dma_rmb();
+    return 1;
+}
 
 #define HV_AGX_SCANOUT_GUEST_VINTID                                      \
     HV_AGX_ABI_ADMISSION_SYNTHETIC_SCANOUT_GUEST_INTID
@@ -150,6 +166,19 @@ static bool handle_agx_power_broker(struct exc_info *ctx, u64 addr, u64 *value, 
         return false;
 
     offset = addr - HV_AGX_G2_POWER_BROKER_BASE;
+    if (offset >= AGX_FW_PREFIX_OFFSET && offset < AGX_FW_PREFIX_OFFSET + AGX_FW_PREFIX_SIZE) {
+        unsigned long long result = 0;
+        spin_lock(&broker_lock);
+        handled = hv_agx_firmware_prefix_read(
+            firmware_root_base, firmware_root_length,
+            broker.state == HV_AGX_POWER_ON ? broker.receipt_sequence : 0,
+            read_firmware_prefix, NULL, offset - AGX_FW_PREFIX_OFFSET,
+            &result, write, (unsigned)width);
+        spin_unlock(&broker_lock);
+        if (handled)
+            *value = result;
+        return handled;
+    }
     if (offset >= HV_AGX_SCANOUT_MMIO_OFFSET &&
         offset < HV_AGX_SCANOUT_MMIO_OFFSET + HV_AGX_SCANOUT_MMIO_SIZE) {
         spin_lock(&broker_lock);
@@ -209,6 +238,21 @@ bool hv_agx_g2_resources_map(void)
         printf("HV: AGX scanout stays ABI v1 without a proven latch source\n");
     }
     config_snapshot_valid = hv_agx_config_snapshot_from_adt(adt, &config_snapshot);
+    {
+        int sgx = adt_path_offset(adt, "/arm-io/sgx");
+        u64 base = 0, length = 0;
+        u64 ram = ALIGN_DOWN(cur_boot_args.phys_base, BIT(32));
+        u64 size = mem_size_actual;
+        if (sgx >= 0 && ADT_GETPROP(adt, sgx, "gfx-shared-region-base", &base) >= 0 &&
+            ADT_GETPROP(adt, sgx, "gfx-shared-region-size", &length) >= 0 &&
+            AgxFwPrefixGeometry(base, length) && base >= ram &&
+            length <= size && base - ram <= size - length) {
+            firmware_root_base = base;
+            firmware_root_length = length;
+            printf("HV: AGX live firmware prefix RO v1 root=0x%lx size=0x%lx broker+0x%x\n",
+                   base, length, AGX_FW_PREFIX_OFFSET);
+        }
+    }
     if (!config_snapshot_valid)
         printf("HV: AGX boot config snapshot unavailable; firmware start must fail closed\n");
     ret = hv_map_hook(HV_AGX_G2_POWER_BROKER_BASE, handle_agx_power_broker,
