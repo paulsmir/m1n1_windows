@@ -4,6 +4,8 @@
 #include "adt.h"
 #include "hv_agx_config_snapshot.h"
 #include "hv_agx_firmware_prefix.h"
+#include "hv_agx_retained_platform.h"
+#include "hv_agx_retained_mmio.h"
 #include "hv_agx_abi_admission.generated.h"
 #include "hv_agx_g2.generated.h"
 #include "hv_agx_power_broker.h"
@@ -24,19 +26,6 @@ static DECLARE_SPINLOCK(service_lock);
 static bool resources_mapped;
 static u64 firmware_root_base, firmware_root_length;
 
-static unsigned char read_firmware_prefix(void *opaque, unsigned long long base,
-                                          unsigned long long entries[2])
-{
-    (void)opaque;
-    if (base != firmware_root_base || !AgxFwPrefixGeometry(base, firmware_root_length))
-        return 0;
-    /* Only retained root descriptors, never dereference the private subtrees. */
-    dma_rmb();
-    entries[0] = read64(base);
-    entries[1] = read64(base + 8);
-    dma_rmb();
-    return 1;
-}
 
 #define HV_AGX_SCANOUT_GUEST_VINTID                                      \
     HV_AGX_ABI_ADMISSION_SYNTHETIC_SCANOUT_GUEST_INTID
@@ -166,18 +155,19 @@ static bool handle_agx_power_broker(struct exc_info *ctx, u64 addr, u64 *value, 
         return false;
 
     offset = addr - HV_AGX_G2_POWER_BROKER_BASE;
-    if (offset >= AGX_FW_PREFIX_OFFSET && offset < AGX_FW_PREFIX_OFFSET + AGX_FW_PREFIX_SIZE) {
-        unsigned long long result = 0;
+    if (offset >= AGX_RR_OFFSET && offset < AGX_RR_OFFSET + AGX_RR_WINDOW) {
         spin_lock(&broker_lock);
-        handled = hv_agx_firmware_prefix_read(
-            firmware_root_base, firmware_root_length,
-            broker.state == HV_AGX_POWER_ON ? broker.receipt_sequence : 0,
-            read_firmware_prefix, NULL, offset - AGX_FW_PREFIX_OFFSET,
-            &result, write, (unsigned)width);
+        handled = hv_agx_retained_platform_mmio(offset - AGX_RR_OFFSET, value,
+                    write, (unsigned)width, broker.state == HV_AGX_POWER_ON);
         spin_unlock(&broker_lock);
-        if (handled)
-            *value = result;
         return handled;
+    }
+    if (offset >= AGX_FW_PREFIX_OFFSET && offset < AGX_FW_PREFIX_OFFSET + AGX_FW_PREFIX_SIZE) {
+        /* Deprecated prefix-copy ABI: never disclose private entries. */
+        if (write || width < 0 || width > 3 || (offset & ((1u << width)-1)))
+            return false;
+        *value = 0;
+        return true;
     }
     if (offset >= HV_AGX_SCANOUT_MMIO_OFFSET &&
         offset < HV_AGX_SCANOUT_MMIO_OFFSET + HV_AGX_SCANOUT_MMIO_SIZE) {
@@ -198,6 +188,12 @@ static bool handle_agx_power_broker(struct exc_info *ctx, u64 addr, u64 *value, 
     }
 
     spin_lock(&broker_lock);
+    if (write && offset == HV_AGX_POWER_REG_COMMAND && width == 2 &&
+        *value == HV_AGX_POWER_CMD_OFF && !hv_agx_retained_can_power_off()) {
+        broker.result = HV_AGX_POWER_RESULT_BUSY;
+        spin_unlock(&broker_lock);
+        return true;
+    }
     handled = hv_agx_power_broker_mmio(&broker, offset, value,
                                        write, (unsigned)width);
     if (handled && write && offset == HV_AGX_POWER_REG_COMMAND) {
@@ -218,8 +214,7 @@ bool hv_agx_g2_resources_map(void)
     if (resources_mapped)
         return true;
 
-    ret = hv_map_sw(HV_AGX_G2_GPU_BASE, HV_AGX_G2_GPU_BASE,
-                    HV_AGX_G2_GPU_SIZE);
+    ret = hv_map_hook(HV_AGX_G2_GPU_BASE, hv_agx_retained_gpu_region, HV_AGX_G2_GPU_SIZE);
     if (ret < 0) {
         printf("HV: AGX gpu-region stage-2 map failed (%d)\n", ret);
         return false;
@@ -249,8 +244,10 @@ bool hv_agx_g2_resources_map(void)
             length <= size && base - ram <= size - length) {
             firmware_root_base = base;
             firmware_root_length = length;
-            printf("HV: AGX live firmware prefix RO v1 root=0x%lx size=0x%lx broker+0x%x\n",
-                   base, length, AGX_FW_PREFIX_OFFSET);
+            if (!hv_agx_retained_platform_init(base, length))
+                return false;
+            printf("HV: AGX retained-root broker v1 root=0x%lx size=0x%lx broker+0x%x\n",
+                   base, length, AGX_RR_OFFSET);
         }
     }
     if (!config_snapshot_valid)
