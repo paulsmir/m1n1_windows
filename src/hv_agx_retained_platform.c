@@ -116,6 +116,10 @@ static void execute(void *context, const AGX_RR_REQUEST *q, AGX_RR_RESPONSE *r)
     case AGX_RR_UNMAP:
         status = hv_agx_retained_unmap(&root_owner,q->Epoch,q->Handle,q->Va,q->Ipa,q->Length);
         break;
+    case AGX_RR_VERIFY_ABSENT:
+        status = hv_agx_retained_verify_absent(&root_owner,q->Epoch,q->Handle,q->Va,q->Ipa,q->Length);
+        r->Handle = q->Handle;
+        break;
     case AGX_RR_CLOSE:
         if (!q->Epoch || q->Epoch != root_owner.Epoch || q->Va || q->Ipa || q->Length || q->Handle ||
             !cpu_stopped()) break;

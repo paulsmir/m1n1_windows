@@ -13,9 +13,9 @@ unsigned char hv_agx_retained_mmio(struct hv_agx_retained_mmio *s,
     if (width != 2 || *value != 1) return 0;
     r.Receipt = q.Sequence;
     r.Status = AGX_RR_STATUS_REQUEST;
-    if (q.Version == 1 && q.Bytes == sizeof(q) && !q.Reserved &&
+    if (q.Version == AGX_RR_ABI_VERSION && q.Bytes == sizeof(q) && !q.Reserved &&
         q.Sequence && q.Sequence > s->LastSequence && execute &&
-        q.Command >= AGX_RR_PREPARE && q.Command <= AGX_RR_CLOSE) {
+        q.Command >= AGX_RR_PREPARE && q.Command <= AGX_RR_VERIFY_ABSENT) {
       s->LastSequence = q.Sequence;
       execute(context, &q, &r);
     }
