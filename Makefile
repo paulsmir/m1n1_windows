@@ -313,7 +313,7 @@ OBJECTS := \
 	mitigations.o \
 	mcc.o \
 	memory.o memory_asm.o \
-	nvme.o \
+	nvme.o ans_queue.o \
 	payload.o \
 	pcie.o \
 	pmgr.o \

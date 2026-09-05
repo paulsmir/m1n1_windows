@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: MIT */
 
 #include "adt.h"
+#include "ans_queue.h"
 #include "assert.h"
 #include "malloc.h"
 #include "nvme.h"
@@ -67,60 +68,15 @@
 #define NVME_CMD_WRITE 0x01
 #define NVME_CMD_READ  0x02
 
-struct nvme_command {
-    u8 opcode;
-    u8 flags;
-    u8 tag;
-    u8 rsvd; // normal NVMe has tag as u16
-    u32 nsid;
-    u32 cdw2;
-    u32 cdw3;
-    u64 metadata;
-    u64 prp1;
-    u64 prp2;
-    u32 cdw10;
-    u32 cdw11;
-    u32 cdw12;
-    u32 cdw13;
-    u32 cdw14;
-    u32 cdw15;
-};
-
-struct nvme_completion {
-    u64 result;
-    u32 rsvd; // normal NVMe has the sq_head and sq_id here
-    u16 tag;
-    u16 status;
-};
-
-struct apple_nvmmu_tcb {
-    u8 opcode;
-    u8 dma_flags;
-    u8 slot_id;
-    u8 unk0;
-    u32 len;
-    u64 unk1[2];
-    u64 prp1;
-    u64 prp2;
-    u64 unk2[2];
-    u8 aes_iv[8];
-    u8 _aes_unk[64];
-};
-
 struct nvme_queue {
     struct apple_nvmmu_tcb *tcbs;
     struct nvme_command *cmds;
     struct nvme_completion *cqes;
-
-    u8 cq_head;
-    u8 cq_phase;
-
     bool adminq;
 };
 
-static_assert(sizeof(struct nvme_command) == 64, "invalid nvme_command size");
-static_assert(sizeof(struct nvme_completion) == 16, "invalid nvme_completion size");
-static_assert(sizeof(struct apple_nvmmu_tcb) == 128, "invalid apple_nvmmu_tcb size");
+static_assert(NVME_QUEUE_SIZE == ANS_HW_DEPTH, "ANS engine/backing depth mismatch");
+static struct ans_queue_engine queue_engine;
 
 static bool nvme_initialized = false;
 static u8 nvme_die;
@@ -153,8 +109,6 @@ static bool alloc_queue(struct nvme_queue *q)
     memset(q->tcbs, 0, NVME_QUEUE_SIZE * sizeof(*q->tcbs));
     memset(q->cmds, 0, NVME_QUEUE_SIZE * sizeof(*q->cmds));
     memset(q->cqes, 0, NVME_QUEUE_SIZE * sizeof(*q->cqes));
-    q->cq_head = 0;
-    q->cq_phase = 1;
     return true;
 
 free_cmds:
@@ -211,84 +165,79 @@ static bool nvme_ctrl_shutdown(void)
     return FIELD_GET(NVME_CSTS_SHST, read32(nvme_base + NVME_CSTS)) == NVME_CSTS_SHST_DONE;
 }
 
+static void queue_dma_wmb(void *ctx)
+{
+    UNUSED(ctx);
+    dma_wmb();
+}
+
+static void queue_dma_rmb(void *ctx)
+{
+    UNUSED(ctx);
+    dma_rmb();
+}
+
+static void queue_submit(void *ctx, unsigned queue, unsigned tag)
+{
+    UNUSED(ctx);
+    nvme_poll_syslog();
+    write32(nvme_base + (queue == ANS_HW_ADMIN ? NVME_DB_LINEAR_ASQ : NVME_DB_LINEAR_IOSQ),
+            tag);
+    nvme_poll_syslog();
+}
+
+static bool queue_invalidate(void *ctx, unsigned tag)
+{
+    UNUSED(ctx);
+    write32(nvme_base + NVMMU_TCB_INVAL, tag);
+    if (read32(nvme_base + NVMMU_TCB_STAT))
+        printf("nvme: NVMMU invalidation for tag %d failed\n", tag);
+    /* Recovery retains its historical advisory status read at 0x29120.
+     * Native must supply its own proven invalidation receipt, not reuse this. */
+    return true;
+}
+
+static void queue_ack(void *ctx, unsigned queue, unsigned head)
+{
+    UNUSED(ctx);
+    write32(nvme_base + (queue == ANS_HW_ADMIN ? NVME_DB_ACQ : NVME_DB_IOCQ), head);
+}
+
 static bool nvme_exec_command(struct nvme_queue *q, struct nvme_command *cmd, u64 *result)
 {
-    bool found = false;
-    u64 timeout;
-    u8 tag = 0;
-    struct nvme_command *queue_cmd = &q->cmds[tag];
-    struct apple_nvmmu_tcb *tcb = &q->tcbs[tag];
+    unsigned queue = q->adminq ? ANS_HW_ADMIN : ANS_HW_IO;
+    /* Preserve recovery's tag 0, command opcode and bidirectional TCB policy. */
+    if (ans_queue_submit(&queue_engine, queue_engine.generation, queue, 0, cmd,
+                         cmd->opcode, 3) != ANS_Q_OK) {
+        printf("nvme: command queue unavailable\n");
+        return false;
+    }
 
-    memcpy(queue_cmd, cmd, sizeof(*cmd));
-    queue_cmd->tag = tag;
-
-    memset(tcb, 0, sizeof(*tcb));
-    tcb->opcode = queue_cmd->opcode;
-    tcb->dma_flags = 3; // always allow read+write to the PRP pages
-    tcb->slot_id = tag;
-    tcb->len = queue_cmd->cdw12;
-    tcb->prp1 = queue_cmd->prp1;
-    tcb->prp2 = queue_cmd->prp2;
-
-    /* make sure ANS2 can see the command and tcb before triggering it */
-    dma_wmb();
-
-    nvme_poll_syslog();
-    if (q->adminq)
-        write32(nvme_base + NVME_DB_LINEAR_ASQ, tag);
-    else
-        write32(nvme_base + NVME_DB_LINEAR_IOSQ, tag);
-    nvme_poll_syslog();
-
-    timeout = timeout_calculate(NVME_TIMEOUT);
+    u64 timeout = timeout_calculate(NVME_TIMEOUT);
     struct nvme_completion cqe;
     while (!timeout_expired(timeout)) {
         nvme_poll_syslog();
-
-        /* we need a DMA read barrier here since the CQ will be updated using DMA */
-        dma_rmb();
-        memcpy(&cqe, &q->cqes[q->cq_head], sizeof(cqe));
-        if ((cqe.status & 1) != q->cq_phase)
+        int ret = ans_queue_poll(&queue_engine, queue_engine.generation, queue, &cqe);
+        if (ret == ANS_Q_EMPTY)
             continue;
-
-        if (cqe.tag == tag) {
-            found = true;
-            if (result)
-                *result = cqe.result;
-        } else {
-            printf("nvme: invalid tag in CQ: expected %d but got %d\n", tag, cqe.tag);
+        if (ret != ANS_Q_OK) {
+            printf("nvme: invalid command completion\n");
+            return false;
         }
-
-        write32(nvme_base + NVMMU_TCB_INVAL, cqe.tag);
-        if (read32(nvme_base + NVMMU_TCB_STAT))
-            printf("nvme: NVMMU invalidation for tag %d failed\n", cqe.tag);
-
-        /* increment head and switch phase once the end of the queue has been reached */
-        q->cq_head += 1;
-        if (q->cq_head == NVME_QUEUE_SIZE) {
-            q->cq_head = 0;
-            q->cq_phase ^= 1;
+        if (result)
+            *result = cqe.result;
+        if (cqe.status >> 1) {
+            printf("nvme: command failed with status %d\n", cqe.status >> 1);
+            return false;
         }
-
-        if (q->adminq)
-            write32(nvme_base + NVME_DB_ACQ, q->cq_head);
-        else
-            write32(nvme_base + NVME_DB_IOCQ, q->cq_head);
-        break;
+        return true;
     }
 
-    if (!found) {
-        printf("nvme: could not find command completion in CQ\n");
-        return false;
-    }
-
-    cqe.status >>= 1;
-    if (cqe.status) {
-        printf("nvme: command failed with status %d\n", cqe.status);
-        return false;
-    }
-
-    return true;
+    /* A timeout does not return DMA ownership. Pin the tag until teardown;
+     * publishing another tag 0 command could corrupt the outstanding request. */
+    ans_queue_fault(&queue_engine);
+    printf("nvme: could not find command completion in CQ\n");
+    return false;
 }
 
 bool nvme_init(void)
@@ -329,6 +278,19 @@ bool nvme_init(void)
 
     ioq.adminq = false;
     adminq.adminq = true;
+
+    const struct ans_hw_queue queues[2] = {
+        {.cmds = adminq.cmds, .cqes = adminq.cqes, .tcbs = adminq.tcbs},
+        {.cmds = ioq.cmds, .cqes = ioq.cqes, .tcbs = ioq.tcbs},
+    };
+    const struct ans_queue_ops ops = {
+        .dma_wmb = queue_dma_wmb, .dma_rmb = queue_dma_rmb, .submit = queue_submit,
+        .invalidate = queue_invalidate, .ack = queue_ack,
+    };
+    /* Fresh recovery allocation, before RTKit/controller boot. The existing
+     * recovery teardown owns backing lifetime; this is not native stop proof. */
+    if (ans_queue_init(&queue_engine, queues, &ops, NULL, 2, true) != ANS_Q_OK)
+        goto out_ioq;
 
     nvme_asc = asc_init("/arm-io/ans");
     if (!nvme_asc)
