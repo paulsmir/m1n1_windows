@@ -275,19 +275,48 @@ static struct hv_agx_retained_mapping *find_mapping(struct hv_agx_retained_root 
     return 0;
 }
 
+/* The shared resolver returns a PA from the software image; it does not
+ * establish hardware validity of intermediate descriptors. Require the exact
+ * descriptor we publish and an owned page at the expected level first. */
+static APPLE_AGX_UAT_PAGE *owned_child(struct hv_agx_retained_root *c,
+                                     unsigned long long descriptor,
+                                     unsigned int level)
+{
+    unsigned int i;
+    for (i = 0; i < c->Inventory.PageCount; ++i) {
+        APPLE_AGX_UAT_PAGE *page = &c->Pages[i];
+        unsigned long long expected;
+        if (page->Level == level && page->Entries &&
+            page->Entries != c->RetainedEntries && valid_pa(page->PhysicalAddress) &&
+            !reserved_pa(c, page->PhysicalAddress) &&
+            AppleAgxUatEncodeTableDescriptor(page->PhysicalAddress, &expected) ==
+                AppleAgxUatResultOk && descriptor == expected)
+            return page;
+    }
+    return 0;
+}
+
 static int check_leaf(struct hv_agx_retained_root *c, unsigned long long va,
                       unsigned long long expected_pa,
                       APPLE_AGX_UAT_PROTECTION protection)
 {
     unsigned long long pa, descriptor, expected;
+    APPLE_AGX_UAT_PAGE *level1;
+    if (((va >> J313_AGX_G2_UAT_LEVEL0_SHIFT) & 7ULL) != 2ULL)
+        goto tainted;
+    level1 = owned_child(c, c->RetainedEntries[2], 1);
+    if (!level1 || !owned_child(c, level1->Entries[
+            (va >> J313_AGX_G2_UAT_LEVEL1_SHIFT) & 2047ULL], 2))
+        goto tainted;
     if (AppleAgxUatResolvePage(0, &c->Roots, va, &c->Inventory, &pa, &descriptor) !=
         AppleAgxUatResultOk || pa != expected_pa ||
         AppleAgxUatEncodePageDescriptor(0, expected_pa, protection, &expected) !=
-        AppleAgxUatResultOk || descriptor != expected) {
-        c->Tainted = 1;
-        return HV_AGX_RETAINED_TAINTED;
-    }
+        AppleAgxUatResultOk || descriptor != expected)
+        goto tainted;
     return HV_AGX_RETAINED_OK;
+tainted:
+    c->Tainted = 1;
+    return HV_AGX_RETAINED_TAINTED;
 }
 
 int hv_agx_retained_query(struct hv_agx_retained_root *c, unsigned long long epoch,
