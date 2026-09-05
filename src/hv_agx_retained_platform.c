@@ -171,7 +171,7 @@ bool hv_agx_retained_gpu_region(struct exc_info *ctx, u64 addr, u64 *value,
     if (width < 0 || width > 3) return false;
     bytes = 1u << width;
     if (offset > HV_AGX_G2_GPU_SIZE - bytes || (offset & (bytes - 1))) return false;
-    if (write && offset < 16) return false;
+    if (write && !AgxRrGpuRegionWritable(offset,bytes)) return false;
     if (write) memcpy((void *)addr,value,bytes);
     else { *value = 0; memcpy(value,(void *)addr,bytes); }
     dma_mb();
