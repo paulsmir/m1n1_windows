@@ -496,6 +496,11 @@ static bool nvme_rw_blocks(u32 nsid, u64 lba, u32 blocks, void *buffer, bool wri
     struct nvme_command cmd;
     u64 buffer_addr = (u64)buffer;
 
+    /* Recovery callers serialize through the controller owner. Check admission
+     * before touching the shared PRP list: a timed-out DMA may still read it. */
+    if (queue_engine.faulted || queue_engine.outstanding)
+        return false;
+
     if (!nvme_initialized || !blocks || blocks > NVME_MAX_IO_BLOCKS)
         return false;
 
