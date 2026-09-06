@@ -12,6 +12,8 @@ struct ans_service_ops {
     bool (*flush_recovery)(void *);
     bool (*stop)(void *, uint32_t *stage);
     bool (*retire)(void *);
+    /* Called only after stop+retire. Success proves the old frontend is hidden,
+     * not that native controller/admin queues or guest DMA are ready. */
     bool (*hide_recovery)(void *);
     bool (*boot_admin)(void *, uint64_t generation, uint32_t *stage);
     bool (*queue_backing)(void *, unsigned queue, uint64_t *sq, uint64_t *cq);

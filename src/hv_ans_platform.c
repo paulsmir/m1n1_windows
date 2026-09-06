@@ -91,7 +91,18 @@ static bool stop(void*ctx,uint32_t*stage)
     return ok;
 }
 static bool retire(void*ctx){UNUSED(ctx);return nvme_retire_stopped();}
-static bool hide(void*ctx){UNUSED(ctx);hv_nvme_seal_recovery();hv_pci_hide_nvme();return prepare_memory();}
+static bool hide(void*ctx)
+{
+    UNUSED(ctx);
+    /* The service calls this only after recovery DMA stop and retirement.
+     * Hiding that retired frontend does not authorize any guest DMA. In the
+     * current assisted descriptor DART_TABLES remains UNOBSERVED, so memory
+     * qualification fails independently; boot() and translate() stay closed.
+     * ANS001 may enumerate the unbound devnode with QUERY/CLAIM only. */
+    hv_nvme_seal_recovery();hv_pci_hide_nvme();
+    (void)prepare_memory();
+    return true;
+}
 static bool boot(void*ctx,uint64_t generation,uint32_t*stage)
 { UNUSED(ctx);return runtime.memory_ready&&nvme_native_init(generation,5000000,stage); }
 static bool backing(void*ctx,unsigned q,uint64_t*sq,uint64_t*cq)
