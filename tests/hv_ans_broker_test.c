@@ -65,6 +65,7 @@ int main(void) {
     assert(ans_broker_quiesce(&b)==0);
     assert(ans_broker_release(&b,true)==0);
     assert(b.owner==ANS_OWNER_NONE);
+    assert(ans_broker_claim(&b)==0); /* second stopped lifetime */
     uint8_t sqe[64]={2}; sqe[4]=1; sqe[2]=2;
     assert(ans_broker_validate_io(sqe,2,4096,ANS_DMA_FROM_DEVICE,100,true)==0);
     sqe[2]=0; assert(ans_broker_validate_io(sqe,2,4096,1,100,true)==ANS_RESULT_BAD_TAG);
@@ -73,6 +74,7 @@ int main(void) {
     sqe[2]=64; assert(ans_broker_validate_io(sqe,64,4096,1,100,true)==ANS_RESULT_BAD_TAG);
     sqe[2]=255; assert(ans_broker_validate_io(sqe,255,4096,1,100,true)==ANS_RESULT_BAD_TAG);
     sqe[2]=2;
+    sqe[0]=0; assert(ans_broker_validate_io(sqe,2,0,ANS_DMA_NONE,100,true)==0);
     sqe[0]=1;
     assert(ans_broker_validate_io(sqe,2,4096,ANS_DMA_TO_DEVICE,100,true)==ANS_RESULT_DENIED);
     assert(ans_broker_validate_io(sqe,2,4096,ANS_DMA_TO_DEVICE,100,false)==0);

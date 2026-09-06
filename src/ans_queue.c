@@ -64,7 +64,7 @@ int ans_queue_submit(struct ans_queue_engine *e, uint64_t generation, unsigned q
     q->cmds[tag].rsvd = 0;
     q->tcbs[tag] = (struct apple_nvmmu_tcb){
         .opcode = tcb_opcode, .dma_flags = dma_flags, .slot_id = tag,
-        .len = cmd->cdw12, .prp1 = cmd->prp1, .prp2 = cmd->prp2
+        .len = e->recovery ? cmd->cdw12 : (uint16_t)cmd->cdw12, .prp1 = cmd->prp1, .prp2 = cmd->prp2
     };
     e->tag_queue[tag] = queue;
     e->outstanding |= bit;

@@ -7,6 +7,7 @@
 #include "cpu_regs.h"
 #include "exception.h"
 #include "hv_stage2_state.h"
+#include "hv_ans_platform.h"
 #include "iodev.h"
 #include "malloc.h"
 #include "smp.h"
@@ -305,7 +306,7 @@ static void hv_pt_map_l4(u64 from, u64 to, u64 size, u64 incr)
     }
 }
 
-int hv_map(u64 from, u64 to, u64 size, u64 incr)
+static int hv_map_under_owner_lock(u64 from, u64 to, u64 size, u64 incr)
 {
     const u64 requested_from = from;
     const u64 requested_to = to;
@@ -387,6 +388,13 @@ int hv_map(u64 from, u64 to, u64 size, u64 incr)
     }
     (void)hv_stage2_state_record(requested_from, target, requested_size, requested_incr, kind);
     return 0;
+}
+
+int hv_map(u64 from, u64 to, u64 size, u64 incr)
+{
+    if (!hv_ans_mapping_begin(from,size)) return -1;
+    int result=hv_map_under_owner_lock(from,to,size,incr);
+    hv_ans_mapping_end();return result;
 }
 
 int hv_unmap(u64 from, u64 size)

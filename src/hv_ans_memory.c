@@ -119,3 +119,6 @@ bool ans_memory_translate(void *context, uint64_t ipa, size_t bytes,
     *out = first;
     return true;
 }
+
+bool ans_memory_context_valid(const struct ans_memory_context *context)
+{ return context && policy_valid(context); }

@@ -10,6 +10,11 @@ source=(ROOT/'src/nvme.c').read_text()
 start=source.index('static bool nvme_rw_blocks(')
 end=source.index('\nbool nvme_read_blocks(', start)
 body=source[start:end]
+idle_start=source.index('bool nvme_recovery_idle(')
+idle_end=source.index('\n}',idle_start)+2
+physical_start=source.index('static bool nvme_recovery_physical_idle(')
+physical_end=source.index('\n}',physical_start)+2
+body=source[physical_start:physical_end]+'\n'+source[idle_start:idle_end]+'\n'+body
 harness=r'''
 #include "ans_queue.h"
 #include <assert.h>
@@ -21,7 +26,8 @@ typedef uint32_t u32;
 #define NVME_MAX_IO_BLOCKS 32
 #define NVME_CMD_WRITE 1
 #define NVME_CMD_READ 2
-static bool nvme_initialized=true;
+static bool nvme_initialized=true,nvme_backend_present=true;
+static bool nvme_native_mode,nvme_stopped,nvme_native_boot_failed,nvme_stop_failed,nvme_native_reserved;
 static struct ans_queue_engine queue_engine;
 static u64 io_prp_list[512];
 static int ioq;

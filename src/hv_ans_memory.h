@@ -23,6 +23,7 @@ struct ans_memory_context {
 #define ANS_MEMORY_MAX_PRIVATE_RANGES 64u
 /* Suitable directly for ans_memory_ops.translate. Accepts metadata and payload
  * spans, including spans crossing a 16 KiB stage-2 boundary. No copies/DMA. */
+bool ans_memory_context_valid(const struct ans_memory_context *);
 bool ans_memory_translate(void *context, uint64_t ipa, size_t bytes,
                           uint32_t direction, uint64_t *pa);
 #endif

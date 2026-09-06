@@ -55,7 +55,7 @@ int ans_broker_request_begin(struct ans_broker *b, const struct ans_broker_reque
 
 int ans_broker_claim(struct ans_broker *b)
 {
-    if (b->owner != ANS_OWNER_NONE || b->header.state != ANS_STATE_READY)
+    if (b->owner != ANS_OWNER_NONE || (b->header.state != ANS_STATE_READY && b->header.state != ANS_STATE_OFF))
         return ANS_RESULT_BAD_STATE;
     b->owner = ANS_OWNER_NATIVE;
     b->header.state = ANS_STATE_CLAIMED;
@@ -167,8 +167,7 @@ int ans_broker_validate_io(const uint8_t sqe[64], uint16_t tag, uint32_t length,
     if (tag_check(1,tag) || le(sqe+2,2)!=tag) return ANS_RESULT_BAD_TAG;
     if (sqe[1] || sqe[3] || le(sqe+4,4)!=1 || le(sqe+8,8) || le(sqe+16,8) ||
         le(sqe+52,8) || le(sqe+60,4)) return ANS_RESULT_BAD_COMMAND;
-    if (sqe[0] == 0) { /* FLUSH: no payload, but forbidden in early RO qualification. */
-        if (read_only) return ANS_RESULT_DENIED;
+    if (sqe[0] == 0) { /* FLUSH has no payload mutation and remains a real persistence command. */
         return (!length && direction==ANS_DMA_NONE && !le(sqe+24,8) &&
                 !le(sqe+32,8) && !le(sqe+40,8) && !le(sqe+48,4)) ?
                 ANS_RESULT_OK : ANS_RESULT_BAD_COMMAND;

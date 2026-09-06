@@ -152,5 +152,12 @@ int main(void)
     assert(put(1, 0) == ANS_Q_BUSY && put(1, 1) == ANS_Q_INVALID);
     assert(complete(0, 0, 0) == 0 && put(1, 0) == 0);
     assert(complete(1, 0, 0) == 0);
+    /* Native TCB NLB is the low16 rw.length, never CDW12 FUA/control bits.
+     * Hardware SQE retains FUA; recovery retains historical full CDW12. */
+    command.cdw12 = 0x4000001f;
+    setup(false); assert(put(1, 2) == 0);
+    assert(tcb[1][2].len == 31 && sq[1][2].cdw12 == 0x4000001f);
+    setup(true); assert(put(1, 0) == 0);
+    assert(tcb[1][0].len == 0x4000001f && sq[1][0].cdw12 == 0x4000001f);
     puts("ans_queue_test: ok");
 }

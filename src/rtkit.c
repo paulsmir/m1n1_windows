@@ -17,6 +17,7 @@
 
 #define rtkit_printf(...)                                                                          \
     do {                                                                                           \
+        if (rtk->bounded) break;                                                               \
         debug_printf("rtkit(%s): ", rtk->name);                                                    \
         debug_printf(__VA_ARGS__);                                                                 \
     } while (0)
@@ -105,6 +106,9 @@ struct rtkit_dev {
     u32 syslog_cnt, syslog_size;
 
     bool crashed;
+    /* Only the new lifecycle APIs enable deadline-aware, quiet processing. */
+    bool bounded, strict_shutdown;
+    u64 deadline;
     struct rtkit_endpoint_map endpoints;
     struct rtkit_deferred_queue deferred;
 };
@@ -131,6 +135,28 @@ struct crashlog_entry {
     u32 len;
     u8 payload[];
 };
+
+static bool rtkit_asc_send(rtkit_dev_t *rtk, const struct asc_message *msg)
+{
+    if (!rtk->bounded)
+        return asc_send(rtk->asc, msg);
+    while (!timeout_expired(rtk->deadline)) {
+        if (asc_try_send(rtk->asc, msg))
+            return true;
+    }
+    return false;
+}
+
+static bool rtkit_asc_recv_timeout(rtkit_dev_t *rtk, struct asc_message *msg, u32 usec)
+{
+    if (!rtk->bounded)
+        return asc_recv_timeout(rtk->asc, msg, usec);
+    while (!timeout_expired(rtk->deadline)) {
+        if (asc_recv(rtk->asc, msg))
+            return true;
+    }
+    return false;
+}
 
 rtkit_dev_t *rtkit_init(const char *name, asc_dev_t *asc, dart_dev_t *dart,
                         iova_domain_t *dart_iovad, sart_dev_t *sart, bool sram)
@@ -197,7 +223,7 @@ bool rtkit_send(rtkit_dev_t *rtk, const struct rtkit_message *msg)
     asc_msg.msg0 = msg->msg;
     asc_msg.msg1 = msg->ep;
 
-    return asc_send(rtk->asc, &asc_msg);
+    return rtkit_asc_send(rtk, &asc_msg);
 }
 
 bool rtkit_try_send(rtkit_dev_t *rtk, const struct rtkit_message *msg)
@@ -378,6 +404,11 @@ static bool rtkit_handle_buffer_request(rtkit_dev_t *rtk, struct rtkit_message *
     size_t sz = n_4kpages << 12;
     u64 addr = FIELD_GET(MSG_BUFFER_REQUEST_IOVA, msg->msg);
 
+    /* A failed bounded publication retains its backing. Never overwrite the
+     * sole ownership record on a repeated request before stopped retirement. */
+    if (rtk->bounded && (bfr->bfr || (addr && !rtk->sram && !rtk->dart)))
+        return false;
+
     if (rtk->sram) {
         if (!addr) {
             rtkit_printf("SRAM buffers needs to be provided by the IOP\n");
@@ -415,9 +446,12 @@ static bool rtkit_handle_buffer_request(rtkit_dev_t *rtk, struct rtkit_message *
     if (!addr)
         reply.msg0 |= FIELD_PREP(MSG_BUFFER_REQUEST_IOVA, bfr->dva | rtk->dva_base);
 
-    if (!asc_send(rtk->asc, &reply)) {
+    if (!rtkit_asc_send(rtk, &reply)) {
         rtkit_printf("unable to send buffer reply\n");
-        rtkit_free_buffer(rtk, bfr);
+        /* SART/DART backing may already be visible to firmware. A bounded
+         * lifecycle failure must retain it until the owner proves stop. */
+        if (!rtk->bounded)
+            rtkit_free_buffer(rtk, bfr);
         goto error;
     }
 
@@ -431,6 +465,8 @@ static void rtkit_crashed(rtkit_dev_t *rtk)
 {
     struct crashlog_hdr *hdr = rtk->crashlog_bfr.bfr;
     rtk->crashed = true;
+    if (rtk->bounded)
+        return; /* Never parse or print firmware crash data on a bounded path. */
 
     rtkit_printf("IOP crashed!\n");
 
@@ -558,7 +594,7 @@ static int rtkit_recv_one_dispatch(rtkit_dev_t *rtk, struct rtkit_message *msg)
     struct rtkit_deferred_message deferred;
     bool ok = true;
 
-    if (rtk->crashed)
+    if ((rtk->bounded && timeout_expired(rtk->deadline)) || rtk->crashed)
         return -1;
 
     if (rtkit_deferred_pop(&rtk->deferred, &deferred)) {
@@ -581,6 +617,28 @@ static int rtkit_recv_one_dispatch(rtkit_dev_t *rtk, struct rtkit_message *msg)
         return RTKIT_RECV_ONE_APPLICATION;
 
     u32 msgtype = FIELD_GET(MGMT_TYPE, msg->msg);
+    if (rtk->strict_shutdown) {
+        /* Post-boot shutdown must not allocate, parse payloads or log. Reject
+         * unsupported system traffic; never let it extend the caller deadline. */
+        if (msg->ep == RTKIT_EP_MGMT) {
+            if (msgtype == MGMT_MSG_IOP_PWR_STATE_ACK)
+                rtk->iop_power = FIELD_GET(MGMT_PWR_STATE, msg->msg);
+            else if (msgtype == MGMT_MSG_AP_PWR_STATE_ACK)
+                rtk->ap_power = FIELD_GET(MGMT_PWR_STATE, msg->msg);
+            else
+                return RTKIT_RECV_ONE_ERROR;
+        } else if ((msg->ep == RTKIT_EP_SYSLOG && msgtype == MSG_SYSLOG_LOG) ||
+                   (msg->ep == RTKIT_EP_IOREPORT && (msgtype == 8 || msgtype == 0xc))) {
+            if (!rtkit_asc_send(rtk, &asc_msg))
+                return RTKIT_RECV_ONE_ERROR;
+        } else if (msg->ep == RTKIT_EP_SYSLOG && msgtype == MSG_SYSLOG_INIT) {
+            rtk->syslog_cnt = FIELD_GET(MSG_SYSLOG_INIT_COUNT, msg->msg);
+            rtk->syslog_size = FIELD_GET(MSG_SYSLOG_INIT_ENTRYSIZE, msg->msg);
+        } else {
+            return RTKIT_RECV_ONE_ERROR;
+        }
+        return RTKIT_RECV_ONE_SYSTEM;
+    }
     switch (msg->ep) {
             case RTKIT_EP_MGMT:
                 switch (msgtype) {
@@ -605,7 +663,7 @@ static int rtkit_recv_one_dispatch(rtkit_dev_t *rtk, struct rtkit_message *msg)
                         break;
                     case MSG_SYSLOG_LOG:
 #ifdef RTKIT_SYSLOG
-                    {
+                    if (!rtk->bounded) {
                         u64 index = FIELD_GET(MSG_SYSLOG_LOG_INDEX, msg->msg);
                         u64 stride = rtk->syslog_size + sizeof(struct syslog_log);
                         struct syslog_log *log = rtk->syslog_bfr.bfr + stride * index;
@@ -614,7 +672,7 @@ static int rtkit_recv_one_dispatch(rtkit_dev_t *rtk, struct rtkit_message *msg)
                             printf("\n");
                     }
 #endif
-                        if (!asc_send(rtk->asc, &asc_msg))
+                        if (!rtkit_asc_send(rtk, &asc_msg))
                             rtkit_printf("failed to ack syslog\n");
                         break;
                     default:
@@ -668,6 +726,8 @@ static int rtkit_recv_one_dispatch(rtkit_dev_t *rtk, struct rtkit_message *msg)
 int rtkit_recv(rtkit_dev_t *rtk, struct rtkit_message *msg)
 {
     while (true) {
+        if (rtk->bounded && timeout_expired(rtk->deadline))
+            return -1;
         int ret = rtkit_recv_one_dispatch(rtk, msg);
 
         if (ret != RTKIT_RECV_ONE_SYSTEM)
@@ -714,7 +774,7 @@ bool rtkit_start_ep(rtkit_dev_t *rtk, u8 ep)
     msg.msg0 |= FIELD_PREP(MGMT_MSG_START_EP_IDX, ep);
     msg.msg1 = RTKIT_EP_MGMT;
 
-    if (!asc_send(rtk->asc, &msg)) {
+    if (!rtkit_asc_send(rtk, &msg)) {
         rtkit_printf("unable to start endpoint 0x%02x\n", ep);
         return false;
     }
@@ -732,12 +792,12 @@ bool rtkit_boot(rtkit_dev_t *rtk)
     msg.msg0 = FIELD_PREP(MGMT_TYPE, MGMT_MSG_IOP_PWR_STATE) |
                FIELD_PREP(MGMT_PWR_STATE, RTKIT_POWER_INIT);
     msg.msg1 = RTKIT_EP_MGMT;
-    if (!asc_send(rtk->asc, &msg)) {
+    if (!rtkit_asc_send(rtk, &msg)) {
         rtkit_printf("unable to send wakeup message\n");
         return false;
     }
 
-    if (!asc_recv_timeout(rtk->asc, &msg, USEC_PER_SEC)) {
+    if (!rtkit_asc_recv_timeout(rtk, &msg, USEC_PER_SEC)) {
         rtkit_printf("did not receive HELLO\n");
         return false;
     }
@@ -772,7 +832,7 @@ bool rtkit_boot(rtkit_dev_t *rtk)
     msg.msg0 |= FIELD_PREP(MGMT_MSG_HELLO_MINVER, want_ver);
     msg.msg0 |= FIELD_PREP(MGMT_MSG_HELLO_MAXVER, want_ver);
     msg.msg1 = RTKIT_EP_MGMT;
-    if (!asc_send(rtk->asc, &msg)) {
+    if (!rtkit_asc_send(rtk, &msg)) {
         rtkit_printf("couldn't send HELLO ack\n");
         return false;
     }
@@ -785,7 +845,7 @@ bool rtkit_boot(rtkit_dev_t *rtk)
     bool has_tracekit = false;
     bool got_epmap = false;
     while (!got_epmap) {
-        if (!asc_recv_timeout(rtk->asc, &msg, USEC_PER_SEC)) {
+        if (!rtkit_asc_recv_timeout(rtk, &msg, USEC_PER_SEC)) {
             rtkit_printf("couldn't receive message while waiting for endpoint map\n");
             return false;
         }
@@ -854,7 +914,7 @@ bool rtkit_boot(rtkit_dev_t *rtk)
 
         msg.msg1 = RTKIT_EP_MGMT;
 
-        if (!asc_send(rtk->asc, &msg)) {
+        if (!rtkit_asc_send(rtk, &msg)) {
             rtkit_printf("couldn't reply to endpoint map\n");
             return false;
         }
@@ -888,7 +948,7 @@ bool rtkit_boot(rtkit_dev_t *rtk)
     msg.msg0 =
         FIELD_PREP(MGMT_TYPE, MGMT_MSG_AP_PWR_STATE) | FIELD_PREP(MGMT_PWR_STATE, RTKIT_POWER_ON);
     msg.msg1 = RTKIT_EP_MGMT;
-    if (!asc_send(rtk->asc, &msg)) {
+    if (!rtkit_asc_send(rtk, &msg)) {
         rtkit_printf("unable to send AP power message\n");
         return false;
     }
@@ -927,7 +987,7 @@ static bool rtkit_switch_power_state(rtkit_dev_t *rtk, enum rtkit_power_state ta
     msg.msg0 = FIELD_PREP(MGMT_TYPE, MGMT_MSG_AP_PWR_STATE) |
                FIELD_PREP(MGMT_PWR_STATE, RTKIT_POWER_QUIESCED);
     msg.msg1 = RTKIT_EP_MGMT;
-    if (!asc_send(rtk->asc, &msg)) {
+    if (!rtkit_asc_send(rtk, &msg)) {
         rtkit_printf("unable to send shutdown message\n");
         return false;
     }
@@ -947,7 +1007,7 @@ static bool rtkit_switch_power_state(rtkit_dev_t *rtk, enum rtkit_power_state ta
     }
 
     msg.msg0 = FIELD_PREP(MGMT_TYPE, MGMT_MSG_IOP_PWR_STATE) | FIELD_PREP(MGMT_PWR_STATE, target);
-    if (!asc_send(rtk->asc, &msg)) {
+    if (!rtkit_asc_send(rtk, &msg)) {
         rtkit_printf("unable to send shutdown message\n");
         return false;
     }
@@ -982,4 +1042,95 @@ bool rtkit_sleep(rtkit_dev_t *rtk)
 
     asc_cpu_stop(rtk->asc);
     return 0;
+}
+
+
+bool rtkit_boot_bounded(rtkit_dev_t *rtk, u64 deadline)
+{
+    if (!rtk || rtk->bounded || rtk->crashed || timeout_expired(deadline))
+        return false;
+    rtk->bounded = true;
+    rtk->deadline = deadline;
+    bool ok = rtkit_boot(rtk);
+    if (timeout_expired(deadline))
+        ok = false;
+    rtk->bounded = false;
+    return ok;
+}
+
+int rtkit_poll_system_once(rtkit_dev_t *rtk, u64 deadline)
+{
+    if (!rtk || rtk->bounded)
+        return -1;
+    /* One system message only; any required reply shares the caller deadline. */
+    rtk->bounded = true;
+    rtk->strict_shutdown = true;
+    rtk->deadline = deadline;
+    struct rtkit_message msg;
+    int ret = rtkit_recv_one_dispatch(rtk, &msg);
+    rtk->strict_shutdown = false;
+    rtk->bounded = false;
+    return ret == RTKIT_RECV_ONE_APPLICATION ? -1 : ret;
+}
+
+int rtkit_poll_boot_once(rtkit_dev_t *rtk, u64 deadline)
+{
+    if (!rtk || rtk->bounded)
+        return -1;
+    /* AP ON does not establish that later buffer requests are forbidden.
+     * Native initialization may allocate; only the STOP path is strict. */
+    rtk->bounded = true;
+    rtk->strict_shutdown = false;
+    rtk->deadline = deadline;
+    struct rtkit_message msg;
+    int ret = rtkit_recv_one_dispatch(rtk, &msg);
+    rtk->bounded = false;
+    return ret == RTKIT_RECV_ONE_APPLICATION ? -1 : ret;
+}
+
+bool rtkit_sleep_bounded(rtkit_dev_t *rtk, u64 deadline, u32 *stage)
+{
+    if (!stage) return false;
+    *stage = RTKIT_STOP_INVALID;
+    if (!rtk || rtk->bounded || rtk->crashed || timeout_expired(deadline))
+        return false;
+    rtk->bounded = true;
+    rtk->strict_shutdown = true;
+    rtk->deadline = deadline;
+    bool ok = false;
+    struct asc_message msg = {.msg1 = RTKIT_EP_MGMT};
+    /* Require fresh state acknowledgements; cached pre-request state is not a
+     * receipt. Caller serializes all RTKit power operations/mailbox dispatch. */
+    rtk->ap_power = RTKIT_POWER_OFF;
+    *stage = RTKIT_STOP_AP_SEND;
+    msg.msg0 = FIELD_PREP(MGMT_TYPE, MGMT_MSG_AP_PWR_STATE) |
+               FIELD_PREP(MGMT_PWR_STATE, RTKIT_POWER_QUIESCED);
+    if (!rtkit_asc_send(rtk, &msg)) goto out;
+    *stage = RTKIT_STOP_AP_ACK;
+    while (rtk->ap_power != RTKIT_POWER_QUIESCED) {
+        struct rtkit_message received;
+        int ret = rtkit_recv_one_dispatch(rtk, &received);
+        if (ret < 0 || ret == RTKIT_RECV_ONE_APPLICATION || timeout_expired(deadline)) goto out;
+    }
+    rtk->iop_power = RTKIT_POWER_OFF;
+    *stage = RTKIT_STOP_IOP_SEND;
+    msg.msg0 = FIELD_PREP(MGMT_TYPE, MGMT_MSG_IOP_PWR_STATE) |
+               FIELD_PREP(MGMT_PWR_STATE, RTKIT_POWER_SLEEP);
+    if (!rtkit_asc_send(rtk, &msg)) goto out;
+    *stage = RTKIT_STOP_IOP_ACK;
+    while (rtk->iop_power != RTKIT_POWER_SLEEP) {
+        struct rtkit_message received;
+        int ret = rtkit_recv_one_dispatch(rtk, &received);
+        if (ret < 0 || ret == RTKIT_RECV_ONE_APPLICATION || timeout_expired(deadline)) goto out;
+    }
+    *stage = RTKIT_STOP_CPU;
+    asc_cpu_stop(rtk->asc);
+    while (asc_cpu_running(rtk->asc))
+        if (timeout_expired(deadline)) goto out;
+    ok = !timeout_expired(deadline);
+    if (ok) *stage = RTKIT_STOP_DONE;
+out:
+    rtk->strict_shutdown = false;
+    rtk->bounded = false;
+    return ok;
 }

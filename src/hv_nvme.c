@@ -51,6 +51,7 @@ extern int hv_pci_intx_irq(void);
 static u64 bar_base;
 static DECLARE_SPINLOCK(nvme_lock);
 static bool backend_ready;
+static bool recovery_frozen;
 static u64 backend_blocks;
 static struct vnvme_intx_delivery irq_delivery;
 static u32 nvme_trace_budget;
@@ -280,6 +281,7 @@ static const struct vnvme_backend_ops backend_ops = {
 
 bool hv_nvme_init_backend(void)
 {
+    if (recovery_frozen) return false;
     if (backend_ready)
         return true;
     if (!nvme_init()) {
@@ -470,6 +472,10 @@ static bool handle_nvme_bar(struct exc_info *ctx, u64 addr, u64 *value, bool wri
 {
     UNUSED(ctx);
     u32 off = addr - bar_base;
+    if (recovery_frozen) {
+        if (!write) *value = reg_read(off, width);
+        return true;
+    }
     if (off >= NVME_DBS) {
         u32 index = (off - NVME_DBS) / 4;
         if (write)
@@ -502,4 +508,50 @@ void hv_nvme_unmap_bar(void)
     hv_unmap(bar_base, NVME_BAR_SIZE);
     __atomic_store_n(&bar_base, 0, __ATOMIC_RELEASE);
     reset_frontend();
+}
+
+/* Native handoff adapters. The legacy lock serializes every old frontend
+ * operation; frozen MMIO can never invoke the physical ANS backend. */
+extern bool nvme_recovery_idle(void);
+bool hv_nvme_is_frozen(void)
+{ return __atomic_load_n(&recovery_frozen, __ATOMIC_ACQUIRE); }
+bool hv_nvme_recovery_geometry(u64 *blocks)
+{
+    if (!blocks || !backend_ready || recovery_frozen) return false;
+    *blocks=backend_blocks;return *blocks!=0;
+}
+bool hv_nvme_freeze_recovery(void)
+{
+    spin_lock(&nvme_lock);
+    bool ok=backend_ready && !recovery_frozen && nvme_begin_native_handoff();
+    if(ok){
+        __atomic_store_n(&recovery_frozen,true,__ATOMIC_RELEASE);
+        regs.csts=CSTS_CFS;regs.intms=0xffffffff;
+        queue_ctrl.irq_asserted=false;irq_delivery=(struct vnvme_intx_delivery){0};
+    }
+    spin_unlock(&nvme_lock);return ok;
+}
+bool hv_nvme_recovery_drained(void)
+{
+    spin_lock(&nvme_lock);
+    bool ok=recovery_frozen && backend_ready && nvme_handoff_idle();
+    for(unsigned i=0;i<VNVME_MAX_QUEUES;i++)
+        if(queue_ctrl.queues[i].sq_valid && queue_ctrl.queues[i].sq_head!=queue_ctrl.queues[i].sq_tail)ok=false;
+    spin_unlock(&nvme_lock);return ok;
+}
+bool hv_nvme_flush_frozen(void)
+{
+    spin_lock(&nvme_lock);
+    u32 stage=0;
+    bool ok=recovery_frozen && backend_ready && nvme_handoff_idle() &&
+        nvme_handoff_flush_bounded(1,5000000,&stage);
+    spin_unlock(&nvme_lock);return ok;
+}
+void hv_nvme_seal_recovery(void)
+{
+    spin_lock(&nvme_lock);
+    /* Only the owner calls this after full physical stop+retirement proof.
+     * Later UEFI exit callbacks may observe a truthful stopped controller. */
+    if(recovery_frozen){backend_ready=false;regs.cc=0;regs.csts=CSTS_SHST_COMPLETE;}
+    spin_unlock(&nvme_lock);
 }
