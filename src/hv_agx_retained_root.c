@@ -103,6 +103,9 @@ static int arena_descriptor(unsigned int arena_class,
     } else if (arena_class == AGX_RR_ARENA_TIMESTAMP) {
         descriptor->Va = AGX_RR_TIMESTAMP_ARENA_VA;
         descriptor->Bytes = AGX_RR_TIMESTAMP_ARENA_BYTES;
+    } else if (arena_class == AGX_RR_ARENA_COMMAND) {
+        descriptor->Va = AGX_RR_COMMAND_ARENA_VA;
+        descriptor->Bytes = AGX_RR_COMMAND_ARENA_BYTES;
     } else {
         *descriptor = (AGX_RR_ARENA_DESCRIPTOR){0};
         return HV_AGX_RETAINED_RANGE;
@@ -122,7 +125,7 @@ static unsigned char arena_contains(const struct hv_agx_retained_root *c,
     AGX_RR_ARENA_DESCRIPTOR descriptor;
     unsigned int arena_class;
     for (arena_class = AGX_RR_ARENA_SHARED;
-         arena_class <= AGX_RR_ARENA_TIMESTAMP; ++arena_class) {
+         arena_class <= AGX_RR_ARENA_COMMAND; ++arena_class) {
         if (!(c->ArenaQueriedMask & HV_AGX_RETAINED_ARENA_MASK(arena_class)) ||
             arena_descriptor(arena_class, &descriptor) != HV_AGX_RETAINED_OK)
             continue;
