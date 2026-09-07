@@ -275,8 +275,12 @@ int hv_agx_retained_map(struct hv_agx_retained_root *c, unsigned long long epoch
     pa = c->Ops.TranslateGuest(c->Ops.Context, ipa);
     if (!valid_pa(pa) || reserved_pa(c, pa) || owned_pa(c, pa))
         return HV_AGX_RETAINED_RANGE;
-    mapped = AppleAgxUatMap(0, &c->Roots, va, pa, length,
-        AppleAgxUatFirmwareSharedReadWrite, &c->Allocator, &c->Inventory);
+    mapped = AppleAgxUatMap(
+        0, &c->Roots, va, pa, length,
+        va == J313_AGX_G2_REGIONB_BUFFER_MGR_GPU_VA
+            ? AppleAgxUatFirmwareGpuSharedReadWrite
+            : AppleAgxUatFirmwareSharedReadWrite,
+        &c->Allocator, &c->Inventory);
     c->Ops.Sync(c->Ops.Context);
     if (check_tables(c))
         return HV_AGX_RETAINED_TAINTED;
@@ -499,7 +503,11 @@ int hv_agx_retained_query(struct hv_agx_retained_root *c, unsigned long long epo
     m = find_mapping(c, handle, va, ipa, length);
     if (!m)
         return HV_AGX_RETAINED_OWNERSHIP;
-    result = check_leaf(c, va, m->Pa, AppleAgxUatFirmwareSharedReadWrite);
+    result = check_leaf(
+        c, va, m->Pa,
+        va == J313_AGX_G2_REGIONB_BUFFER_MGR_GPU_VA
+            ? AppleAgxUatFirmwareGpuSharedReadWrite
+            : AppleAgxUatFirmwareSharedReadWrite);
     if (result)
         return result;
     *pa_out = m->Pa;
