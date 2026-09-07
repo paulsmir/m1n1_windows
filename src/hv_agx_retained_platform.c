@@ -132,6 +132,21 @@ static void execute(void *context, const AGX_RR_REQUEST *q, AGX_RR_RESPONSE *r)
         status = hv_agx_retained_verify_absent(&root_owner,q->Epoch,q->Handle,q->Va,q->Ipa,q->Length);
         r->Handle = q->Handle;
         break;
+    case AGX_RR_QUERY_ARENA:
+        if (!q->Epoch || q->Ipa || q->Length || q->Handle || q->Va > 0xffffffffULL)
+            break;
+        {
+            AGX_RR_ARENA_DESCRIPTOR arena = {0};
+            status = hv_agx_retained_query_arena(
+                &root_owner, q->Epoch, (unsigned int)q->Va, &arena);
+            if (!status) {
+                r->ArenaVersion = arena.Version;
+                r->ArenaClass = arena.Class;
+                r->ArenaVa = arena.Va;
+                r->ArenaBytes = arena.Bytes;
+            }
+        }
+        break;
     case AGX_RR_CLOSE:
         if (!q->Epoch || q->Epoch != root_owner.Epoch || q->Va || q->Ipa || q->Length || q->Handle ||
             !cpu_stopped()) break;

@@ -15,7 +15,7 @@ unsigned char hv_agx_retained_mmio(struct hv_agx_retained_mmio *s,
     r.Status = AGX_RR_STATUS_REQUEST;
     if (q.Version == AGX_RR_ABI_VERSION && q.Bytes == sizeof(q) && !q.Reserved &&
         q.Sequence && q.Sequence > s->LastSequence && execute &&
-        q.Command >= AGX_RR_PREPARE && q.Command <= AGX_RR_VERIFY_ABSENT) {
+        q.Command >= AGX_RR_PREPARE && q.Command <= AGX_RR_QUERY_ARENA) {
       s->LastSequence = q.Sequence;
       execute(context, &q, &r);
     }

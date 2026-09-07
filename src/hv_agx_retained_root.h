@@ -3,6 +3,7 @@
 
 #include "../../drivers/apple-agx/shared/include/apple_agx_uat_table.h"
 #include "../../drivers/apple-agx/shared/include/apple_agx_firmware_io.h"
+#include "../../drivers/apple-agx/shared/include/apple_agx_retained_root_abi.h"
 
 #define HV_AGX_RETAINED_MAX_MAPPINGS 256u
 #define HV_AGX_RETAINED_MAX_PAGES 24u
@@ -10,6 +11,7 @@
 #define HV_AGX_RETAINED_WINDOWS_VA 0xffffffa000000000ULL
 #define HV_AGX_RETAINED_WINDOWS_END 0xffffffa020000000ULL
 #define HV_AGX_RETAINED_SYSTEM_VA 0xffffffa080000000ULL
+#define HV_AGX_RETAINED_ARENA_MASK(Class) (1u << (Class))
 
 enum hv_agx_retained_result {
     HV_AGX_RETAINED_OK = 0,
@@ -43,6 +45,7 @@ struct hv_agx_retained_root {
     unsigned int MappingCount;
     unsigned char Active, Prepared, PrefixUnchanged;
     unsigned char Tainted, PrefixSaved;
+    unsigned int ArenaQueriedMask;
     unsigned long long RetainedPa, RegionBytes, NextHandle;
     unsigned long long *RetainedEntries;
     unsigned long long PrivatePrefix[2];
@@ -76,6 +79,9 @@ int hv_agx_retained_query(struct hv_agx_retained_root *, unsigned long long,
                          unsigned long long, unsigned long long,
                          unsigned long long, unsigned long long,
                          unsigned long long *);
+int hv_agx_retained_query_arena(struct hv_agx_retained_root *,
+                                unsigned long long, unsigned int,
+                                AGX_RR_ARENA_DESCRIPTOR *);
 int hv_agx_retained_unmap(struct hv_agx_retained_root *, unsigned long long,
                          unsigned long long, unsigned long long,
                          unsigned long long, unsigned long long);

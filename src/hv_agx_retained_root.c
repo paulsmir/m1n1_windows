@@ -86,6 +86,51 @@ unsigned char hv_agx_retained_prefix_unchanged(struct hv_agx_retained_root *c)
 
 static APPLE_AGX_UAT_PAGE *owned_child(struct hv_agx_retained_root *,
                                      unsigned long long, unsigned int);
+static int owned_leaf(struct hv_agx_retained_root *, unsigned long long,
+                      unsigned long long **);
+
+static int arena_descriptor(unsigned int arena_class,
+                            AGX_RR_ARENA_DESCRIPTOR *descriptor)
+{
+    if (!descriptor)
+        return HV_AGX_RETAINED_INVALID;
+    *descriptor = (AGX_RR_ARENA_DESCRIPTOR){0};
+    descriptor->Version = AGX_RR_ARENA_VERSION;
+    descriptor->Class = arena_class;
+    if (arena_class == AGX_RR_ARENA_SHARED) {
+        descriptor->Va = AGX_RR_SHARED_ARENA_VA;
+        descriptor->Bytes = AGX_RR_SHARED_ARENA_BYTES;
+    } else if (arena_class == AGX_RR_ARENA_TIMESTAMP) {
+        descriptor->Va = AGX_RR_TIMESTAMP_ARENA_VA;
+        descriptor->Bytes = AGX_RR_TIMESTAMP_ARENA_BYTES;
+    } else {
+        *descriptor = (AGX_RR_ARENA_DESCRIPTOR){0};
+        return HV_AGX_RETAINED_RANGE;
+    }
+    if (!descriptor->Bytes || (descriptor->Va | descriptor->Bytes) & (PAGE_BYTES - 1) ||
+        descriptor->Va > ~0ULL - descriptor->Bytes ||
+        ((descriptor->Va >> J313_AGX_G2_UAT_LEVEL0_SHIFT) & 7ULL) != 2ULL ||
+        (((descriptor->Va + descriptor->Bytes - 1) >>
+          J313_AGX_G2_UAT_LEVEL0_SHIFT) & 7ULL) != 2ULL)
+        return HV_AGX_RETAINED_RANGE;
+    return HV_AGX_RETAINED_OK;
+}
+
+static unsigned char arena_contains(const struct hv_agx_retained_root *c,
+                                    unsigned long long va)
+{
+    AGX_RR_ARENA_DESCRIPTOR descriptor;
+    unsigned int arena_class;
+    for (arena_class = AGX_RR_ARENA_SHARED;
+         arena_class <= AGX_RR_ARENA_TIMESTAMP; ++arena_class) {
+        if (!(c->ArenaQueriedMask & HV_AGX_RETAINED_ARENA_MASK(arena_class)) ||
+            arena_descriptor(arena_class, &descriptor) != HV_AGX_RETAINED_OK)
+            continue;
+        if (va >= descriptor.Va && va - descriptor.Va < descriptor.Bytes)
+            return 1;
+    }
+    return 0;
+}
 
 /* TTBR0 belongs to the broker, and can contain only the exact low alias's
  * slot 0. Retained TTBR1 owns only slot 2; never walk its private slots. */
@@ -265,7 +310,8 @@ int hv_agx_retained_map(struct hv_agx_retained_root *c, unsigned long long epoch
     if (length != PAGE_BYTES || (va | ipa) & (PAGE_BYTES - 1) ||
         !ipa || ipa > ~0ULL - (PAGE_BYTES - 1) ||
         (va != J313_AGX_G2_REGIONB_BUFFER_MGR_GPU_VA &&
-         (va < HV_AGX_RETAINED_WINDOWS_VA || va >= HV_AGX_RETAINED_WINDOWS_END)))
+         (va < HV_AGX_RETAINED_WINDOWS_VA ||
+          (va >= HV_AGX_RETAINED_WINDOWS_END && !arena_contains(c, va)))))
         return HV_AGX_RETAINED_RANGE;
     for (i = 0; i < c->MappingCount; ++i)
         if (c->Mappings[i].Va == va)
@@ -362,6 +408,39 @@ static int owned_leaf(struct hv_agx_retained_root *c, unsigned long long va,
 tainted:
     c->Tainted = 1;
     return HV_AGX_RETAINED_TAINTED;
+}
+
+int hv_agx_retained_query_arena(struct hv_agx_retained_root *c,
+                                unsigned long long epoch,
+                                unsigned int arena_class,
+                                AGX_RR_ARENA_DESCRIPTOR *descriptor)
+{
+    AGX_RR_ARENA_DESCRIPTOR candidate;
+    unsigned long long offset;
+    int result;
+    if (!descriptor)
+        return HV_AGX_RETAINED_INVALID;
+    *descriptor = (AGX_RR_ARENA_DESCRIPTOR){0};
+    result = active_epoch(c, epoch);
+    if (result)
+        return result;
+    result = arena_descriptor(arena_class, &candidate);
+    if (result)
+        return result;
+    /* ACTIVATE already rejects every foreign slot-2 root descriptor.  Walk the
+     * broker-owned descendants read-only as well so a repeated or partially
+     * occupied arena can never be advertised as free. */
+    for (offset = 0; offset < candidate.Bytes; offset += PAGE_BYTES) {
+        unsigned long long *leaf = 0;
+        result = owned_leaf(c, candidate.Va + offset, &leaf);
+        if (result)
+            return result;
+        if (leaf && *leaf)
+            return HV_AGX_RETAINED_OWNERSHIP;
+    }
+    c->ArenaQueriedMask |= HV_AGX_RETAINED_ARENA_MASK(arena_class);
+    *descriptor = candidate;
+    return HV_AGX_RETAINED_OK;
 }
 
 static int check_leaf(struct hv_agx_retained_root *c, unsigned long long va,
