@@ -4,6 +4,8 @@
 bool hv_agx_retained_platform_init(u64 root, u64 length);
 bool hv_agx_retained_platform_mmio(u64 offset, u64 *value, bool write,
                                   unsigned width, bool powered);
+bool hv_agx_retained_platform_gpuva_v5(u64 offset, u64 *value, bool write,
+                                      unsigned width, bool powered);
 bool hv_agx_retained_platform_io(u64 offset,u64 *value,bool write,
                                  unsigned width,bool powered);
 bool hv_agx_retained_platform_profile(u64 offset,u64 *value,bool write,

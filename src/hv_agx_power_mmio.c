@@ -8,6 +8,7 @@
 #include "../../drivers/apple-agx/shared/include/apple_agx_firmware_io.h"
 #include "../../drivers/apple-agx/shared/include/apple_agx_hwdata_profile_abi.h"
 #include "hv_agx_retained_mmio.h"
+#include "../../drivers/apple-agx/shared/include/apple_agx_gpuva_broker_v5.h"
 #include "hv_agx_abi_admission.generated.h"
 #include "hv_agx_g2.generated.h"
 #include "hv_agx_power_broker.h"
@@ -176,6 +177,15 @@ static bool handle_agx_power_broker(struct exc_info *ctx, u64 addr, u64 *value, 
         spin_lock(&broker_lock);
         handled = hv_agx_retained_platform_mmio(offset - AGX_RR_OFFSET, value,
                     write, (unsigned)width, broker.state == HV_AGX_POWER_ON);
+        spin_unlock(&broker_lock);
+        return handled;
+    }
+    if (offset >= AGX_GPUVA_V5_OFFSET &&
+        offset < AGX_GPUVA_V5_OFFSET + AGX_GPUVA_V5_WINDOW) {
+        spin_lock(&broker_lock);
+        handled = hv_agx_retained_platform_gpuva_v5(
+            offset - AGX_GPUVA_V5_OFFSET, value, write, (unsigned)width,
+            broker.state == HV_AGX_POWER_ON);
         spin_unlock(&broker_lock);
         return handled;
     }

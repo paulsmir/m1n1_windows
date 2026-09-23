@@ -1,0 +1,476 @@
+#include "hv_agx_gpuva_v5.h"
+#include "../../drivers/apple-agx/shared/include/apple_agx_uat.h"
+#include <string.h>
+#define GPUVA_PA_MASK UINT64_C(0x000000ffffffc000)
+
+static enum hv_agx_gpuva_v5_result check(struct hv_agx_gpuva_v5 *b)
+{
+    uint64_t low, high;
+    unsigned slot;
+    if (!b || !b->active || b->tainted) return HV_AGX_GPUVA_V5_TAINTED;
+    if (!b->ops.prefix_unchanged(b->ops.context) ||
+        !b->ops.read_slot(b->ops.context, 0, &low, &high) ||
+        low != b->context0_ttbr0 || high != b->context0_ttbr1) {
+        b->tainted = true;
+        return HV_AGX_GPUVA_V5_TAINTED;
+    }
+    for (slot = 1; slot < HV_AGX_GPUVA_V5_SLOTS; ++slot)
+        if (b->slots[slot].occupied) {
+            unsigned owner = b->slots[slot].owner;
+            uint64_t expected = b->processes[owner].root_pa | UINT64_C(1) |
+                                ((uint64_t)slot << 48);
+            if (!b->processes[owner].live ||
+                !b->ops.read_slot(b->ops.context, slot, &low, &high) ||
+                low != expected || high) {
+                b->tainted = true;
+                return HV_AGX_GPUVA_V5_TAINTED;
+            }
+        }
+    return HV_AGX_GPUVA_V5_OK;
+}
+
+enum hv_agx_gpuva_v5_result hv_agx_gpuva_v5_verify(struct hv_agx_gpuva_v5 *b)
+{
+    return check(b);
+}
+
+static int process_index(struct hv_agx_gpuva_v5 *b, uint64_t id, uint64_t generation)
+{
+    unsigned i;
+    for (i = 0; i < HV_AGX_GPUVA_V5_PROCESSES; ++i)
+        if (b->processes[i].live && b->processes[i].identity == id &&
+            b->processes[i].generation == generation) return (int)i;
+    return -1;
+}
+
+static int table_index(struct hv_agx_gpuva_v5 *b, unsigned owner, uint64_t ipa,
+                       unsigned level)
+{
+    unsigned i;
+    for (i = 0; i < HV_AGX_GPUVA_V5_TABLES; ++i)
+        if (b->tables[i].live && b->tables[i].owner == owner &&
+            b->tables[i].ipa == ipa && b->tables[i].level == level) return (int)i;
+    return -1;
+}
+
+static bool referenced(struct hv_agx_gpuva_v5 *b, unsigned owner,
+                       uint64_t pa, unsigned level)
+{
+    unsigned table, index;
+    for (table = 0; table < HV_AGX_GPUVA_V5_TABLES; ++table)
+        if (b->tables[table].live && b->tables[table].owner == owner &&
+            b->tables[table].level == level) {
+            unsigned count = level == 0 ? 8u : 2048u;
+            for (index = 0; index < count; ++index)
+                if ((b->tables[table].entries[index] & GPUVA_PA_MASK) == pa &&
+                    b->tables[table].entries[index]) return true;
+        }
+    return false;
+}
+
+static bool table_nonzero(const struct hv_agx_gpuva_v5_table *table)
+{
+    unsigned i, count = table->level == 0 ? 8u : 2048u;
+    for (i = 0; i < count; ++i) if (table->entries[i]) return true;
+    return false;
+}
+
+static enum hv_agx_gpuva_v5_result table_add(struct hv_agx_gpuva_v5 *b,
+                                              unsigned owner, uint64_t ipa,
+                                              unsigned level)
+{
+    unsigned i;
+    uint64_t pa, *entries;
+    if (!ipa || (ipa & (HV_AGX_GPUVA_V5_PAGE - 1)) || level > 2)
+        return HV_AGX_GPUVA_V5_INVALID;
+    pa = b->ops.translate_page(b->ops.context, ipa);
+    if (!pa || (pa & (HV_AGX_GPUVA_V5_PAGE - 1)) || pa >= (UINT64_C(1) << 40))
+        return HV_AGX_GPUVA_V5_OWNERSHIP;
+    entries = b->ops.map_page(b->ops.context, ipa, pa);
+    if (!entries) return HV_AGX_GPUVA_V5_OWNERSHIP;
+    for (i = 0; i < HV_AGX_GPUVA_V5_TABLES; ++i)
+        if (b->tables[i].live &&
+            (b->tables[i].pa == pa || b->tables[i].ipa == ipa))
+            return HV_AGX_GPUVA_V5_OWNERSHIP;
+    for (i = 0; i < HV_AGX_GPUVA_V5_BACKINGS; ++i)
+        if (b->backings[i].live && b->backings[i].pa == pa)
+            return HV_AGX_GPUVA_V5_OWNERSHIP;
+    for (i = 0; i < HV_AGX_GPUVA_V5_TABLES; ++i)
+        if (!b->tables[i].live) {
+            b->tables[i] = (struct hv_agx_gpuva_v5_table){ipa, pa, entries, owner,
+                                                            level, true};
+            return HV_AGX_GPUVA_V5_OK;
+        }
+    return HV_AGX_GPUVA_V5_CAPACITY;
+}
+
+static enum hv_agx_gpuva_v5_result publish_entry(struct hv_agx_gpuva_v5 *b,
+    unsigned owner, uint64_t *entry, uint64_t descriptor)
+{
+    uint64_t old = *entry;
+    unsigned slot;
+    for (slot = 1; slot < HV_AGX_GPUVA_V5_SLOTS; ++slot)
+        if (b->slots[slot].occupied && b->slots[slot].owner == owner &&
+            b->slots[slot].jobs) return HV_AGX_GPUVA_V5_BUSY;
+    *entry = descriptor;
+    if (!b->ops.sync_tables(b->ops.context)) goto rollback;
+    for (slot = 1; slot < HV_AGX_GPUVA_V5_SLOTS; ++slot)
+        if (b->slots[slot].occupied && b->slots[slot].owner == owner &&
+            !b->ops.invalidate(b->ops.context, slot)) goto rollback;
+    if (check(b) != HV_AGX_GPUVA_V5_OK) return HV_AGX_GPUVA_V5_TAINTED;
+    ++b->processes[owner].map_generation;
+    return HV_AGX_GPUVA_V5_OK;
+rollback:
+    *entry = old;
+    if (!b->ops.sync_tables(b->ops.context)) b->tainted = true;
+    for (slot = 1; slot < HV_AGX_GPUVA_V5_SLOTS; ++slot)
+        if (b->slots[slot].occupied && b->slots[slot].owner == owner &&
+            !b->ops.invalidate(b->ops.context, slot)) b->tainted = true;
+    return b->tainted ? HV_AGX_GPUVA_V5_TAINTED : HV_AGX_GPUVA_V5_TLB;
+}
+
+enum hv_agx_gpuva_v5_result hv_agx_gpuva_v5_init(
+    struct hv_agx_gpuva_v5 *b, uint64_t epoch, const struct hv_agx_gpuva_v5_ops *ops)
+{
+    uint64_t low, high;
+    if (!b || b->active || !epoch || !ops || !ops->translate_page || !ops->map_page ||
+        !ops->read_slot || !ops->write_slot || !ops->sync_tables ||
+        !ops->invalidate || !ops->prefix_unchanged ||
+        !ops->prefix_unchanged(ops->context) ||
+        !ops->read_slot(ops->context, 0, &low, &high) || !high)
+        return HV_AGX_GPUVA_V5_INVALID;
+    memset(b, 0, sizeof(*b));
+    b->ops = *ops;
+    b->epoch = epoch;
+    b->context0_ttbr0 = low;
+    b->context0_ttbr1 = high;
+    b->active = true;
+    return HV_AGX_GPUVA_V5_OK;
+}
+
+enum hv_agx_gpuva_v5_result hv_agx_gpuva_v5_create(
+    struct hv_agx_gpuva_v5 *b, uint64_t id, uint64_t generation,
+    uint64_t root_ipa, bool paging)
+{
+    unsigned i;
+    enum hv_agx_gpuva_v5_result result = check(b);
+    if (result) return result;
+    if (!id || !generation) return HV_AGX_GPUVA_V5_INVALID;
+    for (i = 0; i < HV_AGX_GPUVA_V5_PROCESSES; ++i)
+        if (b->processes[i].live && b->processes[i].identity == id)
+            return HV_AGX_GPUVA_V5_STALE;
+    for (i = 0; i < HV_AGX_GPUVA_V5_PROCESSES; ++i)
+        if (!b->processes[i].live) {
+            result = table_add(b, i, root_ipa, 0);
+            if (result) return result;
+            b->processes[i] = (struct hv_agx_gpuva_v5_process){
+                id, generation, b->tables[table_index(b, i, root_ipa, 0)].pa,
+                1, 0, true, paging};
+            return HV_AGX_GPUVA_V5_OK;
+        }
+    return HV_AGX_GPUVA_V5_CAPACITY;
+}
+
+enum hv_agx_gpuva_v5_result hv_agx_gpuva_v5_register_table(
+    struct hv_agx_gpuva_v5 *b, uint64_t id, uint64_t generation,
+    uint64_t table_ipa, unsigned level)
+{
+    int owner;
+    enum hv_agx_gpuva_v5_result result = check(b);
+    if (result) return result;
+    owner = process_index(b, id, generation);
+    if (owner < 0) return HV_AGX_GPUVA_V5_STALE;
+    return table_add(b, (unsigned)owner, table_ipa, level);
+}
+
+enum hv_agx_gpuva_v5_result hv_agx_gpuva_v5_register_backing(
+    struct hv_agx_gpuva_v5 *b, uint64_t id, uint64_t generation,
+    uint64_t allocation_generation, uint64_t page_ipa)
+{
+    int owner;
+    uint64_t pa;
+    unsigned i;
+    enum hv_agx_gpuva_v5_result result = check(b);
+    if (result) return result;
+    owner = process_index(b, id, generation);
+    if (owner < 0) return HV_AGX_GPUVA_V5_STALE;
+    if (!allocation_generation || !page_ipa ||
+        (page_ipa & (HV_AGX_GPUVA_V5_PAGE - 1))) return HV_AGX_GPUVA_V5_INVALID;
+    pa = b->ops.translate_page(b->ops.context, page_ipa);
+    if (!pa || (pa & (HV_AGX_GPUVA_V5_PAGE - 1)) || pa >= (UINT64_C(1) << 40))
+        return HV_AGX_GPUVA_V5_OWNERSHIP;
+    for (i = 0; i < HV_AGX_GPUVA_V5_TABLES; ++i)
+        if (b->tables[i].live && b->tables[i].pa == pa)
+            return HV_AGX_GPUVA_V5_OWNERSHIP;
+    for (i = 0; i < HV_AGX_GPUVA_V5_BACKINGS; ++i)
+        if (b->backings[i].live &&
+            (b->backings[i].pa == pa || b->backings[i].ipa == page_ipa))
+            return HV_AGX_GPUVA_V5_OWNERSHIP;
+    for (i = 0; i < HV_AGX_GPUVA_V5_BACKINGS; ++i)
+        if (!b->backings[i].live) {
+            b->backings[i] = (struct hv_agx_gpuva_v5_backing){
+                page_ipa, pa, allocation_generation, (unsigned)owner, true};
+            return HV_AGX_GPUVA_V5_OK;
+        }
+    return HV_AGX_GPUVA_V5_CAPACITY;
+}
+
+enum hv_agx_gpuva_v5_result hv_agx_gpuva_v5_revoke_backing(
+    struct hv_agx_gpuva_v5 *b, uint64_t id, uint64_t generation,
+    uint64_t allocation_generation, uint64_t page_ipa)
+{
+    int owner;
+    unsigned i;
+    enum hv_agx_gpuva_v5_result result = check(b);
+    if (result) return result;
+    owner = process_index(b, id, generation);
+    if (owner < 0) return HV_AGX_GPUVA_V5_STALE;
+    for (i = 0; i < HV_AGX_GPUVA_V5_BACKINGS; ++i)
+        if (b->backings[i].live && b->backings[i].owner == (unsigned)owner &&
+            b->backings[i].ipa == page_ipa &&
+            b->backings[i].generation == allocation_generation) {
+            if (referenced(b, (unsigned)owner, b->backings[i].pa, 2))
+                return HV_AGX_GPUVA_V5_BUSY;
+            memset(&b->backings[i], 0, sizeof(b->backings[i]));
+            return HV_AGX_GPUVA_V5_OK;
+        }
+    return HV_AGX_GPUVA_V5_STALE;
+}
+
+enum hv_agx_gpuva_v5_result hv_agx_gpuva_v5_revoke_table(
+    struct hv_agx_gpuva_v5 *b, uint64_t id, uint64_t generation,
+    uint64_t table_ipa, unsigned level)
+{
+    int owner, table;
+    enum hv_agx_gpuva_v5_result result = check(b);
+    if (result) return result;
+    owner = process_index(b, id, generation);
+    if (owner < 0) return HV_AGX_GPUVA_V5_STALE;
+    table = table_index(b, (unsigned)owner, table_ipa, level);
+    if (table < 0) return HV_AGX_GPUVA_V5_STALE;
+    if (b->tables[table].pa == b->processes[owner].root_pa ||
+        table_nonzero(&b->tables[table]) ||
+        (level && referenced(b, (unsigned)owner, b->tables[table].pa, level-1)))
+        return HV_AGX_GPUVA_V5_BUSY;
+    memset(&b->tables[table], 0, sizeof(b->tables[table]));
+    return HV_AGX_GPUVA_V5_OK;
+}
+
+enum hv_agx_gpuva_v5_result hv_agx_gpuva_v5_update_parent(
+    struct hv_agx_gpuva_v5 *b, uint64_t id, uint64_t generation,
+    uint64_t table_ipa, unsigned index, uint64_t child_ipa)
+{
+    int owner, parent, child;
+    unsigned level;
+    unsigned long long encoded = 0;
+    uint64_t descriptor = 0;
+    enum hv_agx_gpuva_v5_result result = check(b);
+    if (result) return result;
+    owner = process_index(b, id, generation);
+    if (owner < 0) return HV_AGX_GPUVA_V5_STALE;
+    for (level = 0; level < 2; ++level)
+        if ((parent = table_index(b, (unsigned)owner, table_ipa, level)) >= 0)
+            break;
+    if (level == 2 || index >= (level == 0 ? 8u : 2048u))
+        return HV_AGX_GPUVA_V5_INVALID;
+    if (child_ipa) {
+        child = table_index(b, (unsigned)owner, child_ipa, level + 1);
+        if (child < 0) return HV_AGX_GPUVA_V5_OWNERSHIP;
+        if (AppleAgxUatEncodeTableDescriptor(b->tables[child].pa,
+                &encoded) != AppleAgxUatResultOk) return HV_AGX_GPUVA_V5_INVALID;
+        descriptor = encoded;
+    }
+    return publish_entry(b, (unsigned)owner, &b->tables[parent].entries[index],
+                         descriptor);
+}
+
+enum hv_agx_gpuva_v5_result hv_agx_gpuva_v5_update_leaf(
+    struct hv_agx_gpuva_v5 *b, uint64_t id, uint64_t generation,
+    uint64_t table_ipa, unsigned index, const uint64_t logical_ipa[4],
+    uint64_t allocation_generation, unsigned update_mask, unsigned valid_mask,
+    unsigned writable_mask)
+{
+    int owner, table;
+    uint64_t pa = 0, descriptor = 0, before, ipa[4] = {0};
+    unsigned long long encoded = 0, ro = 0, rw = 0;
+    unsigned i, final_valid = 0, final_write = 0;
+    enum hv_agx_gpuva_v5_result result = check(b);
+    if (result) return result;
+    owner = process_index(b, id, generation);
+    if (owner < 0) return HV_AGX_GPUVA_V5_STALE;
+    table = table_index(b, (unsigned)owner, table_ipa, 2);
+    if (table < 0 || index >= 2048u || !update_mask || update_mask > 15u ||
+        (valid_mask && !logical_ipa) ||
+        (valid_mask & ~update_mask) || (writable_mask & ~valid_mask))
+        return HV_AGX_GPUVA_V5_INVALID;
+    before = b->tables[table].entries[index];
+    if (before) {
+        pa = before & GPUVA_PA_MASK;
+        if (AppleAgxUatEncodePageDescriptor(1u, pa,
+                AppleAgxUatGpuSharedReadOnly, &ro) != AppleAgxUatResultOk ||
+            AppleAgxUatEncodePageDescriptor(1u, pa,
+                AppleAgxUatGpuSharedReadWrite, &rw) != AppleAgxUatResultOk ||
+            (before != ro && before != rw)) return HV_AGX_GPUVA_V5_OWNERSHIP;
+        for (i = 0; i < HV_AGX_GPUVA_V5_BACKINGS; ++i)
+            if (b->backings[i].live && b->backings[i].owner == (unsigned)owner &&
+                b->backings[i].pa == pa) break;
+        if (i == HV_AGX_GPUVA_V5_BACKINGS) return HV_AGX_GPUVA_V5_OWNERSHIP;
+        for (unsigned part = 0; part < 4; ++part) {
+            ipa[part] = b->backings[i].ipa + part * UINT64_C(0x1000);
+        }
+        final_valid = 15u;
+        final_write = before == rw ? 15u : 0u;
+    }
+    for (i = 0; i < 4; ++i) if (update_mask & (1u << i)) {
+        ipa[i] = (valid_mask & (1u << i)) ? logical_ipa[i] : 0;
+        final_valid = (final_valid & ~(1u << i)) | (valid_mask & (1u << i));
+        final_write = (final_write & ~(1u << i)) | (writable_mask & (1u << i));
+    }
+    if (final_valid != 0u && final_valid != 15u) return HV_AGX_GPUVA_V5_INVALID;
+    if (final_valid == 15u) {
+        if ((ipa[0] & (HV_AGX_GPUVA_V5_PAGE - 1)) ||
+            (final_write != 0u && final_write != 15u))
+            return HV_AGX_GPUVA_V5_INVALID;
+        pa = b->ops.translate_page(b->ops.context, ipa[0]);
+        if (!pa || (pa & (HV_AGX_GPUVA_V5_PAGE - 1)))
+            return HV_AGX_GPUVA_V5_OWNERSHIP;
+        for (i = 0; i < 4; ++i)
+            if (ipa[i] != ipa[0] + i * UINT64_C(0x1000))
+                return HV_AGX_GPUVA_V5_OWNERSHIP;
+        for (i = 0; i < HV_AGX_GPUVA_V5_BACKINGS; ++i)
+            if (b->backings[i].live &&
+                b->backings[i].generation == allocation_generation &&
+                b->backings[i].owner == (unsigned)owner &&
+                b->backings[i].ipa == ipa[0] && b->backings[i].pa == pa)
+                break;
+        if (i == HV_AGX_GPUVA_V5_BACKINGS) return HV_AGX_GPUVA_V5_OWNERSHIP;
+        if (AppleAgxUatEncodePageDescriptor(1u, pa,
+              final_write ? AppleAgxUatGpuSharedReadWrite :
+                            AppleAgxUatGpuSharedReadOnly,
+              &encoded) != AppleAgxUatResultOk) return HV_AGX_GPUVA_V5_INVALID;
+        descriptor = encoded;
+    }
+    return publish_entry(b, (unsigned)owner, &b->tables[table].entries[index],
+                         descriptor);
+}
+
+enum hv_agx_gpuva_v5_result hv_agx_gpuva_v5_relocate_root(
+    struct hv_agx_gpuva_v5 *b, uint64_t id, uint64_t generation, uint64_t root_ipa)
+{
+    int owner, table;
+    unsigned i;
+    enum hv_agx_gpuva_v5_result result = check(b);
+    if (result) return result;
+    owner = process_index(b, id, generation);
+    if (owner < 0) return HV_AGX_GPUVA_V5_STALE;
+    table = table_index(b, (unsigned)owner, root_ipa, 0);
+    if (table < 0) return HV_AGX_GPUVA_V5_OWNERSHIP;
+    for (i = 1; i < HV_AGX_GPUVA_V5_SLOTS; ++i)
+        if (b->slots[i].occupied && b->slots[i].owner == (unsigned)owner)
+            return HV_AGX_GPUVA_V5_BUSY;
+    b->processes[owner].root_pa = b->tables[table].pa;
+    ++b->processes[owner].root_generation;
+    return HV_AGX_GPUVA_V5_OK;
+}
+
+enum hv_agx_gpuva_v5_result hv_agx_gpuva_v5_lease(
+    struct hv_agx_gpuva_v5 *b, uint64_t id, uint64_t generation,
+    unsigned slot, uint64_t *token)
+{
+    int owner;
+    uint64_t prior0, prior1, expected;
+    enum hv_agx_gpuva_v5_result result = check(b);
+    if (result) return result;
+    owner = process_index(b, id, generation);
+    if (owner < 0) return HV_AGX_GPUVA_V5_STALE;
+    if (!slot || slot >= HV_AGX_GPUVA_V5_SLOTS || !token)
+        return HV_AGX_GPUVA_V5_INVALID;
+    if (b->slots[slot].occupied) return HV_AGX_GPUVA_V5_BUSY;
+    if (!b->ops.read_slot(b->ops.context, slot, &prior0, &prior1) ||
+        prior0 || prior1) return HV_AGX_GPUVA_V5_OWNERSHIP;
+    expected = b->processes[owner].root_pa | UINT64_C(1) |
+               ((uint64_t)slot << 48);
+    if (!b->ops.write_slot(b->ops.context, slot, expected, 0) ||
+        !b->ops.invalidate(b->ops.context, slot)) goto rollback;
+    if (!b->ops.read_slot(b->ops.context, slot, &prior0, &prior1) ||
+        prior0 != expected || prior1 || check(b)) goto rollback;
+    b->slots[slot] = (struct hv_agx_gpuva_v5_slot){++b->next_token,
+                                                    (unsigned)owner, 0, true};
+    *token = b->next_token;
+    return HV_AGX_GPUVA_V5_OK;
+rollback:
+    if (!b->ops.write_slot(b->ops.context, slot, 0, 0) ||
+        !b->ops.invalidate(b->ops.context, slot)) b->tainted = true;
+    return b->tainted ? HV_AGX_GPUVA_V5_TAINTED : HV_AGX_GPUVA_V5_TLB;
+}
+
+enum hv_agx_gpuva_v5_result hv_agx_gpuva_v5_job_begin(
+    struct hv_agx_gpuva_v5 *b, unsigned slot, uint64_t token)
+{
+    enum hv_agx_gpuva_v5_result result = check(b);
+    if (result) return result;
+    if (!slot || slot >= HV_AGX_GPUVA_V5_SLOTS || !token ||
+        !b->slots[slot].occupied || b->slots[slot].token != token)
+        return HV_AGX_GPUVA_V5_STALE;
+    if (b->slots[slot].jobs == UINT32_MAX) return HV_AGX_GPUVA_V5_CAPACITY;
+    ++b->slots[slot].jobs;
+    return HV_AGX_GPUVA_V5_OK;
+}
+
+enum hv_agx_gpuva_v5_result hv_agx_gpuva_v5_job_end(
+    struct hv_agx_gpuva_v5 *b, unsigned slot, uint64_t token)
+{
+    enum hv_agx_gpuva_v5_result result = check(b);
+    if (result) return result;
+    if (!slot || slot >= HV_AGX_GPUVA_V5_SLOTS || !token ||
+        !b->slots[slot].occupied || b->slots[slot].token != token ||
+        !b->slots[slot].jobs) return HV_AGX_GPUVA_V5_STALE;
+    --b->slots[slot].jobs;
+    return HV_AGX_GPUVA_V5_OK;
+}
+
+enum hv_agx_gpuva_v5_result hv_agx_gpuva_v5_release(
+    struct hv_agx_gpuva_v5 *b, unsigned slot, uint64_t token)
+{
+    enum hv_agx_gpuva_v5_result result = check(b);
+    if (result) return result;
+    if (!slot || slot >= HV_AGX_GPUVA_V5_SLOTS || !token ||
+        !b->slots[slot].occupied || b->slots[slot].token != token)
+        return HV_AGX_GPUVA_V5_STALE;
+    if (b->slots[slot].jobs) return HV_AGX_GPUVA_V5_BUSY;
+    if (!b->ops.write_slot(b->ops.context, slot, 0, 0) ||
+        !b->ops.invalidate(b->ops.context, slot)) {
+        b->tainted = true;
+        return HV_AGX_GPUVA_V5_TAINTED;
+    }
+    memset(&b->slots[slot], 0, sizeof(b->slots[slot]));
+    return check(b);
+}
+
+enum hv_agx_gpuva_v5_result hv_agx_gpuva_v5_destroy(
+    struct hv_agx_gpuva_v5 *b, uint64_t id, uint64_t generation)
+{
+    int owner;
+    unsigned i;
+    enum hv_agx_gpuva_v5_result result = check(b);
+    if (result) return result;
+    owner = process_index(b, id, generation);
+    if (owner < 0) return HV_AGX_GPUVA_V5_STALE;
+    for (i = 1; i < HV_AGX_GPUVA_V5_SLOTS; ++i)
+        if (b->slots[i].occupied && b->slots[i].owner == (unsigned)owner)
+            return HV_AGX_GPUVA_V5_BUSY;
+    for (i = 0; i < HV_AGX_GPUVA_V5_BACKINGS; ++i)
+        if (b->backings[i].live && b->backings[i].owner == (unsigned)owner)
+            return HV_AGX_GPUVA_V5_BUSY;
+    for (i = 0; i < HV_AGX_GPUVA_V5_TABLES; ++i)
+        if (b->tables[i].live && b->tables[i].owner == (unsigned)owner &&
+            table_nonzero(&b->tables[i])) return HV_AGX_GPUVA_V5_BUSY;
+    for (i = 0; i < HV_AGX_GPUVA_V5_TABLES; ++i)
+        if (b->tables[i].live && b->tables[i].owner == (unsigned)owner)
+            memset(&b->tables[i], 0, sizeof(b->tables[i]));
+    for (i = 0; i < HV_AGX_GPUVA_V5_BACKINGS; ++i)
+        if (b->backings[i].live && b->backings[i].owner == (unsigned)owner)
+            memset(&b->backings[i], 0, sizeof(b->backings[i]));
+    memset(&b->processes[owner], 0, sizeof(b->processes[owner]));
+    return check(b);
+}

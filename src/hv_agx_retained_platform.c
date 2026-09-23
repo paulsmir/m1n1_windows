@@ -3,6 +3,8 @@
 #include "hv_agx_retained_root.h"
 #include "hv_agx_retained_mmio.h"
 #include "hv_agx_retained_backing.h"
+#include "hv_agx_gpuva_v5.h"
+#include "hv_agx_gpuva_v5_mmio.h"
 #include "hv_launch_j313.h"
 #include "hv_autonomous_layout.generated.h"
 #include "hv_agx_g2.generated.h"
@@ -16,6 +18,8 @@
 
 static struct hv_agx_retained_root root_owner;
 static struct hv_agx_retained_mmio wire;
+static struct hv_agx_gpuva_v5 gpuva_v5;
+static struct hv_agx_gpuva_v5_wire gpuva_v5_wire;
 static u64 root_base, root_length, asc_base, next_epoch;
 static bool request_powered;
 static struct hv_contract_snapshot launch_memory;
@@ -75,6 +79,155 @@ static void sync_tables(void *context)
                      :: "r"(0ULL) : "memory");
 }
 
+static uint64_t *gpuva_map_page(void *context, uint64_t ipa, uint64_t pa)
+{
+    (void)context; (void)ipa;
+    return (uint64_t *)pa;
+}
+static uint64_t gpuva_translate(void *context, uint64_t ipa)
+{
+    return translate_guest(context, ipa);
+}
+static bool gpuva_read_slot(void *context, unsigned slot, uint64_t *low,
+                            uint64_t *high)
+{
+    (void)context;
+    if (slot >= 64 || !low || !high) return false;
+    *low = read64(HV_AGX_G2_GPU_BASE + slot * 16u);
+    *high = read64(HV_AGX_G2_GPU_BASE + slot * 16u + 8u);
+    return true;
+}
+static bool gpuva_write_slot(void *context, unsigned slot, uint64_t low,
+                             uint64_t high)
+{
+    (void)context;
+    if (!slot || slot >= 64 || high) return false;
+    write64(HV_AGX_G2_GPU_BASE + slot * 16u, low);
+    write64(HV_AGX_G2_GPU_BASE + slot * 16u + 8u, 0);
+    return true;
+}
+static bool gpuva_sync(void *context)
+{
+    (void)context;
+    __asm__ volatile("dsb oshst" ::: "memory");
+    return true;
+}
+static bool gpuva_invalidate(void *context, unsigned slot)
+{
+    uint64_t asid = (uint64_t)slot << 48;
+    (void)context;
+    if (!slot || slot >= 64) return false;
+    __asm__ volatile("dsb oshst\n\tsys #0, c8, c1, #2, %0\n\tdsb osh\n\tisb"
+                     :: "r"(asid) : "memory");
+    return true;
+}
+static bool gpuva_prefix(void *context)
+{
+    (void)context;
+    return root_owner.Active && hv_agx_retained_prefix_unchanged(&root_owner);
+}
+static const struct hv_agx_gpuva_v5_ops gpuva_ops = {
+    NULL, gpuva_translate, gpuva_map_page, gpuva_read_slot,
+    gpuva_write_slot, gpuva_sync, gpuva_invalidate, gpuva_prefix};
+
+static bool gpuva_idle(void)
+{
+    unsigned i;
+    for (i = 0; i < HV_AGX_GPUVA_V5_PROCESSES; ++i)
+        if (gpuva_v5.processes[i].live) return false;
+    for (i = 1; i < HV_AGX_GPUVA_V5_SLOTS; ++i)
+        if (gpuva_v5.slots[i].occupied) return false;
+    return true;
+}
+
+static void gpuva_execute(void *context, const AGX_GPUVA_V5_REQUEST *q,
+                          AGX_GPUVA_V5_RESPONSE *r)
+{
+    enum hv_agx_gpuva_v5_result result = HV_AGX_GPUVA_V5_STALE;
+    int owner;
+    unsigned i;
+    (void)context;
+    if (!request_powered) goto done;
+    result = hv_agx_gpuva_v5_verify(&gpuva_v5);
+    if (result != HV_AGX_GPUVA_V5_OK) goto done;
+    if (!gpuva_v5.active || q->Epoch != gpuva_v5.epoch ||
+        (q->Command == AGX_GPUVA_V5_CREATE ? q->Flags > 1u :
+         q->Command == AGX_GPUVA_V5_UPDATE_LEAF ?
+            (!q->Flags || q->Flags > 15u) : q->Flags != 0u)) goto done;
+    switch (q->Command) {
+    case AGX_GPUVA_V5_CREATE:
+        result = hv_agx_gpuva_v5_create(&gpuva_v5,q->ProcessId,
+            q->ProcessGeneration,q->TableIpa,q->Flags != 0);
+        break;
+    case AGX_GPUVA_V5_REGISTER_TABLE:
+        result = hv_agx_gpuva_v5_register_table(&gpuva_v5,q->ProcessId,
+            q->ProcessGeneration,q->AuxIpa,q->Index);
+        break;
+    case AGX_GPUVA_V5_REGISTER_BACKING:
+        result = hv_agx_gpuva_v5_register_backing(&gpuva_v5,q->ProcessId,
+            q->ProcessGeneration,q->AllocationGeneration,q->AuxIpa);
+        break;
+    case AGX_GPUVA_V5_UPDATE_PARENT:
+        result = hv_agx_gpuva_v5_update_parent(&gpuva_v5,q->ProcessId,
+            q->ProcessGeneration,q->TableIpa,q->Index,q->AuxIpa);
+        break;
+    case AGX_GPUVA_V5_UPDATE_LEAF:
+        result = hv_agx_gpuva_v5_update_leaf(&gpuva_v5,q->ProcessId,
+            q->ProcessGeneration,q->TableIpa,q->Index,q->LogicalIpa,
+            q->AllocationGeneration,q->Flags,q->ValidMask,q->WritableMask);
+        break;
+    case AGX_GPUVA_V5_RELOCATE_ROOT:
+        result = hv_agx_gpuva_v5_relocate_root(&gpuva_v5,q->ProcessId,
+            q->ProcessGeneration,q->TableIpa);
+        break;
+    case AGX_GPUVA_V5_LEASE:
+        result = hv_agx_gpuva_v5_lease(&gpuva_v5,q->ProcessId,
+            q->ProcessGeneration,q->Slot,&r->Token);
+        break;
+    case AGX_GPUVA_V5_JOB_BEGIN:
+        result = hv_agx_gpuva_v5_job_begin(&gpuva_v5,q->Slot,q->Token);
+        break;
+    case AGX_GPUVA_V5_JOB_END:
+        result = hv_agx_gpuva_v5_job_end(&gpuva_v5,q->Slot,q->Token);
+        break;
+    case AGX_GPUVA_V5_RELEASE:
+        result = hv_agx_gpuva_v5_release(&gpuva_v5,q->Slot,q->Token);
+        break;
+    case AGX_GPUVA_V5_DESTROY:
+        result = hv_agx_gpuva_v5_destroy(&gpuva_v5,q->ProcessId,
+            q->ProcessGeneration);
+        break;
+    case AGX_GPUVA_V5_REVOKE_BACKING:
+        result = hv_agx_gpuva_v5_revoke_backing(&gpuva_v5,q->ProcessId,
+            q->ProcessGeneration,q->AllocationGeneration,q->AuxIpa);
+        break;
+    case AGX_GPUVA_V5_REVOKE_TABLE:
+        result = hv_agx_gpuva_v5_revoke_table(&gpuva_v5,q->ProcessId,
+            q->ProcessGeneration,q->TableIpa,q->Index);
+        break;
+    default:
+        result = HV_AGX_GPUVA_V5_INVALID;
+        break;
+    }
+done:
+    if (request_powered &&
+        hv_agx_gpuva_v5_verify(&gpuva_v5) == HV_AGX_GPUVA_V5_TAINTED)
+        result = HV_AGX_GPUVA_V5_TAINTED;
+    r->Status = result;
+    r->Epoch = gpuva_v5.epoch;
+    for (i = 0; i < HV_AGX_GPUVA_V5_PROCESSES; ++i) {
+        owner = (int)i;
+        if (gpuva_v5.processes[owner].live &&
+            gpuva_v5.processes[owner].identity == q->ProcessId &&
+            gpuva_v5.processes[owner].generation == q->ProcessGeneration) {
+            r->RootGeneration = gpuva_v5.processes[owner].root_generation;
+            r->MapGeneration = gpuva_v5.processes[owner].map_generation;
+            break;
+        }
+    }
+    r->Flags = gpuva_v5.tainted ? 1u : 0u;
+}
+
 static bool cpu_stopped(void)
 {
     return asc_base && !(read32(asc_base + 0x44) & BIT(4));
@@ -114,6 +267,12 @@ static void execute(void *context, const AGX_RR_REQUEST *q, AGX_RR_RESPONSE *r)
             status = hv_agx_retained_io_prepare(&root_owner,root_owner.Epoch);
             printf("HV: retained firmware IO prepare status=%d epoch=%llu\n",
                    status,root_owner.Epoch);
+            if (!status) {
+                enum hv_agx_gpuva_v5_result v5_status =
+                    hv_agx_gpuva_v5_init(&gpuva_v5,root_owner.Epoch,&gpuva_ops);
+                printf("HV: GPUVA broker v5 init=%u epoch=%llu\n",
+                       v5_status,root_owner.Epoch);
+            }
         }
         break;
     case AGX_RR_MAP:
@@ -149,13 +308,17 @@ static void execute(void *context, const AGX_RR_REQUEST *q, AGX_RR_RESPONSE *r)
         break;
     case AGX_RR_CLOSE:
         if (!q->Epoch || q->Epoch != root_owner.Epoch || q->Va || q->Ipa || q->Length || q->Handle ||
-            !cpu_stopped()) break;
+            !cpu_stopped() || !gpuva_idle()) break;
         /* Root1 retains physical identity. Retire owned root0 before freeing. */
         if (root_owner.Prepared) {
             write64(HV_AGX_G2_GPU_BASE, 0);
             sync_tables(NULL);
         }
         status = hv_agx_retained_close(&root_owner,q->Epoch,1);
+        if (!status) {
+            memset(&gpuva_v5,0,sizeof(gpuva_v5));
+            memset(&gpuva_v5_wire,0,sizeof(gpuva_v5_wire));
+        }
         break;
     }
 done:
@@ -215,6 +378,15 @@ bool hv_agx_retained_platform_mmio(u64 offset, u64 *value, bool write,
     return result;
 }
 
+bool hv_agx_retained_platform_gpuva_v5(u64 offset, u64 *value, bool write,
+                                      unsigned width, bool powered)
+{
+    request_powered = powered;
+    if (!gpuva_v5.active || !root_owner.Active) return false;
+    return hv_agx_gpuva_v5_mmio(&gpuva_v5_wire,offset,value,write,width,
+                                 gpuva_execute,NULL);
+}
+
 bool hv_agx_retained_platform_io(u64 offset,u64 *value,bool write,
                                  unsigned width,bool powered)
 {
@@ -262,7 +434,8 @@ bool hv_agx_retained_gpu_region(struct exc_info *ctx, u64 addr, u64 *value,
     if (width < 0 || width > 3) return false;
     bytes = 1u << width;
     if (offset > HV_AGX_G2_GPU_SIZE - bytes || (offset & (bytes - 1))) return false;
-    if (write && !AgxRrGpuRegionWritable(offset,bytes)) return false;
+    if (write && (!AgxRrGpuRegionWritable(offset,bytes) ||
+                  (gpuva_v5.active && gpuva_v5.slots[63].occupied))) return false;
     if (write) memcpy((void *)addr,value,bytes);
     else { *value = 0; memcpy(value,(void *)addr,bytes); }
     dma_mb();
