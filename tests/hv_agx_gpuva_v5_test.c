@@ -76,6 +76,12 @@ static struct fixture *new_fixture(void)
                                       write_slot,sync_tables,invalidate,prefix,
                                       legacy_slot63};
     assert(hv_agx_gpuva_v5_init(&f->broker, 7, &ops) == HV_AGX_GPUVA_V5_OK);
+    assert(hv_agx_gpuva_v5_validate_envelope(&f->broker, 0, 1, 0) ==
+           HV_AGX_GPUVA_V5_STALE);
+    assert(hv_agx_gpuva_v5_validate_envelope(&f->broker, 7, 1, 2) ==
+           HV_AGX_GPUVA_V5_INVALID);
+    assert(hv_agx_gpuva_v5_validate_envelope(&f->broker, 7, 1, 0) ==
+           HV_AGX_GPUVA_V5_OK);
     return f;
 }
 static void prepare(struct fixture *f, uint64_t id, uint64_t root,

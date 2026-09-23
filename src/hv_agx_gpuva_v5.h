@@ -72,6 +72,9 @@ struct hv_agx_gpuva_v5 {
 enum hv_agx_gpuva_v5_result hv_agx_gpuva_v5_init(
     struct hv_agx_gpuva_v5 *, uint64_t epoch, const struct hv_agx_gpuva_v5_ops *);
 enum hv_agx_gpuva_v5_result hv_agx_gpuva_v5_verify(struct hv_agx_gpuva_v5 *);
+enum hv_agx_gpuva_v5_result hv_agx_gpuva_v5_validate_envelope(
+    const struct hv_agx_gpuva_v5 *, uint64_t epoch, unsigned command,
+    unsigned flags);
 enum hv_agx_gpuva_v5_result hv_agx_gpuva_v5_create(
     struct hv_agx_gpuva_v5 *, uint64_t id, uint64_t generation, uint64_t root_ipa,
     bool paging);

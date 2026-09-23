@@ -156,10 +156,9 @@ static void gpuva_execute(void *context, const AGX_GPUVA_V5_REQUEST *q,
     if (!request_powered) goto done;
     result = hv_agx_gpuva_v5_verify(&gpuva_v5);
     if (result != HV_AGX_GPUVA_V5_OK) goto done;
-    if (!gpuva_v5.active || q->Epoch != gpuva_v5.epoch ||
-        (q->Command == AGX_GPUVA_V5_CREATE ? q->Flags > 1u :
-         q->Command == AGX_GPUVA_V5_UPDATE_LEAF ?
-            (!q->Flags || q->Flags > 15u) : q->Flags != 0u)) goto done;
+    result = hv_agx_gpuva_v5_validate_envelope(
+        &gpuva_v5, q->Epoch, q->Command, q->Flags);
+    if (result != HV_AGX_GPUVA_V5_OK) goto done;
     switch (q->Command) {
     case AGX_GPUVA_V5_CREATE:
         result = hv_agx_gpuva_v5_create(&gpuva_v5,q->ProcessId,

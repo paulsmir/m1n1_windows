@@ -1,4 +1,5 @@
 #include "hv_agx_gpuva_v5.h"
+#include "apple_agx_gpuva_broker_v5.h"
 #include "../../drivers/apple-agx/shared/include/apple_agx_uat.h"
 #include <string.h>
 #define GPUVA_PA_MASK UINT64_C(0x000000ffffffc000)
@@ -37,6 +38,22 @@ static enum hv_agx_gpuva_v5_result check(struct hv_agx_gpuva_v5 *b)
 enum hv_agx_gpuva_v5_result hv_agx_gpuva_v5_verify(struct hv_agx_gpuva_v5 *b)
 {
     return check(b);
+}
+
+enum hv_agx_gpuva_v5_result hv_agx_gpuva_v5_validate_envelope(
+    const struct hv_agx_gpuva_v5 *b, uint64_t epoch, unsigned command,
+    unsigned flags)
+{
+    if (!b || !b->active || b->tainted) return HV_AGX_GPUVA_V5_TAINTED;
+    if (epoch != b->epoch) return HV_AGX_GPUVA_V5_STALE;
+    if (command < AGX_GPUVA_V5_CREATE ||
+        command > AGX_GPUVA_V5_REGISTER_SHARED_BACKING)
+        return HV_AGX_GPUVA_V5_INVALID;
+    if (command == AGX_GPUVA_V5_CREATE ? flags > 1u :
+        command == AGX_GPUVA_V5_UPDATE_LEAF ?
+            (!flags || flags > 15u) : flags != 0u)
+        return HV_AGX_GPUVA_V5_INVALID;
+    return HV_AGX_GPUVA_V5_OK;
 }
 
 static int process_index(struct hv_agx_gpuva_v5 *b, uint64_t id, uint64_t generation)
