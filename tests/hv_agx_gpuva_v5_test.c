@@ -94,14 +94,33 @@ static void prepare(struct fixture *f, uint64_t id, uint64_t root,
 static void shared_graph_grants(void)
 {
     struct fixture *f = new_fixture();
+    uint64_t logical[4] = {P_DATA,P_DATA+0x1000,P_DATA+0x2000,P_DATA+0x3000};
     assert(hv_agx_gpuva_v5_create(&f->broker, 1, 1, P_ROOT, false) == HV_AGX_GPUVA_V5_OK);
     assert(hv_agx_gpuva_v5_create(&f->broker, 2, 1, Q_ROOT, true) == HV_AGX_GPUVA_V5_OK);
     assert(hv_agx_gpuva_v5_register_shared_backing(&f->broker,1,1,17,P_DATA)==HV_AGX_GPUVA_V5_OK);
     assert(hv_agx_gpuva_v5_register_backing(&f->broker,2,1,17,P_DATA)==HV_AGX_GPUVA_V5_OWNERSHIP);
     assert(hv_agx_gpuva_v5_register_shared_backing(&f->broker,2,1,18,P_DATA)==HV_AGX_GPUVA_V5_OWNERSHIP);
     assert(hv_agx_gpuva_v5_register_shared_backing(&f->broker,2,1,17,P_DATA)==HV_AGX_GPUVA_V5_OK);
+    assert(hv_agx_gpuva_v5_register_table(&f->broker,1,1,P_L1,1)==HV_AGX_GPUVA_V5_OK);
+    assert(hv_agx_gpuva_v5_register_table(&f->broker,1,1,P_L2,2)==HV_AGX_GPUVA_V5_OK);
+    assert(hv_agx_gpuva_v5_register_table(&f->broker,2,1,Q_L1,1)==HV_AGX_GPUVA_V5_OK);
+    assert(hv_agx_gpuva_v5_register_table(&f->broker,2,1,Q_L2,2)==HV_AGX_GPUVA_V5_OK);
+    assert(hv_agx_gpuva_v5_update_parent(&f->broker,1,1,P_ROOT,0,P_L1)==HV_AGX_GPUVA_V5_OK);
+    assert(hv_agx_gpuva_v5_update_parent(&f->broker,1,1,P_L1,0,P_L2)==HV_AGX_GPUVA_V5_OK);
+    assert(hv_agx_gpuva_v5_update_parent(&f->broker,2,1,Q_ROOT,0,Q_L1)==HV_AGX_GPUVA_V5_OK);
+    assert(hv_agx_gpuva_v5_update_parent(&f->broker,2,1,Q_L1,0,Q_L2)==HV_AGX_GPUVA_V5_OK);
+    assert(hv_agx_gpuva_v5_update_leaf(&f->broker,1,1,P_L2,8,logical,17,15,15,15)==HV_AGX_GPUVA_V5_OK);
+    assert(hv_agx_gpuva_v5_update_leaf(&f->broker,2,1,Q_L2,8,logical,17,15,15,15)==HV_AGX_GPUVA_V5_OK);
+    assert(hv_agx_gpuva_v5_revoke_backing(&f->broker,1,1,17,P_DATA)==HV_AGX_GPUVA_V5_BUSY);
+    assert(hv_agx_gpuva_v5_update_leaf(&f->broker,1,1,P_L2,8,NULL,0,15,0,0)==HV_AGX_GPUVA_V5_OK);
     assert(hv_agx_gpuva_v5_revoke_backing(&f->broker,1,1,17,P_DATA)==HV_AGX_GPUVA_V5_OK);
+    assert(hv_agx_gpuva_v5_revoke_backing(&f->broker,2,1,17,P_DATA)==HV_AGX_GPUVA_V5_BUSY);
+    assert(hv_agx_gpuva_v5_update_leaf(&f->broker,2,1,Q_L2,8,NULL,0,15,0,0)==HV_AGX_GPUVA_V5_OK);
     assert(hv_agx_gpuva_v5_revoke_backing(&f->broker,2,1,17,P_DATA)==HV_AGX_GPUVA_V5_OK);
+    assert(hv_agx_gpuva_v5_update_parent(&f->broker,1,1,P_L1,0,0)==HV_AGX_GPUVA_V5_OK);
+    assert(hv_agx_gpuva_v5_update_parent(&f->broker,1,1,P_ROOT,0,0)==HV_AGX_GPUVA_V5_OK);
+    assert(hv_agx_gpuva_v5_update_parent(&f->broker,2,1,Q_L1,0,0)==HV_AGX_GPUVA_V5_OK);
+    assert(hv_agx_gpuva_v5_update_parent(&f->broker,2,1,Q_ROOT,0,0)==HV_AGX_GPUVA_V5_OK);
     assert(hv_agx_gpuva_v5_destroy(&f->broker,1,1)==HV_AGX_GPUVA_V5_OK);
     assert(hv_agx_gpuva_v5_destroy(&f->broker,2,1)==HV_AGX_GPUVA_V5_OK);
     free(f);
