@@ -8,6 +8,11 @@ static enum hv_agx_gpuva_v5_result check(struct hv_agx_gpuva_v5 *b)
     uint64_t low, high;
     unsigned slot;
     if (!b || !b->active || b->tainted) return HV_AGX_GPUVA_V5_TAINTED;
+    if (b->slots[63].occupied &&
+        b->ops.legacy_slot63_active(b->ops.context)) {
+        b->tainted = true;
+        return HV_AGX_GPUVA_V5_TAINTED;
+    }
     if (!b->ops.prefix_unchanged(b->ops.context) ||
         !b->ops.read_slot(b->ops.context, 0, &low, &high) ||
         low != b->context0_ttbr0 || high != b->context0_ttbr1) {
@@ -136,6 +141,7 @@ enum hv_agx_gpuva_v5_result hv_agx_gpuva_v5_init(
     if (!b || b->active || !epoch || !ops || !ops->translate_page || !ops->map_page ||
         !ops->read_slot || !ops->write_slot || !ops->sync_tables ||
         !ops->invalidate || !ops->prefix_unchanged ||
+        !ops->legacy_slot63_active ||
         !ops->prefix_unchanged(ops->context) ||
         !ops->read_slot(ops->context, 0, &low, &high) || !high)
         return HV_AGX_GPUVA_V5_INVALID;
@@ -385,6 +391,8 @@ enum hv_agx_gpuva_v5_result hv_agx_gpuva_v5_lease(
     if (owner < 0) return HV_AGX_GPUVA_V5_STALE;
     if (!slot || slot >= HV_AGX_GPUVA_V5_SLOTS || !token)
         return HV_AGX_GPUVA_V5_INVALID;
+    if (slot == 63u && b->ops.legacy_slot63_active(b->ops.context))
+        return HV_AGX_GPUVA_V5_BUSY;
     if (b->slots[slot].occupied) return HV_AGX_GPUVA_V5_BUSY;
     if (!b->ops.read_slot(b->ops.context, slot, &prior0, &prior1) ||
         prior0 || prior1) return HV_AGX_GPUVA_V5_OWNERSHIP;

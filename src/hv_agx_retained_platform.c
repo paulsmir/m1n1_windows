@@ -126,9 +126,15 @@ static bool gpuva_prefix(void *context)
     (void)context;
     return root_owner.Active && hv_agx_retained_prefix_unchanged(&root_owner);
 }
+static bool gpuva_legacy_slot63(void *context)
+{
+    (void)context;
+    return root_owner.Active;
+}
 static const struct hv_agx_gpuva_v5_ops gpuva_ops = {
     NULL, gpuva_translate, gpuva_map_page, gpuva_read_slot,
-    gpuva_write_slot, gpuva_sync, gpuva_invalidate, gpuva_prefix};
+    gpuva_write_slot, gpuva_sync, gpuva_invalidate, gpuva_prefix,
+    gpuva_legacy_slot63};
 
 static bool gpuva_idle(void)
 {

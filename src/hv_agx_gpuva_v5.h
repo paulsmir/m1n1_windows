@@ -34,6 +34,8 @@ struct hv_agx_gpuva_v5_ops {
     /* DSB store visibility + ASID TLBI + DSB/ISB acknowledgement. */
     bool (*invalidate)(void *, unsigned slot);
     bool (*prefix_unchanged)(void *);
+    /* v4 uses fixed context63 until its owner is explicitly disabled. */
+    bool (*legacy_slot63_active)(void *);
 };
 
 struct hv_agx_gpuva_v5_process {

@@ -21,6 +21,7 @@ struct fixture {
     uint64_t slots[64][2];
     unsigned invalidations[64], fail_once;
     bool prefix;
+    bool legacy_slot63;
 };
 static uint64_t translate(void *opaque, uint64_t ipa)
 {
@@ -58,6 +59,8 @@ static bool invalidate(void *opaque, unsigned slot)
     ++f->invalidations[slot]; return true;
 }
 static bool prefix(void *opaque) { return ((struct fixture *)opaque)->prefix; }
+static bool legacy_slot63(void *opaque)
+{ return ((struct fixture *)opaque)->legacy_slot63; }
 static struct fixture *new_fixture(void)
 {
     struct fixture *f = calloc(1, sizeof(*f));
@@ -70,7 +73,8 @@ static struct fixture *new_fixture(void)
     f->slots[0][1] = UINT64_C(0x90000001);
     f->prefix = true;
     ops = (struct hv_agx_gpuva_v5_ops){f,translate,map_page,read_slot,
-                                      write_slot,sync_tables,invalidate,prefix};
+                                      write_slot,sync_tables,invalidate,prefix,
+                                      legacy_slot63};
     assert(hv_agx_gpuva_v5_init(&f->broker, 7, &ops) == HV_AGX_GPUVA_V5_OK);
     return f;
 }
@@ -154,6 +158,14 @@ int main(void)
     assert(qtoken!=ptoken && f->slots[1][1]==0);
     assert(hv_agx_gpuva_v5_job_begin(&f->broker,1,ptoken)==HV_AGX_GPUVA_V5_STALE);
     assert(hv_agx_gpuva_v5_release(&f->broker,1,qtoken)==HV_AGX_GPUVA_V5_OK);
+    f->legacy_slot63=true;
+    assert(hv_agx_gpuva_v5_lease(&f->broker,1,1,63,&ptoken)==
+           HV_AGX_GPUVA_V5_BUSY);
+    f->legacy_slot63=false;
+    assert(hv_agx_gpuva_v5_lease(&f->broker,1,1,63,&ptoken)==
+           HV_AGX_GPUVA_V5_OK);
+    assert(f->slots[63][1]==0);
+    assert(hv_agx_gpuva_v5_release(&f->broker,63,ptoken)==HV_AGX_GPUVA_V5_OK);
     assert(hv_agx_gpuva_v5_destroy(&f->broker,1,1)==HV_AGX_GPUVA_V5_BUSY);
     cleanup(f,1,P_ROOT,P_L1,P_L2,P_DATA);
     assert(hv_agx_gpuva_v5_revoke_table(&f->broker,1,1,P_ROOT2,0)==
@@ -173,6 +185,21 @@ int main(void)
            HV_AGX_GPUVA_V5_OK); /* No active slot, no TLBI dependency. */
     assert(hv_agx_gpuva_v5_lease(&f->broker,1,1,1,&ptoken)==
            HV_AGX_GPUVA_V5_TAINTED); /* Publish and rollback both lack ack. */
+    free(f);
+    f=new_fixture();
+    f->legacy_slot63=true;
+    assert(hv_agx_gpuva_v5_create(&f->broker,1,1,P_ROOT,true)==
+           HV_AGX_GPUVA_V5_OK);
+    uint64_t tokens[64]={0};
+    for (unsigned slot=1;slot<=62;++slot)
+        assert(hv_agx_gpuva_v5_lease(&f->broker,1,1,slot,&tokens[slot])==
+               HV_AGX_GPUVA_V5_OK);
+    assert(hv_agx_gpuva_v5_lease(&f->broker,1,1,63,&tokens[63])==
+           HV_AGX_GPUVA_V5_BUSY);
+    for (unsigned slot=1;slot<=62;++slot)
+        assert(hv_agx_gpuva_v5_release(&f->broker,slot,tokens[slot])==
+               HV_AGX_GPUVA_V5_OK);
+    assert(hv_agx_gpuva_v5_destroy(&f->broker,1,1)==HV_AGX_GPUVA_V5_OK);
     free(f);
     return 0;
 }
