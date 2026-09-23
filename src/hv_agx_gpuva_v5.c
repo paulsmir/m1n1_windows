@@ -93,6 +93,10 @@ static enum hv_agx_gpuva_v5_result table_add(struct hv_agx_gpuva_v5 *b,
         return HV_AGX_GPUVA_V5_OWNERSHIP;
     entries = b->ops.map_page(b->ops.context, ipa, pa);
     if (!entries) return HV_AGX_GPUVA_V5_OWNERSHIP;
+    /* Registration must not import an unvalidated page-table graph.  Every
+     * descriptor is published later through the owned update operations. */
+    for (i = 0; i < HV_AGX_GPUVA_V5_PAGE / sizeof(*entries); ++i)
+        if (entries[i]) return HV_AGX_GPUVA_V5_OWNERSHIP;
     for (i = 0; i < HV_AGX_GPUVA_V5_TABLES; ++i)
         if (b->tables[i].live &&
             (b->tables[i].pa == pa || b->tables[i].ipa == ipa))
