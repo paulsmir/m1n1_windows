@@ -8,7 +8,7 @@
 #define HV_AGX_GPUVA_V5_PAGE UINT64_C(0x4000)
 #define HV_AGX_GPUVA_V5_PROCESSES 128u
 #define HV_AGX_GPUVA_V5_TABLES 512u
-#define HV_AGX_GPUVA_V5_BACKINGS 512u
+#define HV_AGX_GPUVA_V5_BACKINGS 1024u
 #define HV_AGX_GPUVA_V5_SLOTS 64u
 
 enum hv_agx_gpuva_v5_result {
@@ -57,6 +57,7 @@ struct hv_agx_gpuva_v5_backing {
     uint64_t ipa, pa, generation;
     unsigned owner;
     bool live;
+    bool shared;
 };
 struct hv_agx_gpuva_v5 {
     struct hv_agx_gpuva_v5_ops ops;
@@ -78,6 +79,9 @@ enum hv_agx_gpuva_v5_result hv_agx_gpuva_v5_register_table(
     struct hv_agx_gpuva_v5 *, uint64_t id, uint64_t generation,
     uint64_t table_ipa, unsigned level);
 enum hv_agx_gpuva_v5_result hv_agx_gpuva_v5_register_backing(
+    struct hv_agx_gpuva_v5 *, uint64_t id, uint64_t generation,
+    uint64_t allocation_generation, uint64_t page_ipa);
+enum hv_agx_gpuva_v5_result hv_agx_gpuva_v5_register_shared_backing(
     struct hv_agx_gpuva_v5 *, uint64_t id, uint64_t generation,
     uint64_t allocation_generation, uint64_t page_ipa);
 enum hv_agx_gpuva_v5_result hv_agx_gpuva_v5_revoke_backing(

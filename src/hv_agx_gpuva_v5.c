@@ -193,9 +193,9 @@ enum hv_agx_gpuva_v5_result hv_agx_gpuva_v5_register_table(
     return table_add(b, (unsigned)owner, table_ipa, level);
 }
 
-enum hv_agx_gpuva_v5_result hv_agx_gpuva_v5_register_backing(
+static enum hv_agx_gpuva_v5_result register_backing(
     struct hv_agx_gpuva_v5 *b, uint64_t id, uint64_t generation,
-    uint64_t allocation_generation, uint64_t page_ipa)
+    uint64_t allocation_generation, uint64_t page_ipa, bool shared)
 {
     int owner;
     uint64_t pa;
@@ -214,15 +214,36 @@ enum hv_agx_gpuva_v5_result hv_agx_gpuva_v5_register_backing(
             return HV_AGX_GPUVA_V5_OWNERSHIP;
     for (i = 0; i < HV_AGX_GPUVA_V5_BACKINGS; ++i)
         if (b->backings[i].live &&
-            (b->backings[i].pa == pa || b->backings[i].ipa == page_ipa))
+            (b->backings[i].pa == pa || b->backings[i].ipa == page_ipa) &&
+            (!shared || !b->backings[i].shared ||
+             b->backings[i].generation != allocation_generation ||
+             b->backings[i].owner == (unsigned)owner ||
+             b->backings[i].pa != pa || b->backings[i].ipa != page_ipa))
             return HV_AGX_GPUVA_V5_OWNERSHIP;
     for (i = 0; i < HV_AGX_GPUVA_V5_BACKINGS; ++i)
         if (!b->backings[i].live) {
             b->backings[i] = (struct hv_agx_gpuva_v5_backing){
-                page_ipa, pa, allocation_generation, (unsigned)owner, true};
+                page_ipa, pa, allocation_generation, (unsigned)owner, true,
+                shared};
             return HV_AGX_GPUVA_V5_OK;
         }
     return HV_AGX_GPUVA_V5_CAPACITY;
+}
+
+enum hv_agx_gpuva_v5_result hv_agx_gpuva_v5_register_backing(
+    struct hv_agx_gpuva_v5 *b, uint64_t id, uint64_t generation,
+    uint64_t allocation_generation, uint64_t page_ipa)
+{
+    return register_backing(b, id, generation, allocation_generation,
+                            page_ipa, false);
+}
+
+enum hv_agx_gpuva_v5_result hv_agx_gpuva_v5_register_shared_backing(
+    struct hv_agx_gpuva_v5 *b, uint64_t id, uint64_t generation,
+    uint64_t allocation_generation, uint64_t page_ipa)
+{
+    return register_backing(b, id, generation, allocation_generation,
+                            page_ipa, true);
 }
 
 enum hv_agx_gpuva_v5_result hv_agx_gpuva_v5_revoke_backing(

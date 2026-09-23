@@ -91,6 +91,21 @@ static void prepare(struct fixture *f, uint64_t id, uint64_t root,
     assert(hv_agx_gpuva_v5_update_leaf(&f->broker,id,1,l2,8,logical,17,15,15,15)==
            HV_AGX_GPUVA_V5_OK);
 }
+static void shared_graph_grants(void)
+{
+    struct fixture *f = new_fixture();
+    assert(hv_agx_gpuva_v5_create(&f->broker, 1, 1, P_ROOT, false) == HV_AGX_GPUVA_V5_OK);
+    assert(hv_agx_gpuva_v5_create(&f->broker, 2, 1, Q_ROOT, true) == HV_AGX_GPUVA_V5_OK);
+    assert(hv_agx_gpuva_v5_register_shared_backing(&f->broker,1,1,17,P_DATA)==HV_AGX_GPUVA_V5_OK);
+    assert(hv_agx_gpuva_v5_register_backing(&f->broker,2,1,17,P_DATA)==HV_AGX_GPUVA_V5_OWNERSHIP);
+    assert(hv_agx_gpuva_v5_register_shared_backing(&f->broker,2,1,18,P_DATA)==HV_AGX_GPUVA_V5_OWNERSHIP);
+    assert(hv_agx_gpuva_v5_register_shared_backing(&f->broker,2,1,17,P_DATA)==HV_AGX_GPUVA_V5_OK);
+    assert(hv_agx_gpuva_v5_revoke_backing(&f->broker,1,1,17,P_DATA)==HV_AGX_GPUVA_V5_OK);
+    assert(hv_agx_gpuva_v5_revoke_backing(&f->broker,2,1,17,P_DATA)==HV_AGX_GPUVA_V5_OK);
+    assert(hv_agx_gpuva_v5_destroy(&f->broker,1,1)==HV_AGX_GPUVA_V5_OK);
+    assert(hv_agx_gpuva_v5_destroy(&f->broker,2,1)==HV_AGX_GPUVA_V5_OK);
+    free(f);
+}
 static void reject_prepopulated_tables(void)
 {
     struct fixture *f = new_fixture();
@@ -129,6 +144,7 @@ static void cleanup(struct fixture *f, uint64_t id, uint64_t root,
 int main(void)
 {
     reject_prepopulated_tables();
+    shared_graph_grants();
     struct fixture *f = new_fixture();
     uint64_t ptoken, qtoken, logical[4]={P_DATA,P_DATA+0x1000,
                                           P_DATA+0x2000,P_DATA+0x3000};

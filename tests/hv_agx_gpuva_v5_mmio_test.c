@@ -8,7 +8,9 @@ static void execute(void *opaque, const AGX_GPUVA_V5_REQUEST *q,
                     AGX_GPUVA_V5_RESPONSE *r)
 {
     (void)opaque;
-    assert(q->ProcessId == 17 && q->Command == AGX_GPUVA_V5_CREATE);
+    assert(q->ProcessId == 17 &&
+           (q->Command == AGX_GPUVA_V5_CREATE ||
+            q->Command == AGX_GPUVA_V5_REGISTER_SHARED_BACKING));
     ++executed;
     r->Status = 0;
     r->Epoch = q->Epoch;
@@ -44,5 +46,14 @@ int main(void)
     assert(!hv_agx_gpuva_v5_mmio(&s,AGX_GPUVA_V5_DOORBELL,&one,true,3,
                                  execute,NULL));
     assert(!hv_agx_gpuva_v5_mmio(&s,0x100,&read,false,3,execute,NULL));
+    q.Command=AGX_GPUVA_V5_REGISTER_SHARED_BACKING;
+    q.Sequence=2;
+    for (unsigned i=0;i<sizeof(q);i+=8) {
+        uint64_t word;
+        memcpy(&word,(unsigned char *)&q+i,8);
+        write64(&s,i,word);
+    }
+    write32(&s,AGX_GPUVA_V5_DOORBELL,1);
+    assert(executed==2 && s.response.Receipt==2 && s.response.Status==0);
     return 0;
 }

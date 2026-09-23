@@ -173,23 +173,33 @@ static void gpuva_execute(void *context, const AGX_GPUVA_V5_REQUEST *q,
         result = hv_agx_gpuva_v5_register_backing(&gpuva_v5,q->ProcessId,
             q->ProcessGeneration,q->AllocationGeneration,q->AuxIpa);
         break;
+    case AGX_GPUVA_V5_REGISTER_SHARED_BACKING:
+        result = hv_agx_gpuva_v5_register_shared_backing(&gpuva_v5,q->ProcessId,
+            q->ProcessGeneration,q->AllocationGeneration,q->AuxIpa);
+        break;
     case AGX_GPUVA_V5_UPDATE_PARENT:
         result = hv_agx_gpuva_v5_update_parent(&gpuva_v5,q->ProcessId,
             q->ProcessGeneration,q->TableIpa,q->Index,q->AuxIpa);
         break;
-    case AGX_GPUVA_V5_UPDATE_LEAF:
+    case AGX_GPUVA_V5_UPDATE_LEAF: {
+        uint64_t logical[4] = {q->LogicalIpa[0], q->LogicalIpa[1],
+                               q->LogicalIpa[2], q->LogicalIpa[3]};
         result = hv_agx_gpuva_v5_update_leaf(&gpuva_v5,q->ProcessId,
-            q->ProcessGeneration,q->TableIpa,q->Index,q->LogicalIpa,
+            q->ProcessGeneration,q->TableIpa,q->Index,logical,
             q->AllocationGeneration,q->Flags,q->ValidMask,q->WritableMask);
         break;
+    }
     case AGX_GPUVA_V5_RELOCATE_ROOT:
         result = hv_agx_gpuva_v5_relocate_root(&gpuva_v5,q->ProcessId,
             q->ProcessGeneration,q->TableIpa);
         break;
-    case AGX_GPUVA_V5_LEASE:
+    case AGX_GPUVA_V5_LEASE: {
+        uint64_t token = 0;
         result = hv_agx_gpuva_v5_lease(&gpuva_v5,q->ProcessId,
-            q->ProcessGeneration,q->Slot,&r->Token);
+            q->ProcessGeneration,q->Slot,&token);
+        r->Token = token;
         break;
+    }
     case AGX_GPUVA_V5_JOB_BEGIN:
         result = hv_agx_gpuva_v5_job_begin(&gpuva_v5,q->Slot,q->Token);
         break;
