@@ -91,5 +91,9 @@ int hv_agx_retained_verify_absent(struct hv_agx_retained_root *, unsigned long l
 int hv_agx_retained_close(struct hv_agx_retained_root *, unsigned long long,
                          unsigned char);
 unsigned char hv_agx_retained_prefix_unchanged(struct hv_agx_retained_root *);
+int hv_agx_retained_table_hash(struct hv_agx_retained_root *,
+                               unsigned long long epoch,
+                               unsigned long long *hash,
+                               unsigned int *pages);
 
 #endif

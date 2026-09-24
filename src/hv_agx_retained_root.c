@@ -84,6 +84,32 @@ unsigned char hv_agx_retained_prefix_unchanged(struct hv_agx_retained_root *c)
     return c->PrefixUnchanged;
 }
 
+int hv_agx_retained_table_hash(struct hv_agx_retained_root *c,
+                               unsigned long long epoch,
+                               unsigned long long *hash,
+                               unsigned int *pages)
+{
+    unsigned long long value = 0xcbf29ce484222325ULL;
+    unsigned int i, j;
+    if (!c || !hash || !pages || !c->Active || c->Epoch != epoch ||
+        c->Tainted || !hv_agx_retained_prefix_unchanged(c) ||
+        c->Inventory.PageCount < 2 ||
+        c->Inventory.PageCount > HV_AGX_RETAINED_MAX_PAGES)
+        return HV_AGX_RETAINED_STATE;
+    for (i = 0; i < c->Inventory.PageCount; ++i) {
+        const unsigned char *data = (const unsigned char *)c->Pages[i].Entries;
+        if (!data || !c->Pages[i].PhysicalAddress)
+            return HV_AGX_RETAINED_STATE;
+        for (j = 0; j < 0x4000u; ++j) {
+            value ^= data[j];
+            value *= 0x100000001b3ULL;
+        }
+    }
+    *hash = value;
+    *pages = c->Inventory.PageCount;
+    return HV_AGX_RETAINED_OK;
+}
+
 static APPLE_AGX_UAT_PAGE *owned_child(struct hv_agx_retained_root *,
                                      unsigned long long, unsigned int);
 static int owned_leaf(struct hv_agx_retained_root *, unsigned long long,

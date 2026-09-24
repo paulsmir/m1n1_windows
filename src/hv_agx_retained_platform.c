@@ -321,6 +321,15 @@ static void execute(void *context, const AGX_RR_REQUEST *q, AGX_RR_RESPONSE *r)
             }
         }
         break;
+    case AGX_RR_QUERY_TABLE_HASH:
+        if (q->Va || q->Ipa || q->Length || q->Handle) break;
+        {
+            unsigned int pages = 0;
+            status = hv_agx_retained_table_hash(&root_owner, q->Epoch,
+                                                 &r->Pa, &pages);
+            if (!status) r->Count = pages;
+        }
+        break;
     case AGX_RR_CLOSE:
         if (!q->Epoch || q->Epoch != root_owner.Epoch || q->Va || q->Ipa || q->Length || q->Handle ||
             !cpu_stopped() || !gpuva_idle()) break;
