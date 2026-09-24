@@ -1,5 +1,10 @@
 #include "hv_agx_retained_mmio.h"
 #include <string.h>
+void hv_agx_retained_finalize_count(AGX_RR_RESPONSE *response,
+                                    unsigned command, unsigned mapping_count) {
+  if (response && command != AGX_RR_QUERY_TABLE_HASH)
+    response->Count = mapping_count;
+}
 unsigned char hv_agx_retained_mmio(struct hv_agx_retained_mmio *s,
     unsigned long long offset, unsigned long long *value, unsigned char write,
     unsigned width, hv_agx_retained_execute execute, void *context) {

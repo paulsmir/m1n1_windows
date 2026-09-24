@@ -18,7 +18,7 @@ bool hv_agx_gpuva_v5_mmio(struct hv_agx_gpuva_v5_wire *s, uint64_t offset,
         r.Status = 1;
         if (q.Version == AGX_GPUVA_V5_VERSION && q.Bytes == sizeof(q) &&
             q.Sequence && q.Sequence > s->last_sequence &&
-            q.Command >= AGX_GPUVA_V5_CREATE && q.Command <= AGX_GPUVA_V5_REGISTER_SHARED_BACKING &&
+            q.Command >= AGX_GPUVA_V5_CREATE && q.Command <= AGX_GPUVA_V5_FLUSH_TLB &&
             execute) {
             s->last_sequence = q.Sequence;
             execute(context, &q, &r);

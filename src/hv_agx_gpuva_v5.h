@@ -4,7 +4,7 @@
 #include <stdint.h>
 #include <stdbool.h>
 
-#define HV_AGX_GPUVA_V5_VERSION 5u
+#define HV_AGX_GPUVA_V5_VERSION 6u
 #define HV_AGX_GPUVA_V5_PAGE UINT64_C(0x4000)
 #define HV_AGX_GPUVA_V5_PROCESSES 128u
 #define HV_AGX_GPUVA_V5_TABLES 512u
@@ -113,6 +113,9 @@ enum hv_agx_gpuva_v5_result hv_agx_gpuva_v5_job_end(
     struct hv_agx_gpuva_v5 *, unsigned slot, uint64_t token);
 enum hv_agx_gpuva_v5_result hv_agx_gpuva_v5_release(
     struct hv_agx_gpuva_v5 *, unsigned slot, uint64_t token);
+enum hv_agx_gpuva_v5_result hv_agx_gpuva_v5_flush_tlb(
+    struct hv_agx_gpuva_v5 *, uint64_t id, uint64_t generation,
+    uint64_t root_ipa, uint64_t start_va, uint64_t end_va);
 enum hv_agx_gpuva_v5_result hv_agx_gpuva_v5_destroy(
     struct hv_agx_gpuva_v5 *, uint64_t id, uint64_t generation);
 

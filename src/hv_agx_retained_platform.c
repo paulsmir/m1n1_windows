@@ -220,6 +220,17 @@ static void gpuva_execute(void *context, const AGX_GPUVA_V5_REQUEST *q,
         result = hv_agx_gpuva_v5_revoke_table(&gpuva_v5,q->ProcessId,
             q->ProcessGeneration,q->TableIpa,q->Index);
         break;
+    case AGX_GPUVA_V5_FLUSH_TLB:
+        if (q->AuxIpa || q->AllocationGeneration || q->Token || q->Slot ||
+            q->Index || q->ValidMask || q->WritableMask ||
+            q->LogicalIpa[2] || q->LogicalIpa[3]) {
+            result = HV_AGX_GPUVA_V5_INVALID;
+            break;
+        }
+        result = hv_agx_gpuva_v5_flush_tlb(&gpuva_v5,q->ProcessId,
+            q->ProcessGeneration,q->TableIpa,q->LogicalIpa[0],
+            q->LogicalIpa[1]);
+        break;
     default:
         result = HV_AGX_GPUVA_V5_INVALID;
         break;
@@ -359,7 +370,7 @@ done:
     r->Ttbr0 = root_owner.Roots.Ttbr0PhysicalAddress;
     r->SystemVa = root_owner.SystemVa;
     r->SystemBytes = root_owner.SystemBytes;
-    r->Count = root_owner.MappingCount;
+    hv_agx_retained_finalize_count(r, q->Command, root_owner.MappingCount);
     r->Flags = (root_owner.Prepared ? AGX_RR_FLAG_PREPARED : 0) |
                (root_owner.Active ? AGX_RR_FLAG_ACTIVE : 0) |
                (hv_agx_retained_prefix_unchanged(&root_owner) ? AGX_RR_FLAG_PREFIX_UNCHANGED : 0);

@@ -10,7 +10,8 @@ static void execute(void *opaque, const AGX_GPUVA_V5_REQUEST *q,
     (void)opaque;
     assert(q->ProcessId == 17 &&
            (q->Command == AGX_GPUVA_V5_CREATE ||
-            q->Command == AGX_GPUVA_V5_REGISTER_SHARED_BACKING));
+            q->Command == AGX_GPUVA_V5_REGISTER_SHARED_BACKING ||
+            q->Command == AGX_GPUVA_V5_FLUSH_TLB));
     ++executed;
     r->Status = 0;
     r->Epoch = q->Epoch;
@@ -29,7 +30,7 @@ int main(void)
     struct hv_agx_gpuva_v5_wire s={0};
     AGX_GPUVA_V5_REQUEST q={0};
     uint64_t read=0, one=1;
-    q.Version=5; q.Bytes=sizeof(q); q.Command=AGX_GPUVA_V5_CREATE;
+    q.Version=6; q.Bytes=sizeof(q); q.Command=AGX_GPUVA_V5_CREATE;
     q.Sequence=1; q.Epoch=7; q.ProcessId=17;
     for (unsigned i=0;i<sizeof(q);i+=8) {
         uint64_t word;
@@ -55,5 +56,23 @@ int main(void)
     }
     write32(&s,AGX_GPUVA_V5_DOORBELL,1);
     assert(executed==2 && s.response.Receipt==2 && s.response.Status==0);
+    q.Command=AGX_GPUVA_V5_FLUSH_TLB;
+    q.Sequence=3;
+    for (unsigned i=0;i<sizeof(q);i+=8) {
+        uint64_t word;
+        memcpy(&word,(unsigned char *)&q+i,8);
+        write64(&s,i,word);
+    }
+    write32(&s,AGX_GPUVA_V5_DOORBELL,1);
+    assert(executed==3 && s.response.Receipt==3 && s.response.Status==0);
+    q.Version=5;
+    q.Sequence=4;
+    for (unsigned i=0;i<sizeof(q);i+=8) {
+        uint64_t word;
+        memcpy(&word,(unsigned char *)&q+i,8);
+        write64(&s,i,word);
+    }
+    write32(&s,AGX_GPUVA_V5_DOORBELL,1);
+    assert(executed==3 && s.response.Receipt==4 && s.response.Status!=0);
     return 0;
 }

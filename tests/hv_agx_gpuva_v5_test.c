@@ -20,6 +20,7 @@ struct fixture {
     uint64_t ipa[9];
     uint64_t slots[64][2];
     unsigned invalidations[64], fail_once;
+    uint64_t blocked_ipa, remapped_ipa, remapped_pa;
     bool prefix;
     bool legacy_slot63;
 };
@@ -27,6 +28,8 @@ static uint64_t translate(void *opaque, uint64_t ipa)
 {
     struct fixture *f = opaque;
     unsigned i;
+    if (ipa == f->blocked_ipa) return 0;
+    if (ipa == f->remapped_ipa) return f->remapped_pa;
     for (i = 0; i < 9; ++i) if (f->ipa[i] == ipa) return ipa;
     return 0;
 }
@@ -96,6 +99,53 @@ static void prepare(struct fixture *f, uint64_t id, uint64_t root,
     assert(hv_agx_gpuva_v5_update_parent(&f->broker,id,1,l1,0,l2)==HV_AGX_GPUVA_V5_OK);
     assert(hv_agx_gpuva_v5_update_leaf(&f->broker,id,1,l2,8,logical,17,15,15,15)==
            HV_AGX_GPUVA_V5_OK);
+}
+static void independent_flush(void)
+{
+    struct fixture *f = new_fixture();
+    uint64_t token1 = 0, token2 = 0;
+    uint64_t frozen0 = f->slots[0][0], frozen1 = f->slots[0][1];
+    uint64_t generation;
+    prepare(f, 1, P_ROOT, P_L1, P_L2, P_DATA, false);
+    generation = f->broker.processes[0].map_generation;
+    assert(hv_agx_gpuva_v5_lease(&f->broker,1,1,1,&token1)==HV_AGX_GPUVA_V5_OK);
+    assert(hv_agx_gpuva_v5_lease(&f->broker,1,1,2,&token2)==HV_AGX_GPUVA_V5_OK);
+    unsigned before1=f->invalidations[1], before2=f->invalidations[2];
+    assert(hv_agx_gpuva_v5_flush_tlb(&f->broker,1,1,P_ROOT,0,0)==HV_AGX_GPUVA_V5_OK);
+    assert(f->invalidations[1]==before1+1 && f->invalidations[2]==before2+1);
+    assert(f->broker.processes[0].map_generation==generation);
+    assert(f->slots[0][0]==frozen0 && f->slots[0][1]==frozen1);
+    assert(hv_agx_gpuva_v5_flush_tlb(&f->broker,1,1,Q_ROOT,0,0)==HV_AGX_GPUVA_V5_OWNERSHIP);
+    assert(hv_agx_gpuva_v5_flush_tlb(&f->broker,1,1,P_ROOT,0x1234,0x4000)==HV_AGX_GPUVA_V5_INVALID);
+    assert(hv_agx_gpuva_v5_flush_tlb(&f->broker,1,1,P_ROOT,0x4000,0x4000)==HV_AGX_GPUVA_V5_INVALID);
+    assert(hv_agx_gpuva_v5_job_begin(&f->broker,1,token1)==HV_AGX_GPUVA_V5_OK);
+    assert(hv_agx_gpuva_v5_flush_tlb(&f->broker,1,1,P_ROOT,0,0)==HV_AGX_GPUVA_V5_BUSY);
+    assert(hv_agx_gpuva_v5_job_end(&f->broker,1,token1)==HV_AGX_GPUVA_V5_OK);
+    f->fail_once=1;
+    assert(hv_agx_gpuva_v5_flush_tlb(&f->broker,1,1,P_ROOT,0,0)==HV_AGX_GPUVA_V5_TLB);
+    assert(f->broker.tainted);
+    free(f);
+}
+static void guest_backing_validation(void)
+{
+    struct fixture *f = new_fixture();
+    uint64_t contiguous[4] = {P_DATA,P_DATA+0x1000,P_DATA+0x2000,P_DATA+0x3000};
+    uint64_t scattered[4] = {P_DATA,P_DATA+0x1000,P_DATA+0x3000,P_DATA+0x4000};
+    uint64_t unaligned[4] = {P_DATA+0x1000,P_DATA+0x2000,P_DATA+0x3000,P_DATA+0x4000};
+    assert(hv_agx_gpuva_v5_create(&f->broker,1,1,P_ROOT,false)==HV_AGX_GPUVA_V5_OK);
+    assert(hv_agx_gpuva_v5_register_table(&f->broker,1,1,P_L2,2)==HV_AGX_GPUVA_V5_OK);
+    assert(hv_agx_gpuva_v5_update_leaf(&f->broker,1,1,P_L2,8,contiguous,17,15,15,15)==HV_AGX_GPUVA_V5_OWNERSHIP);
+    assert(hv_agx_gpuva_v5_register_backing(&f->broker,1,1,17,P_DATA+0x4000)==HV_AGX_GPUVA_V5_OWNERSHIP);
+    assert(hv_agx_gpuva_v5_register_backing(&f->broker,1,1,17,P_DATA)==HV_AGX_GPUVA_V5_OK);
+    assert(hv_agx_gpuva_v5_update_leaf(&f->broker,1,1,P_L2,8,unaligned,17,15,15,15)==HV_AGX_GPUVA_V5_INVALID);
+    assert(hv_agx_gpuva_v5_update_leaf(&f->broker,1,1,P_L2,8,scattered,17,15,15,15)==HV_AGX_GPUVA_V5_OWNERSHIP);
+    f->blocked_ipa=P_DATA;
+    assert(hv_agx_gpuva_v5_update_leaf(&f->broker,1,1,P_L2,8,contiguous,17,15,15,15)==HV_AGX_GPUVA_V5_OWNERSHIP);
+    f->blocked_ipa=0;
+    f->remapped_ipa=P_DATA; f->remapped_pa=Q_DATA;
+    assert(hv_agx_gpuva_v5_update_leaf(&f->broker,1,1,P_L2,8,contiguous,17,15,15,15)==HV_AGX_GPUVA_V5_OWNERSHIP);
+    assert(f->broker.tables[1].entries[8]==0);
+    free(f);
 }
 static void shared_graph_grants(void)
 {
@@ -168,6 +218,8 @@ static void cleanup(struct fixture *f, uint64_t id, uint64_t root,
 }
 int main(void)
 {
+    independent_flush();
+    guest_backing_validation();
     reject_prepopulated_tables();
     shared_graph_grants();
     struct fixture *f = new_fixture();

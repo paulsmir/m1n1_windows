@@ -47,7 +47,7 @@ enum hv_agx_gpuva_v5_result hv_agx_gpuva_v5_validate_envelope(
     if (!b || !b->active || b->tainted) return HV_AGX_GPUVA_V5_TAINTED;
     if (epoch != b->epoch) return HV_AGX_GPUVA_V5_STALE;
     if (command < AGX_GPUVA_V5_CREATE ||
-        command > AGX_GPUVA_V5_REGISTER_SHARED_BACKING)
+        command > AGX_GPUVA_V5_FLUSH_TLB)
         return HV_AGX_GPUVA_V5_INVALID;
     if (command == AGX_GPUVA_V5_CREATE ? flags > 1u :
         command == AGX_GPUVA_V5_UPDATE_LEAF ?
@@ -494,6 +494,39 @@ enum hv_agx_gpuva_v5_result hv_agx_gpuva_v5_release(
         return HV_AGX_GPUVA_V5_TAINTED;
     }
     memset(&b->slots[slot], 0, sizeof(b->slots[slot]));
+    return check(b);
+}
+
+enum hv_agx_gpuva_v5_result hv_agx_gpuva_v5_flush_tlb(
+    struct hv_agx_gpuva_v5 *b, uint64_t id, uint64_t generation,
+    uint64_t root_ipa, uint64_t start_va, uint64_t end_va)
+{
+    int owner, root;
+    unsigned slot;
+    enum hv_agx_gpuva_v5_result result = check(b);
+    if (result) return result;
+    owner = process_index(b, id, generation);
+    if (owner < 0) return HV_AGX_GPUVA_V5_STALE;
+    root = table_index(b, (unsigned)owner, root_ipa, 0);
+    if (root < 0 || b->tables[root].pa != b->processes[owner].root_pa)
+        return HV_AGX_GPUVA_V5_OWNERSHIP;
+    if (((start_va | end_va) & UINT64_C(0xfff)) ||
+        ((start_va != 0 || end_va != 0) &&
+         (end_va <= start_va || end_va > (UINT64_C(1) << 39))))
+        return HV_AGX_GPUVA_V5_INVALID;
+    for (slot = 1; slot < HV_AGX_GPUVA_V5_SLOTS; ++slot)
+        if (b->slots[slot].occupied && b->slots[slot].owner == (unsigned)owner &&
+            b->slots[slot].jobs) return HV_AGX_GPUVA_V5_BUSY;
+    if (!b->ops.sync_tables(b->ops.context)) {
+        b->tainted = true;
+        return HV_AGX_GPUVA_V5_TLB;
+    }
+    for (slot = 1; slot < HV_AGX_GPUVA_V5_SLOTS; ++slot)
+        if (b->slots[slot].occupied && b->slots[slot].owner == (unsigned)owner &&
+            !b->ops.invalidate(b->ops.context, slot)) {
+            b->tainted = true;
+            return HV_AGX_GPUVA_V5_TLB;
+        }
     return check(b);
 }
 
