@@ -147,6 +147,29 @@ static void guest_backing_validation(void)
     assert(f->broker.tables[1].entries[8]==0);
     free(f);
 }
+static void destroy_order_with_live_tables(void)
+{
+    struct fixture *f = new_fixture();
+    uint64_t contiguous[4] = {P_DATA,P_DATA+0x1000,P_DATA+0x2000,P_DATA+0x3000};
+    assert(hv_agx_gpuva_v5_create(&f->broker,1,1,P_ROOT,false)==HV_AGX_GPUVA_V5_OK);
+    assert(hv_agx_gpuva_v5_register_table(&f->broker,1,1,P_L1,1)==HV_AGX_GPUVA_V5_OK);
+    assert(hv_agx_gpuva_v5_register_table(&f->broker,1,1,P_L2,2)==HV_AGX_GPUVA_V5_OK);
+    assert(hv_agx_gpuva_v5_register_table(&f->broker,1,1,P_ROOT2,0)==HV_AGX_GPUVA_V5_OK);
+    assert(hv_agx_gpuva_v5_register_backing(&f->broker,1,1,17,P_DATA)==HV_AGX_GPUVA_V5_OK);
+    assert(hv_agx_gpuva_v5_update_parent(&f->broker,1,1,P_ROOT,0,P_L1)==HV_AGX_GPUVA_V5_OK);
+    assert(hv_agx_gpuva_v5_update_parent(&f->broker,1,1,P_L1,0,P_L2)==HV_AGX_GPUVA_V5_OK);
+    assert(hv_agx_gpuva_v5_update_leaf(&f->broker,1,1,P_L2,8,contiguous,17,15,15,15)==HV_AGX_GPUVA_V5_OK);
+    assert(hv_agx_gpuva_v5_destroy(&f->broker,1,1)==HV_AGX_GPUVA_V5_BUSY);
+    assert(hv_agx_gpuva_v5_update_leaf(&f->broker,1,1,P_L2,8,0,0,15,0,0)==HV_AGX_GPUVA_V5_OK);
+    assert(hv_agx_gpuva_v5_revoke_backing(&f->broker,1,1,17,P_DATA)==HV_AGX_GPUVA_V5_OK);
+    assert(hv_agx_gpuva_v5_update_parent(&f->broker,1,1,P_L1,0,0)==HV_AGX_GPUVA_V5_OK);
+    assert(hv_agx_gpuva_v5_update_parent(&f->broker,1,1,P_ROOT,0,0)==HV_AGX_GPUVA_V5_OK);
+    assert(hv_agx_gpuva_v5_revoke_table(&f->broker,1,1,P_L2,2)==HV_AGX_GPUVA_V5_OK);
+    assert(hv_agx_gpuva_v5_revoke_table(&f->broker,1,1,P_L1,1)==HV_AGX_GPUVA_V5_OK);
+    assert(hv_agx_gpuva_v5_revoke_table(&f->broker,1,1,P_ROOT2,0)==HV_AGX_GPUVA_V5_OK);
+    assert(hv_agx_gpuva_v5_destroy(&f->broker,1,1)==HV_AGX_GPUVA_V5_OK);
+    free(f);
+}
 static void shared_graph_grants(void)
 {
     struct fixture *f = new_fixture();
@@ -220,6 +243,7 @@ int main(void)
 {
     independent_flush();
     guest_backing_validation();
+    destroy_order_with_live_tables();
     reject_prepopulated_tables();
     shared_graph_grants();
     struct fixture *f = new_fixture();
