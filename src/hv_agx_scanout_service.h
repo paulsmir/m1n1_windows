@@ -6,6 +6,7 @@
 #include "hv_agx_scanout_broker.h"
 
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 
 #define HV_AGX_SCANOUT_SERVICE_PAGE_SIZE UINT64_C(0x4000)
@@ -49,6 +50,9 @@ struct hv_agx_scanout_platform_ops {
                 uint64_t pa, uint64_t size);
     void (*unmap)(void *opaque, enum hv_agx_scanout_dart dart, uint64_t iova,
                   uint64_t size);
+    bool (*diagnostic_fill)(void *opaque, uint64_t surface_pa,
+                            uint64_t surface_iova,
+                            const struct hv_agx_scanout_request *request);
     bool (*present_begin)(void *opaque, uint64_t surface_iova,
                           const struct hv_agx_scanout_request *request,
                           uint64_t *cookie);
@@ -107,6 +111,9 @@ struct hv_agx_scanout_service {
 void hv_agx_scanout_service_init(struct hv_agx_scanout_service *service,
                                  const struct hv_agx_scanout_platform_ops *ops,
                                  void *opaque);
+bool hv_agx_scanout_fill_bgra_stripes(void *pixels, uint32_t width,
+                                      uint32_t height, uint32_t stride,
+                                      uint64_t bytes);
 enum hv_agx_scanout_service_step_result
 hv_agx_scanout_service_step(struct hv_agx_scanout_service *service,
                             struct hv_agx_scanout_broker *broker);

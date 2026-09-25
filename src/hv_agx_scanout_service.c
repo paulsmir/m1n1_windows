@@ -4,6 +4,28 @@
 
 #include <string.h>
 
+bool hv_agx_scanout_fill_bgra_stripes(void *pixels, uint32_t width,
+                                      uint32_t height, uint32_t stride,
+                                      uint64_t bytes)
+{
+    static const uint32_t colors[4] = {
+        UINT32_C(0xffff0000), UINT32_C(0xff00ff00),
+        UINT32_C(0xff0000ff), UINT32_C(0xffffffff),
+    };
+    uint8_t *base = pixels;
+
+    if (!base || !width || !height || width > UINT32_MAX / 4u ||
+        stride < width * 4u || (stride & 3u) ||
+        (uint64_t)stride * height != bytes)
+        return false;
+    for (uint32_t y = 0; y < height; ++y) {
+        uint32_t *row = (uint32_t *)(base + (uint64_t)y * stride);
+        for (uint32_t x = 0; x < width; ++x)
+            row[x] = colors[((uint64_t)x * 4u) / width];
+    }
+    return true;
+}
+
 static uint64_t chunk_size(uint64_t completed, uint64_t total)
 {
     uint64_t remaining = total - completed;
@@ -329,6 +351,17 @@ hv_agx_scanout_service_step(struct hv_agx_scanout_service *service,
     case HV_AGX_SCANOUT_SERVICE_PRESENT_BEGIN:
         if (!service->owns_pool || !service->ops || !service->ops->present_begin ||
             !service->ops->present_poll ||
+            service->request.SurfaceSize > service->request.PoolSize ||
+            service->request.SurfaceOffset >
+                service->request.PoolSize - service->request.SurfaceSize ||
+            service->pool_pa > UINT64_MAX - service->request.SurfaceOffset ||
+            service->pool_iova > UINT64_MAX - service->request.SurfaceOffset ||
+            (service->ops->diagnostic_fill &&
+             !service->ops->diagnostic_fill(
+                 service->opaque,
+                 service->pool_pa + service->request.SurfaceOffset,
+                 service->pool_iova + service->request.SurfaceOffset,
+                 &service->request)) ||
             !service->ops->present_begin(
                 service->opaque,
                 service->pool_iova + service->request.SurfaceOffset,

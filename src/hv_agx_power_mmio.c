@@ -1,5 +1,6 @@
 /* SPDX-License-Identifier: MIT */
 
+#include "../build/build_cfg.h"
 #include "hv.h"
 #include "adt.h"
 #include "hv_agx_config_snapshot.h"
@@ -16,6 +17,7 @@
 #include "hv_agx_scanout_service.h"
 #include "hv_vgic.h"
 #include "display.h"
+#include "memory.h"
 #include "utils.h"
 #include "xnuboot.h"
 
@@ -90,6 +92,40 @@ static bool scanout_present_begin(void *opaque, uint64_t surface_iova,
                           request->Stride, cookie);
 }
 
+#ifdef EXP806_SCANOUT_PATTERN
+static bool scanout_diagnostic_fill(void *opaque, uint64_t surface_pa,
+                                     uint64_t surface_iova,
+                                     const struct hv_agx_scanout_request *request)
+{
+    void *surface = (void *)(uintptr_t)surface_pa;
+    uint32_t *pixels = surface;
+    uint32_t width;
+
+    (void)opaque;
+    if (!request || !surface_pa || !surface_iova ||
+        request->Width != HV_AGX_SCANOUT_J313_WIDTH ||
+        request->Height != HV_AGX_SCANOUT_J313_HEIGHT ||
+        request->Stride != HV_AGX_SCANOUT_J313_STRIDE ||
+        request->Format != HV_AGX_SCANOUT_FORMAT_BGRA8888 ||
+        request->SurfaceSize != HV_AGX_SCANOUT_J313_SURFACE_SIZE ||
+        !scanout_is_ram(NULL, surface_pa, request->SurfaceSize) ||
+        !hv_agx_scanout_fill_bgra_stripes(
+            surface, request->Width, request->Height,
+            request->Stride, request->SurfaceSize))
+        return false;
+    dc_cvac_range(surface, request->SurfaceSize);
+    dma_wmb();
+    width = request->Width;
+    printf("EXP806_PATTERN pool_ipa=0x%lx surface_offset=0x%lx surface_pa=0x%lx "
+           "surface_iova=0x%lx bytes=0x%lx BGRA=%08x,%08x,%08x,%08x\n",
+           request->PoolIpa, request->SurfaceOffset, surface_pa,
+           surface_iova, request->SurfaceSize,
+           pixels[0], pixels[width / 4u], pixels[width / 2u],
+           pixels[width * 3u / 4u]);
+    return true;
+}
+#endif
+
 static enum hv_agx_scanout_async_result scanout_present_poll(
     void *opaque, uint64_t cookie, uint32_t *applied_swap_id)
 {
@@ -139,6 +175,9 @@ static const struct hv_agx_scanout_platform_ops scanout_ops = {
     .free_iova = scanout_free_iova,
     .map = scanout_map,
     .unmap = scanout_unmap,
+#ifdef EXP806_SCANOUT_PATTERN
+    .diagnostic_fill = scanout_diagnostic_fill,
+#endif
     .present_begin = scanout_present_begin,
     .present_poll = scanout_present_poll,
     .present_latch_poll = scanout_present_latch_poll,

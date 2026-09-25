@@ -27,6 +27,10 @@ struct fake_platform {
     int32_t fail_map_dart;
     uint32_t fail_map_call;
     uint32_t present_begin_calls;
+    uint32_t diagnostic_calls;
+    uint64_t diagnostic_pa;
+    uint64_t diagnostic_iova;
+    bool diagnostic_fail;
     uint32_t present_poll_calls;
     enum hv_agx_scanout_async_result present_result;
     uint32_t applied_swap_id;
@@ -122,10 +126,24 @@ static bool fake_present_begin(void *opaque, uint64_t surface_iova,
     struct fake_platform *fake = opaque;
 
     assert(request->Command == HV_AGX_SCANOUT_CMD_PRESENT);
+    assert(fake->diagnostic_calls == fake->present_begin_calls + 1);
     fake->present_begin_calls++;
     fake->presented_iova = surface_iova;
     *cookie = UINT64_C(0x1234);
     return true;
+}
+
+static bool fake_diagnostic_fill(void *opaque, uint64_t surface_pa,
+                                 uint64_t surface_iova,
+                                 const struct hv_agx_scanout_request *request)
+{
+    struct fake_platform *fake = opaque;
+
+    assert(request->Command == HV_AGX_SCANOUT_CMD_PRESENT);
+    fake->diagnostic_calls++;
+    fake->diagnostic_pa = surface_pa;
+    fake->diagnostic_iova = surface_iova;
+    return !fake->diagnostic_fail;
 }
 
 static enum hv_agx_scanout_async_result fake_present_poll(void *opaque,
@@ -176,6 +194,7 @@ static const struct hv_agx_scanout_platform_ops ops = {
     .free_iova = fake_free_iova,
     .map = fake_map,
     .unmap = fake_unmap,
+    .diagnostic_fill = fake_diagnostic_fill,
     .present_begin = fake_present_begin,
     .present_poll = fake_present_poll,
     .present_latch_poll = fake_present_latch_poll,
@@ -377,6 +396,9 @@ static void test_present_completes_only_after_platform_reports_applied_swap(void
     assert(step(&service, &broker, &fake) == HV_AGX_SCANOUT_SERVICE_PROGRESSED);
     assert(step(&service, &broker, &fake) == HV_AGX_SCANOUT_SERVICE_PROGRESSED);
     assert(fake.presented_iova == fake.iova + offset);
+    assert(fake.diagnostic_calls == 1);
+    assert(fake.diagnostic_pa == fake.pa_base + offset);
+    assert(fake.diagnostic_iova == fake.iova + offset);
     assert(broker.state == HV_AGX_SCANOUT_PENDING);
     assert(step(&service, &broker, &fake) == HV_AGX_SCANOUT_SERVICE_WAITING);
     assert(broker.applied_sequence == 1);
@@ -388,6 +410,46 @@ static void test_present_completes_only_after_platform_reports_applied_swap(void
     assert(broker.applied_sequence == 2);
     assert(broker.swap_id == 41);
     assert(fake.latch_poll_calls == 0);
+}
+
+static void test_diagnostic_fill_failure_blocks_swap(void)
+{
+    struct hv_agx_scanout_broker broker;
+    struct hv_agx_scanout_service service;
+    struct fake_platform fake;
+
+    fake_init(&fake);
+    fake.diagnostic_fail = true;
+    hv_agx_scanout_broker_init(&broker);
+    hv_agx_scanout_service_init(&service, &ops, &fake);
+    register_pool(&service, &broker, &fake);
+    submit_present(&broker, 2, UINT64_C(0x30000));
+    step(&service, &broker, &fake);
+    step(&service, &broker, &fake);
+    assert(fake.diagnostic_calls == 1);
+    assert(fake.present_begin_calls == 0);
+    assert(broker.result == HV_AGX_SCANOUT_RESULT_PRESENT_FAILED);
+}
+
+static void test_bgra_stripes_and_bounds(void)
+{
+    uint32_t pixels[16];
+
+    memset(pixels, 0, sizeof(pixels));
+    assert(hv_agx_scanout_fill_bgra_stripes(pixels, 8, 2, 32,
+                                          sizeof(pixels)));
+    for (unsigned y = 0; y < 2; ++y)
+        for (unsigned x = 0; x < 8; ++x) {
+            const uint32_t expected[4] = {
+                UINT32_C(0xffff0000), UINT32_C(0xff00ff00),
+                UINT32_C(0xff0000ff), UINT32_C(0xffffffff),
+            };
+            assert(pixels[y * 8 + x] == expected[x / 2]);
+        }
+    assert(!hv_agx_scanout_fill_bgra_stripes(pixels, 8, 2, 31,
+                                           sizeof(pixels)));
+    assert(!hv_agx_scanout_fill_bgra_stripes(pixels, 8, 3, 32,
+                                           sizeof(pixels)));
 }
 
 static void test_v2_present_waits_for_exact_latch_after_applied(void)
@@ -530,6 +592,8 @@ int main(void)
     test_register_rejects_wrapping_physical_range_before_reservation();
     test_second_dart_map_failure_rolls_back_and_releases_iova();
     test_present_completes_only_after_platform_reports_applied_swap();
+    test_diagnostic_fill_failure_blocks_swap();
+    test_bgra_stripes_and_bounds();
     test_v2_present_waits_for_exact_latch_after_applied();
     test_v2_wrong_swap_latch_fails_closed_without_retirement();
     test_async_failures_preserve_registered_pool_ownership();
