@@ -23,6 +23,7 @@ struct fixture {
     uint64_t blocked_ipa, remapped_ipa, remapped_pa;
     bool prefix;
     bool legacy_slot63;
+    bool range_backing;
 };
 static uint64_t translate(void *opaque, uint64_t ipa)
 {
@@ -30,6 +31,9 @@ static uint64_t translate(void *opaque, uint64_t ipa)
     unsigned i;
     if (ipa == f->blocked_ipa) return 0;
     if (ipa == f->remapped_ipa) return f->remapped_pa;
+    if (f->range_backing && ipa >= P_DATA &&
+        ipa < P_DATA + UINT64_C(56) * 1024 * 1024 &&
+        !(ipa & (HV_AGX_GPUVA_V5_PAGE - 1))) return ipa;
     for (i = 0; i < 9; ++i) if (f->ipa[i] == ipa) return ipa;
     return 0;
 }
@@ -204,6 +208,23 @@ static void shared_graph_grants(void)
     assert(hv_agx_gpuva_v5_destroy(&f->broker,2,1)==HV_AGX_GPUVA_V5_OK);
     free(f);
 }
+static void shared_reserve_capacity(void)
+{
+    struct fixture *f = new_fixture();
+    unsigned owner, page;
+    f->range_backing = true;
+    assert(hv_agx_gpuva_v5_create(&f->broker, 1, 1, P_ROOT, false) == HV_AGX_GPUVA_V5_OK);
+    assert(hv_agx_gpuva_v5_create(&f->broker, 2, 1, Q_ROOT, false) == HV_AGX_GPUVA_V5_OK);
+    /* One 56-MiB local reserve has 3584 native 16-KiB pages.  The broker
+     * must admit simultaneous grants to two processes without weakening
+     * per-process ownership or generation checks. */
+    for (owner = 1; owner <= 2; ++owner)
+        for (page = 0; page < 3584; ++page)
+            assert(hv_agx_gpuva_v5_register_shared_backing(
+                &f->broker, owner, 1, 17,
+                P_DATA + (uint64_t)page * HV_AGX_GPUVA_V5_PAGE) == HV_AGX_GPUVA_V5_OK);
+    free(f);
+}
 static void reject_prepopulated_tables(void)
 {
     struct fixture *f = new_fixture();
@@ -246,6 +267,7 @@ int main(void)
     destroy_order_with_live_tables();
     reject_prepopulated_tables();
     shared_graph_grants();
+    shared_reserve_capacity();
     struct fixture *f = new_fixture();
     uint64_t ptoken, qtoken, logical[4]={P_DATA,P_DATA+0x1000,
                                           P_DATA+0x2000,P_DATA+0x3000};
