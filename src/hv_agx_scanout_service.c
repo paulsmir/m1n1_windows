@@ -315,10 +315,23 @@ poll_present_latch(struct hv_agx_scanout_service *service,
                                                service->applied_swap_id);
     if (result == HV_AGX_SCANOUT_LATCH_PENDING)
         return HV_AGX_SCANOUT_SERVICE_WAITING;
-    if (result == HV_AGX_SCANOUT_LATCHED)
-        (void)hv_agx_scanout_broker_mark_latched(
+    if (result == HV_AGX_SCANOUT_LATCHED) {
+        bool latched = hv_agx_scanout_broker_mark_latched(
             broker, service->request.Sequence);
-    else
+        if (latched && service->ops->now_ms &&
+            service->ops->diagnostic_late_snapshot) {
+            uint64_t now = service->ops->now_ms(service->opaque);
+            if (now <= UINT64_MAX - UINT64_C(15000)) {
+                service->late_snapshot_due_ms = now + UINT64_C(15000);
+                service->late_snapshot_pa =
+                    service->pool_pa + service->request.SurfaceOffset;
+                service->late_snapshot_iova =
+                    service->pool_iova + service->request.SurfaceOffset;
+                service->late_snapshot_request = service->request;
+                service->late_snapshot_armed = true;
+            }
+        }
+    } else
         (void)hv_agx_scanout_broker_fail_latch(
             broker, service->request.Sequence);
     service->state = HV_AGX_SCANOUT_SERVICE_IDLE;
@@ -356,6 +369,23 @@ hv_agx_scanout_service_step(struct hv_agx_scanout_service *service,
 
     switch (service->state) {
     case HV_AGX_SCANOUT_SERVICE_IDLE:
+        if (service->late_snapshot_armed) {
+            if (!service->owns_pool || broker->state != HV_AGX_SCANOUT_ACTIVE ||
+                broker->latched_sequence !=
+                    service->late_snapshot_request.Sequence) {
+                service->late_snapshot_armed = false;
+            } else if (service->ops && service->ops->now_ms &&
+                       service->ops->diagnostic_late_snapshot &&
+                       service->ops->now_ms(service->opaque) >=
+                           service->late_snapshot_due_ms) {
+                service->late_snapshot_armed = false;
+                service->ops->diagnostic_late_snapshot(
+                    service->opaque, service->late_snapshot_pa,
+                    service->late_snapshot_iova,
+                    &service->late_snapshot_request);
+                return HV_AGX_SCANOUT_SERVICE_PROGRESSED;
+            }
+        }
         return take_request(service, broker);
     case HV_AGX_SCANOUT_SERVICE_VALIDATE:
         validate_pages(service);

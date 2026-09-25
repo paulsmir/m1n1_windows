@@ -126,27 +126,26 @@ static bool scanout_diagnostic_fill(void *opaque, uint64_t surface_pa,
 }
 #endif
 
-#ifdef EXP807_SCANOUT_SNAPSHOT
-static void scanout_diagnostic_snapshot(void *opaque, uint64_t surface_pa,
-                                         uint64_t surface_iova,
-                                         const struct hv_agx_scanout_request *request)
+#if defined(EXP807_SCANOUT_SNAPSHOT) || defined(EXP808_SCANOUT_DELAYED)
+static void scanout_snapshot_report(const char *label, uint64_t surface_pa,
+                                    uint64_t surface_iova,
+                                    const struct hv_agx_scanout_request *request)
 {
     struct hv_agx_scanout_pixel_stats stats;
     const void *surface = (const void *)(uintptr_t)surface_pa;
-    (void)opaque;
     if (!request || !surface_pa || !surface_iova ||
         !scanout_is_ram(NULL, surface_pa, request->SurfaceSize) ||
         !hv_agx_scanout_pixel_stats(surface, request->Width, request->Height,
                                      request->Stride, request->SurfaceSize,
                                      &stats)) {
-        printf("EXP807_SNAPSHOT invalid seq=%lu pa=0x%lx iova=0x%lx\n",
+        printf("%s invalid seq=%lu pa=0x%lx iova=0x%lx\n", label,
                request ? request->Sequence : 0, surface_pa, surface_iova);
         return;
     }
-    printf("EXP807_SNAPSHOT seq=%lu pool_ipa=0x%lx offset=0x%lx pa=0x%lx "
+    printf("%s seq=%lu pool_ipa=0x%lx offset=0x%lx pa=0x%lx "
            "iova=0x%lx pixels=%lu nonzero=%lu avg_bgra=%lu,%lu,%lu,%lu "
            "hash=%016lx corners=%08x,%08x,%08x,%08x cache_clean=0\n",
-           request->Sequence, request->PoolIpa, request->SurfaceOffset,
+           label, request->Sequence, request->PoolIpa, request->SurfaceOffset,
            surface_pa, surface_iova, stats.pixel_count, stats.nonzero_pixels,
            stats.channel_sum[0] / stats.pixel_count,
            stats.channel_sum[1] / stats.pixel_count,
@@ -155,6 +154,31 @@ static void scanout_diagnostic_snapshot(void *opaque, uint64_t surface_pa,
            stats.corners[0], stats.corners[1], stats.corners[2],
            stats.corners[3]);
 }
+
+static void scanout_diagnostic_snapshot(void *opaque, uint64_t surface_pa,
+                                         uint64_t surface_iova,
+                                         const struct hv_agx_scanout_request *request)
+{
+    (void)opaque;
+    scanout_snapshot_report("EXP807_SNAPSHOT", surface_pa, surface_iova,
+                            request);
+}
+#ifdef EXP808_SCANOUT_DELAYED
+static uint64_t scanout_now_ms(void *opaque)
+{
+    (void)opaque;
+    return ticks_to_msecs(get_ticks());
+}
+
+static void scanout_diagnostic_late_snapshot(
+    void *opaque, uint64_t surface_pa, uint64_t surface_iova,
+    const struct hv_agx_scanout_request *request)
+{
+    (void)opaque;
+    scanout_snapshot_report("EXP808_LATE_SNAPSHOT", surface_pa, surface_iova,
+                            request);
+}
+#endif
 #endif
 
 static enum hv_agx_scanout_async_result scanout_present_poll(
@@ -209,8 +233,12 @@ static const struct hv_agx_scanout_platform_ops scanout_ops = {
 #ifdef EXP806_SCANOUT_PATTERN
     .diagnostic_fill = scanout_diagnostic_fill,
 #endif
-#ifdef EXP807_SCANOUT_SNAPSHOT
+#if defined(EXP807_SCANOUT_SNAPSHOT) || defined(EXP808_SCANOUT_DELAYED)
     .diagnostic_snapshot = scanout_diagnostic_snapshot,
+#endif
+#ifdef EXP808_SCANOUT_DELAYED
+    .now_ms = scanout_now_ms,
+    .diagnostic_late_snapshot = scanout_diagnostic_late_snapshot,
 #endif
     .present_begin = scanout_present_begin,
     .present_poll = scanout_present_poll,

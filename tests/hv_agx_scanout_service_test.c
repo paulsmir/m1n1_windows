@@ -31,6 +31,10 @@ struct fake_platform {
     uint32_t snapshot_calls;
     uint64_t snapshot_pa;
     uint64_t snapshot_iova;
+    uint32_t late_snapshot_calls;
+    uint64_t late_snapshot_pa;
+    uint64_t late_snapshot_iova;
+    uint64_t now_ms;
     uint64_t diagnostic_pa;
     uint64_t diagnostic_iova;
     bool diagnostic_fail;
@@ -147,6 +151,22 @@ static void fake_diagnostic_snapshot(void *opaque, uint64_t surface_pa,
     fake->snapshot_iova = surface_iova;
 }
 
+static uint64_t fake_now_ms(void *opaque)
+{
+    return ((struct fake_platform *)opaque)->now_ms;
+}
+
+static void fake_late_snapshot(void *opaque, uint64_t surface_pa,
+                               uint64_t surface_iova,
+                               const struct hv_agx_scanout_request *request)
+{
+    struct fake_platform *fake = opaque;
+    assert(request->Sequence == 2);
+    fake->late_snapshot_calls++;
+    fake->late_snapshot_pa = surface_pa;
+    fake->late_snapshot_iova = surface_iova;
+}
+
 static bool fake_diagnostic_fill(void *opaque, uint64_t surface_pa,
                                  uint64_t surface_iova,
                                  const struct hv_agx_scanout_request *request)
@@ -210,6 +230,8 @@ static const struct hv_agx_scanout_platform_ops ops = {
     .unmap = fake_unmap,
     .diagnostic_fill = fake_diagnostic_fill,
     .diagnostic_snapshot = fake_diagnostic_snapshot,
+    .now_ms = fake_now_ms,
+    .diagnostic_late_snapshot = fake_late_snapshot,
     .present_begin = fake_present_begin,
     .present_poll = fake_present_poll,
     .present_latch_poll = fake_present_latch_poll,
@@ -531,6 +553,70 @@ static void test_v2_present_waits_for_exact_latch_after_applied(void)
     assert(step(&service, &broker, &fake) == HV_AGX_SCANOUT_SERVICE_PROGRESSED);
 }
 
+static void test_latched_primary_is_sampled_once_after_cdd_window(void)
+{
+    struct hv_agx_scanout_broker broker;
+    struct hv_agx_scanout_service service;
+    struct fake_platform fake;
+    const uint64_t offset = UINT64_C(0x30000);
+
+    fake_init(&fake);
+    fake.now_ms = 1000;
+    hv_agx_scanout_broker_init_v2(&broker, true);
+    hv_agx_scanout_service_init(&service, &ops, &fake);
+    register_pool(&service, &broker, &fake);
+    submit_present(&broker, 2, offset);
+    step(&service, &broker, &fake);
+    step(&service, &broker, &fake);
+    fake.present_result = HV_AGX_SCANOUT_ASYNC_APPLIED;
+    fake.applied_swap_id = 10;
+    step(&service, &broker, &fake);
+    fake.latch_result = HV_AGX_SCANOUT_LATCHED;
+    step(&service, &broker, &fake);
+    assert(broker.latched_sequence == 2);
+    fake.now_ms = 15999;
+    step(&service, &broker, &fake);
+    assert(fake.late_snapshot_calls == 0);
+    fake.now_ms = 16000;
+    step(&service, &broker, &fake);
+    step(&service, &broker, &fake);
+    assert(fake.late_snapshot_calls == 1);
+    assert(fake.late_snapshot_pa == fake.pa_base + offset);
+    assert(fake.late_snapshot_iova == fake.iova + offset);
+    assert(fake.present_begin_calls == 1);
+}
+
+static void test_release_cancels_delayed_primary_read(void)
+{
+    struct hv_agx_scanout_broker broker;
+    struct hv_agx_scanout_service service;
+    struct fake_platform fake;
+
+    fake_init(&fake);
+    fake.now_ms = 1000;
+    hv_agx_scanout_broker_init_v2(&broker, true);
+    hv_agx_scanout_service_init(&service, &ops, &fake);
+    register_pool(&service, &broker, &fake);
+    submit_present(&broker, 2, UINT64_C(0x30000));
+    step(&service, &broker, &fake);
+    step(&service, &broker, &fake);
+    fake.present_result = HV_AGX_SCANOUT_ASYNC_APPLIED;
+    fake.applied_swap_id = 10;
+    step(&service, &broker, &fake);
+    fake.latch_result = HV_AGX_SCANOUT_LATCHED;
+    step(&service, &broker, &fake);
+
+    write64(&broker, HV_AGX_SCANOUT_REG_REQUEST_SEQUENCE, 3);
+    write32(&broker, HV_AGX_SCANOUT_REG_COMMAND, HV_AGX_SCANOUT_CMD_RELEASE);
+    step(&service, &broker, &fake);
+    fake.quiesce_result = HV_AGX_SCANOUT_ASYNC_APPLIED;
+    drive_until_idle(&service, &broker, &fake);
+    fake.now_ms = 16000;
+    step(&service, &broker, &fake);
+    assert(fake.late_snapshot_calls == 0);
+    assert(!service.owns_pool);
+}
+
 static void test_v2_wrong_swap_latch_fails_closed_without_retirement(void)
 {
     struct hv_agx_scanout_broker broker;
@@ -641,6 +727,8 @@ int main(void)
     test_bgra_stripes_and_bounds();
     test_primary_snapshot_counts_channels_and_corners_without_writing();
     test_v2_present_waits_for_exact_latch_after_applied();
+    test_latched_primary_is_sampled_once_after_cdd_window();
+    test_release_cancels_delayed_primary_read();
     test_v2_wrong_swap_latch_fails_closed_without_retirement();
     test_async_failures_preserve_registered_pool_ownership();
     test_release_preserves_ownership_until_quiesced_then_unmaps_bounded();
