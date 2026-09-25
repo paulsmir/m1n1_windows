@@ -53,6 +53,9 @@ struct hv_agx_scanout_platform_ops {
     bool (*diagnostic_fill)(void *opaque, uint64_t surface_pa,
                             uint64_t surface_iova,
                             const struct hv_agx_scanout_request *request);
+    void (*diagnostic_snapshot)(void *opaque, uint64_t surface_pa,
+                                uint64_t surface_iova,
+                                const struct hv_agx_scanout_request *request);
     bool (*present_begin)(void *opaque, uint64_t surface_iova,
                           const struct hv_agx_scanout_request *request,
                           uint64_t *cookie);
@@ -114,6 +117,17 @@ void hv_agx_scanout_service_init(struct hv_agx_scanout_service *service,
 bool hv_agx_scanout_fill_bgra_stripes(void *pixels, uint32_t width,
                                       uint32_t height, uint32_t stride,
                                       uint64_t bytes);
+struct hv_agx_scanout_pixel_stats {
+    uint64_t pixel_count;
+    uint64_t nonzero_pixels;
+    uint64_t channel_sum[4]; /* B, G, R, A */
+    uint64_t hash;
+    uint32_t corners[4]; /* top left, top right, bottom left, bottom right */
+};
+bool hv_agx_scanout_pixel_stats(const void *pixels, uint32_t width,
+                                 uint32_t height, uint32_t stride,
+                                 uint64_t bytes,
+                                 struct hv_agx_scanout_pixel_stats *stats);
 enum hv_agx_scanout_service_step_result
 hv_agx_scanout_service_step(struct hv_agx_scanout_service *service,
                             struct hv_agx_scanout_broker *broker);

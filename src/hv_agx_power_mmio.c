@@ -126,6 +126,37 @@ static bool scanout_diagnostic_fill(void *opaque, uint64_t surface_pa,
 }
 #endif
 
+#ifdef EXP807_SCANOUT_SNAPSHOT
+static void scanout_diagnostic_snapshot(void *opaque, uint64_t surface_pa,
+                                         uint64_t surface_iova,
+                                         const struct hv_agx_scanout_request *request)
+{
+    struct hv_agx_scanout_pixel_stats stats;
+    const void *surface = (const void *)(uintptr_t)surface_pa;
+    (void)opaque;
+    if (!request || !surface_pa || !surface_iova ||
+        !scanout_is_ram(NULL, surface_pa, request->SurfaceSize) ||
+        !hv_agx_scanout_pixel_stats(surface, request->Width, request->Height,
+                                     request->Stride, request->SurfaceSize,
+                                     &stats)) {
+        printf("EXP807_SNAPSHOT invalid seq=%lu pa=0x%lx iova=0x%lx\n",
+               request ? request->Sequence : 0, surface_pa, surface_iova);
+        return;
+    }
+    printf("EXP807_SNAPSHOT seq=%lu pool_ipa=0x%lx offset=0x%lx pa=0x%lx "
+           "iova=0x%lx pixels=%lu nonzero=%lu avg_bgra=%lu,%lu,%lu,%lu "
+           "hash=%016lx corners=%08x,%08x,%08x,%08x cache_clean=0\n",
+           request->Sequence, request->PoolIpa, request->SurfaceOffset,
+           surface_pa, surface_iova, stats.pixel_count, stats.nonzero_pixels,
+           stats.channel_sum[0] / stats.pixel_count,
+           stats.channel_sum[1] / stats.pixel_count,
+           stats.channel_sum[2] / stats.pixel_count,
+           stats.channel_sum[3] / stats.pixel_count, stats.hash,
+           stats.corners[0], stats.corners[1], stats.corners[2],
+           stats.corners[3]);
+}
+#endif
+
 static enum hv_agx_scanout_async_result scanout_present_poll(
     void *opaque, uint64_t cookie, uint32_t *applied_swap_id)
 {
@@ -177,6 +208,9 @@ static const struct hv_agx_scanout_platform_ops scanout_ops = {
     .unmap = scanout_unmap,
 #ifdef EXP806_SCANOUT_PATTERN
     .diagnostic_fill = scanout_diagnostic_fill,
+#endif
+#ifdef EXP807_SCANOUT_SNAPSHOT
+    .diagnostic_snapshot = scanout_diagnostic_snapshot,
 #endif
     .present_begin = scanout_present_begin,
     .present_poll = scanout_present_poll,

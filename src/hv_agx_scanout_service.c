@@ -4,6 +4,45 @@
 
 #include <string.h>
 
+bool hv_agx_scanout_pixel_stats(const void *pixels, uint32_t width,
+                                 uint32_t height, uint32_t stride,
+                                 uint64_t bytes,
+                                 struct hv_agx_scanout_pixel_stats *stats)
+{
+    const uint8_t *base = pixels;
+    if (!base || !stats || !width || !height || width > UINT32_MAX / 4u ||
+        stride < width * 4u || (stride & 3u) ||
+        (uint64_t)stride * height != bytes)
+        return false;
+    memset(stats, 0, sizeof(*stats));
+    stats->pixel_count = (uint64_t)width * height;
+    stats->hash = UINT64_C(0xcbf29ce484222325);
+    for (uint32_t y = 0; y < height; ++y) {
+        const uint8_t *row = base + (uint64_t)y * stride;
+        for (uint32_t x = 0; x < width; ++x) {
+            const uint8_t *pixel = row + (uint64_t)x * 4u;
+            uint32_t value = (uint32_t)pixel[0] | ((uint32_t)pixel[1] << 8) |
+                             ((uint32_t)pixel[2] << 16) |
+                             ((uint32_t)pixel[3] << 24);
+            stats->nonzero_pixels += value != 0;
+            for (unsigned channel = 0; channel < 4; ++channel) {
+                stats->channel_sum[channel] += pixel[channel];
+                stats->hash ^= pixel[channel];
+                stats->hash *= UINT64_C(0x100000001b3);
+            }
+            if (y == 0 && x == 0)
+                stats->corners[0] = value;
+            if (y == 0 && x == width - 1)
+                stats->corners[1] = value;
+            if (y == height - 1 && x == 0)
+                stats->corners[2] = value;
+            if (y == height - 1 && x == width - 1)
+                stats->corners[3] = value;
+        }
+    }
+    return true;
+}
+
 bool hv_agx_scanout_fill_bgra_stripes(void *pixels, uint32_t width,
                                       uint32_t height, uint32_t stride,
                                       uint64_t bytes)
@@ -355,8 +394,17 @@ hv_agx_scanout_service_step(struct hv_agx_scanout_service *service,
             service->request.SurfaceOffset >
                 service->request.PoolSize - service->request.SurfaceSize ||
             service->pool_pa > UINT64_MAX - service->request.SurfaceOffset ||
-            service->pool_iova > UINT64_MAX - service->request.SurfaceOffset ||
-            (service->ops->diagnostic_fill &&
+            service->pool_iova > UINT64_MAX - service->request.SurfaceOffset) {
+            fail_present(service, broker);
+            break;
+        }
+        if (service->ops->diagnostic_snapshot)
+            service->ops->diagnostic_snapshot(
+                service->opaque,
+                service->pool_pa + service->request.SurfaceOffset,
+                service->pool_iova + service->request.SurfaceOffset,
+                &service->request);
+        if ((service->ops->diagnostic_fill &&
              !service->ops->diagnostic_fill(
                  service->opaque,
                  service->pool_pa + service->request.SurfaceOffset,

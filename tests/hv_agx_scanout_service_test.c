@@ -28,6 +28,9 @@ struct fake_platform {
     uint32_t fail_map_call;
     uint32_t present_begin_calls;
     uint32_t diagnostic_calls;
+    uint32_t snapshot_calls;
+    uint64_t snapshot_pa;
+    uint64_t snapshot_iova;
     uint64_t diagnostic_pa;
     uint64_t diagnostic_iova;
     bool diagnostic_fail;
@@ -126,11 +129,22 @@ static bool fake_present_begin(void *opaque, uint64_t surface_iova,
     struct fake_platform *fake = opaque;
 
     assert(request->Command == HV_AGX_SCANOUT_CMD_PRESENT);
-    assert(fake->diagnostic_calls == fake->present_begin_calls + 1);
+    assert(fake->snapshot_calls == fake->present_begin_calls + 1);
     fake->present_begin_calls++;
     fake->presented_iova = surface_iova;
     *cookie = UINT64_C(0x1234);
     return true;
+}
+
+static void fake_diagnostic_snapshot(void *opaque, uint64_t surface_pa,
+                                     uint64_t surface_iova,
+                                     const struct hv_agx_scanout_request *request)
+{
+    struct fake_platform *fake = opaque;
+    assert(request->Command == HV_AGX_SCANOUT_CMD_PRESENT);
+    fake->snapshot_calls++;
+    fake->snapshot_pa = surface_pa;
+    fake->snapshot_iova = surface_iova;
 }
 
 static bool fake_diagnostic_fill(void *opaque, uint64_t surface_pa,
@@ -195,6 +209,7 @@ static const struct hv_agx_scanout_platform_ops ops = {
     .map = fake_map,
     .unmap = fake_unmap,
     .diagnostic_fill = fake_diagnostic_fill,
+    .diagnostic_snapshot = fake_diagnostic_snapshot,
     .present_begin = fake_present_begin,
     .present_poll = fake_present_poll,
     .present_latch_poll = fake_present_latch_poll,
@@ -399,6 +414,9 @@ static void test_present_completes_only_after_platform_reports_applied_swap(void
     assert(fake.diagnostic_calls == 1);
     assert(fake.diagnostic_pa == fake.pa_base + offset);
     assert(fake.diagnostic_iova == fake.iova + offset);
+    assert(fake.snapshot_calls == 1);
+    assert(fake.snapshot_pa == fake.pa_base + offset);
+    assert(fake.snapshot_iova == fake.iova + offset);
     assert(broker.state == HV_AGX_SCANOUT_PENDING);
     assert(step(&service, &broker, &fake) == HV_AGX_SCANOUT_SERVICE_WAITING);
     assert(broker.applied_sequence == 1);
@@ -450,6 +468,33 @@ static void test_bgra_stripes_and_bounds(void)
                                            sizeof(pixels)));
     assert(!hv_agx_scanout_fill_bgra_stripes(pixels, 8, 3, 32,
                                            sizeof(pixels)));
+}
+
+static void test_primary_snapshot_counts_channels_and_corners_without_writing(void)
+{
+    const uint32_t pixels[4] = {
+        UINT32_C(0x00000000), UINT32_C(0xff112233),
+        UINT32_C(0x800000ff), UINT32_C(0xffffffff),
+    };
+    struct hv_agx_scanout_pixel_stats stats;
+    uint32_t copy[4];
+    memcpy(copy, pixels, sizeof(copy));
+    assert(hv_agx_scanout_pixel_stats(pixels, 2, 2, 8,
+                                     sizeof(pixels), &stats));
+    assert(stats.pixel_count == 4);
+    assert(stats.nonzero_pixels == 3);
+    assert(stats.channel_sum[0] == 0x33u + 0xffu + 0xffu);
+    assert(stats.channel_sum[1] == 0x22u + 0xffu);
+    assert(stats.channel_sum[2] == 0x11u + 0xffu);
+    assert(stats.channel_sum[3] == 0xffu + 0x80u + 0xffu);
+    assert(stats.corners[0] == pixels[0]);
+    assert(stats.corners[1] == pixels[1]);
+    assert(stats.corners[2] == pixels[2]);
+    assert(stats.corners[3] == pixels[3]);
+    assert(stats.hash != 0);
+    assert(memcmp(copy, pixels, sizeof(copy)) == 0);
+    assert(!hv_agx_scanout_pixel_stats(pixels, 2, 2, 7,
+                                      sizeof(pixels), &stats));
 }
 
 static void test_v2_present_waits_for_exact_latch_after_applied(void)
@@ -594,6 +639,7 @@ int main(void)
     test_present_completes_only_after_platform_reports_applied_swap();
     test_diagnostic_fill_failure_blocks_swap();
     test_bgra_stripes_and_bounds();
+    test_primary_snapshot_counts_channels_and_corners_without_writing();
     test_v2_present_waits_for_exact_latch_after_applied();
     test_v2_wrong_swap_latch_fails_closed_without_retirement();
     test_async_failures_preserve_registered_pool_ownership();
