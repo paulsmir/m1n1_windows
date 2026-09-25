@@ -101,6 +101,18 @@ static bool hv_handle_guest_ipa_pa(struct exc_info *ctx)
 {
     u32 status;
 
+    if (hv_guest_arm_consumed_handle(FIELD_GET(ESR_ISS, ctx->esr),
+                                     ctx->regs[0], &status)) {
+        if (status) {
+            printf("HV: GPUVA ARM_CONSUMED version=%u seq=%u\n",
+                   HV_GPUVA_ARM_CONSUMED_VERSION, status);
+            ctx->regs[0] = HV_GUEST_IPA_PA_STATUS_SUCCESS;
+        } else {
+            ctx->regs[0] = HV_GUEST_IPA_PA_STATUS_INVALID_REQUEST;
+        }
+        return true;
+    }
+
     if (!hv_guest_ipa_pa_handle(FIELD_GET(ESR_ISS, ctx->esr), ctx->regs[0],
                                 hv_guest_ipa_pa_translate, hv_guest_ipa_pa_is_ram, NULL, &status))
         return false;

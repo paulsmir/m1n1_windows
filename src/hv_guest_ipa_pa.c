@@ -2,6 +2,18 @@
 
 #include "hv_guest_ipa_pa.h"
 
+bool hv_guest_arm_consumed_handle(hv_guest_ipa_pa_u32 immediate,
+                                  hv_guest_ipa_pa_u64 payload,
+                                  hv_guest_ipa_pa_u32 *sequence)
+{
+    if (immediate != HV_GPUVA_ARM_CONSUMED_HVC_IMMEDIATE)
+        return false;
+    if (sequence != 0)
+        *sequence = payload >> 32 == HV_GPUVA_ARM_CONSUMED_VERSION ?
+            (hv_guest_ipa_pa_u32)payload : 0;
+    return true;
+}
+
 static void clear_results(struct hv_guest_ipa_pa_request *request,
                           hv_guest_ipa_pa_u32 count,
                           enum hv_guest_ipa_pa_status status)
