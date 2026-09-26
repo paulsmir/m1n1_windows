@@ -5,6 +5,8 @@
 #include "adt.h"
 #include "hv_agx_config_snapshot.h"
 #include "hv_agx_firmware_prefix.h"
+#include "hv_agx_local_reserve.h"
+#include "hv_autonomous_layout.generated.h"
 #include "hv_agx_retained_platform.h"
 #include "../../drivers/apple-agx/shared/include/apple_agx_firmware_io.h"
 #include "../../drivers/apple-agx/shared/include/apple_agx_hwdata_profile_abi.h"
@@ -29,6 +31,7 @@ static bool config_snapshot_valid;
 static DECLARE_SPINLOCK(broker_lock);
 static DECLARE_SPINLOCK(service_lock);
 static bool resources_mapped;
+static struct hv_agx_local_receipt local_reserve;
 static u64 firmware_root_base, firmware_root_length;
 
 
@@ -36,6 +39,58 @@ static u64 firmware_root_base, firmware_root_length;
     HV_AGX_ABI_ADMISSION_SYNTHETIC_SCANOUT_GUEST_INTID
 
 u64 hv_ipa_to_pa(u64 ipa);
+
+static bool local_reserve_translate(void *opaque, uint64_t ipa, uint64_t *pa)
+{
+    (void)opaque;
+    *pa = hv_ipa_to_pa(ipa);
+    return *pa != 0;
+}
+
+static void local_reserve_select(void)
+{
+    const struct hv_autonomous_layout *layout = &J313_AUTONOMOUS_LAYOUT;
+    struct hv_agx_local_range excluded[2];
+    u64 low_end, candidate, ram_end, shared_base = 0, shared_size = 0;
+    int sgx = adt_path_offset(adt, "/arm-io/sgx");
+
+    local_reserve = (struct hv_agx_local_receipt){0};
+    if (sgx < 0 || layout->low_mem_pa > ~0ULL - layout->low_mem_size ||
+        cur_boot_args.phys_base > ~0ULL - cur_boot_args.mem_size ||
+        ADT_GETPROP(adt, sgx, "gfx-shared-region-base", &shared_base) < 0 ||
+        ADT_GETPROP(adt, sgx, "gfx-shared-region-size", &shared_size) < 0 ||
+        !shared_size)
+        return;
+    low_end = layout->low_mem_pa + layout->low_mem_size;
+    ram_end = cur_boot_args.phys_base + cur_boot_args.mem_size;
+    if (ram_end > layout->ram_end)
+        ram_end = layout->ram_end;
+    if (low_end <= layout->phys_base || low_end >= ram_end ||
+        shared_base > ~0ULL - shared_size ||
+        low_end > ~0ULL - (HV_AGX_LOCAL_BYTES - 1))
+        return;
+    candidate = (low_end + HV_AGX_LOCAL_BYTES - 1) &
+                ~(HV_AGX_LOCAL_BYTES - 1);
+    if (candidate >= ram_end || HV_AGX_LOCAL_BYTES > ram_end - candidate)
+        return;
+    /* The current J313 guest layout occupies all RAM below the low-window
+     * backing end: firmware, framebuffer, RAMDisk, and the alias backing.
+     * Mu independently rejects any PEI HOB overlap before reserving pages. */
+    excluded[0] = (struct hv_agx_local_range){layout->phys_base,
+                                               low_end - layout->phys_base};
+    excluded[1] = (struct hv_agx_local_range){shared_base, shared_size};
+    /* Only the first aligned gap after the low alias is eligible. If it
+     * fails stage-2 or firmware validation, do not drift into unknown
+     * upper carveouts on this boot. */
+    if (hv_agx_local_select(candidate, HV_AGX_LOCAL_BYTES,
+                            excluded, 2, local_reserve_translate, NULL,
+                            &local_reserve))
+        printf("HV: AGX local reserve v%u IPA=0x%lx PA=0x%lx bytes=0x%lx\n",
+               HV_AGX_LOCAL_ABI_VERSION, local_reserve.guest_ipa,
+               local_reserve.host_pa, local_reserve.bytes);
+    else
+        printf("HV: AGX local reserve unavailable; G3 local memory fails closed\n");
+}
 
 static bool scanout_translate(void *opaque, uint64_t ipa, uint64_t *pa)
 {
@@ -259,6 +314,10 @@ static bool handle_agx_power_broker(struct exc_info *ctx, u64 addr, u64 *value, 
         return false;
 
     offset = addr - HV_AGX_G2_POWER_BROKER_BASE;
+    if (offset >= HV_AGX_LOCAL_MMIO_OFFSET &&
+        offset < HV_AGX_LOCAL_MMIO_OFFSET + HV_AGX_LOCAL_MMIO_BYTES)
+        return hv_agx_local_receipt_mmio(&local_reserve, offset, write,
+                                          (unsigned)width, value);
     if (offset >= AGX_HWDATA_RECEIPT_OFFSET &&
         offset < AGX_HWDATA_RECEIPT_OFFSET+AGX_HWDATA_RECEIPT_BYTES) {
         spin_lock(&broker_lock);
@@ -349,6 +408,7 @@ bool hv_agx_g2_resources_map(void)
     }
 
     hv_agx_power_broker_init(&broker, hv_agx_power_j313_ops(), NULL);
+    local_reserve_select();
     hv_agx_scanout_service_init(&scanout_service, &scanout_ops, NULL);
     if (display_start_dcp() < 0) {
         printf("HV: AGX scanout DCP backend unavailable; requests fail closed\n");
