@@ -2328,6 +2328,13 @@ class HV(Reloadable):
         print("Updating page tables...")
         self.pt_update()
 
+        # The broker hook is installed by map_essential(), before this final
+        # stage-2 update. Retry its local-memory receipt now that guest RAM is
+        # mapped; C reselects without remapping the live broker page.
+        if os.environ.get("WOM1_AGX_G2_POWER_BROKER", "0") == "1":
+            if not self.p.hv_map_agx_power_broker():
+                raise RuntimeError("AGX local reserve retry failed after stage-2 update")
+
         adt_blob = self.adt.build()
         print(f"Uploading ADT (0x{len(adt_blob):x} bytes)...")
         self.iface.writemem(self.adt_base, adt_blob)

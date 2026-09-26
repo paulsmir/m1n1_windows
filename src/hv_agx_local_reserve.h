@@ -31,6 +31,22 @@ struct hv_agx_local_receipt {
     uint64_t bytes;
 };
 
+enum hv_agx_local_reason {
+    HV_AGX_LOCAL_OK,
+    HV_AGX_LOCAL_ARGUMENT,
+    HV_AGX_LOCAL_OVERLAP,
+    HV_AGX_LOCAL_UNMAPPED,
+    HV_AGX_LOCAL_PA_ALIGNMENT,
+    HV_AGX_LOCAL_PA_LIMIT,
+    HV_AGX_LOCAL_NONCONTIGUOUS,
+};
+
+struct hv_agx_local_failure {
+    enum hv_agx_local_reason reason;
+    uint64_t ipa;
+    uint64_t pa;
+};
+
 typedef bool (*hv_agx_local_translate_fn)(void *context, uint64_t ipa, uint64_t *pa);
 
 bool hv_agx_local_validate(uint64_t guest_ipa,
@@ -42,6 +58,13 @@ bool hv_agx_local_select(uint64_t ram_base, uint64_t ram_bytes,
                          const struct hv_agx_local_range *excluded, size_t excluded_count,
                          hv_agx_local_translate_fn translate, void *context,
                          struct hv_agx_local_receipt *result);
+
+bool hv_agx_local_select_detailed(uint64_t ram_base, uint64_t ram_bytes,
+                                  const struct hv_agx_local_range *excluded,
+                                  size_t excluded_count,
+                                  hv_agx_local_translate_fn translate, void *context,
+                                  struct hv_agx_local_receipt *result,
+                                  struct hv_agx_local_failure *failure);
 
 bool hv_agx_local_receipt_mmio(const struct hv_agx_local_receipt *receipt,
                                 uint64_t offset, bool write, unsigned width,

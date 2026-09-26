@@ -51,6 +51,11 @@ static void local_reserve_select(void)
 {
     const struct hv_autonomous_layout *layout = &J313_AUTONOMOUS_LAYOUT;
     struct hv_agx_local_range excluded[2];
+    struct hv_agx_local_failure failure = {0};
+    static const char *const failure_names[] = {
+        "ok", "argument", "overlap", "unmapped", "pa-alignment",
+        "pa-limit", "noncontiguous",
+    };
     u64 low_end, candidate, ram_end, shared_base = 0, shared_size = 0;
     int sgx = adt_path_offset(adt, "/arm-io/sgx");
 
@@ -82,14 +87,18 @@ static void local_reserve_select(void)
     /* Only the first aligned gap after the low alias is eligible. If it
      * fails stage-2 or firmware validation, do not drift into unknown
      * upper carveouts on this boot. */
-    if (hv_agx_local_select(candidate, HV_AGX_LOCAL_BYTES,
-                            excluded, 2, local_reserve_translate, NULL,
-                            &local_reserve))
+    if (hv_agx_local_select_detailed(candidate, HV_AGX_LOCAL_BYTES,
+                                     excluded, 2, local_reserve_translate, NULL,
+                                     &local_reserve, &failure))
         printf("HV: AGX local reserve v%u IPA=0x%lx PA=0x%lx bytes=0x%lx\n",
                HV_AGX_LOCAL_ABI_VERSION, local_reserve.guest_ipa,
                local_reserve.host_pa, local_reserve.bytes);
     else
-        printf("HV: AGX local reserve unavailable; G3 local memory fails closed\n");
+        printf("HV: AGX local reserve unavailable reason=%s IPA=0x%lx PA=0x%lx "
+               "candidate=0x%lx RAM-end=0x%lx; G3 local memory fails closed\n",
+               failure.reason < sizeof(failure_names) / sizeof(failure_names[0]) ?
+                   failure_names[failure.reason] : "unknown",
+               failure.ipa, failure.pa, candidate, ram_end);
 }
 
 static bool scanout_translate(void *opaque, uint64_t ipa, uint64_t *pa)
@@ -398,8 +407,14 @@ bool hv_agx_g2_resources_map(void)
 {
     int ret;
 
-    if (resources_mapped)
+    /* Assisted launch first calls this before Python's final pt_update().
+     * Retry the receipt when that update has installed guest RAM stage-2
+     * mappings; leave the already published MMIO hook untouched. */
+    if (resources_mapped) {
+        if (local_reserve.bytes != HV_AGX_LOCAL_BYTES)
+            local_reserve_select();
         return true;
+    }
 
     ret = hv_map_hook(HV_AGX_G2_GPU_BASE, hv_agx_retained_gpu_region, HV_AGX_G2_GPU_SIZE);
     if (ret < 0) {
