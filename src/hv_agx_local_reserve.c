@@ -122,6 +122,24 @@ bool hv_agx_local_receipt_mmio(const struct hv_agx_local_receipt *receipt,
                 *value = receipt->bytes == HV_AGX_LOCAL_BYTES && receipt->guest_ipa &&
                          receipt->host_pa;
                 return true;
+            case HV_AGX_LOCAL_REG_GUEST_IPA:
+                *value = (uint32_t)receipt->guest_ipa;
+                return true;
+            case HV_AGX_LOCAL_REG_GUEST_IPA + 4:
+                *value = (uint32_t)(receipt->guest_ipa >> 32);
+                return true;
+            case HV_AGX_LOCAL_REG_HOST_PA:
+                *value = (uint32_t)receipt->host_pa;
+                return true;
+            case HV_AGX_LOCAL_REG_HOST_PA + 4:
+                *value = (uint32_t)(receipt->host_pa >> 32);
+                return true;
+            case HV_AGX_LOCAL_REG_BYTES:
+                *value = (uint32_t)receipt->bytes;
+                return true;
+            case HV_AGX_LOCAL_REG_BYTES + 4:
+                *value = (uint32_t)(receipt->bytes >> 32);
+                return true;
             default:
                 return false;
         }

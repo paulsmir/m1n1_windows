@@ -88,8 +88,38 @@ int main(void)
         assert(hv_agx_local_receipt_mmio(&valid, HV_AGX_LOCAL_REG_GUEST_IPA,
                                           false, 3, &value));
         assert(value == valid.guest_ipa);
-        assert(!hv_agx_local_receipt_mmio(&valid, HV_AGX_LOCAL_REG_GUEST_IPA,
+        assert(!hv_agx_local_receipt_mmio(&valid, HV_AGX_LOCAL_REG_GUEST_IPA + 1,
                                            false, 2, &value));
+    }
+    {
+        const struct hv_agx_local_receipt live = {
+            UINT64_C(0x8e0000000), UINT64_C(0x8e0000000), HV_AGX_LOCAL_BYTES
+        };
+        uint64_t value = 0;
+        assert(hv_agx_local_receipt_mmio(&live, HV_AGX_LOCAL_REG_GUEST_IPA,
+                                          false, 3, &value));
+        assert(value == UINT64_C(0x8e0000000));
+        assert(hv_agx_local_receipt_mmio(&live, HV_AGX_LOCAL_REG_GUEST_IPA,
+                                          false, 2, &value));
+        assert(value == UINT32_C(0xe0000000));
+        const uint64_t signed_low = (uint64_t)(int64_t)(int32_t)(uint32_t)value;
+        assert(signed_low == UINT64_C(0xffffffffe0000000));
+        assert(hv_agx_local_receipt_mmio(&live, HV_AGX_LOCAL_REG_GUEST_IPA + 4,
+                                          false, 2, &value));
+        assert(value == UINT32_C(8));
+        assert((value << 32 | (signed_low & UINT32_MAX)) == live.guest_ipa);
+        assert(hv_agx_local_receipt_mmio(&live, HV_AGX_LOCAL_REG_HOST_PA,
+                                          false, 2, &value));
+        assert(value == UINT32_C(0xe0000000));
+        assert(hv_agx_local_receipt_mmio(&live, HV_AGX_LOCAL_REG_HOST_PA + 4,
+                                          false, 2, &value));
+        assert(value == UINT32_C(8));
+        assert(hv_agx_local_receipt_mmio(&live, HV_AGX_LOCAL_REG_BYTES,
+                                          false, 2, &value));
+        assert(value == UINT32_C(0x4000000));
+        assert(hv_agx_local_receipt_mmio(&live, HV_AGX_LOCAL_REG_BYTES + 4,
+                                          false, 2, &value));
+        assert(value == 0);
     }
     return 0;
 }

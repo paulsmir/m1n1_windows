@@ -32,6 +32,7 @@ static DECLARE_SPINLOCK(broker_lock);
 static DECLARE_SPINLOCK(service_lock);
 static bool resources_mapped;
 static struct hv_agx_local_receipt local_reserve;
+static u32 local_reserve_read_logged;
 static u64 firmware_root_base, firmware_root_length;
 
 
@@ -324,9 +325,29 @@ static bool handle_agx_power_broker(struct exc_info *ctx, u64 addr, u64 *value, 
 
     offset = addr - HV_AGX_G2_POWER_BROKER_BASE;
     if (offset >= HV_AGX_LOCAL_MMIO_OFFSET &&
-        offset < HV_AGX_LOCAL_MMIO_OFFSET + HV_AGX_LOCAL_MMIO_BYTES)
-        return hv_agx_local_receipt_mmio(&local_reserve, offset, write,
-                                          (unsigned)width, value);
+        offset < HV_AGX_LOCAL_MMIO_OFFSET + HV_AGX_LOCAL_MMIO_BYTES) {
+        bool log_read = false;
+        if (!write && offset >= HV_AGX_LOCAL_REG_GUEST_IPA &&
+            offset <= HV_AGX_LOCAL_REG_BYTES + 4 && !(offset & 3)) {
+            u32 bit = 1u << (((offset - HV_AGX_LOCAL_REG_GUEST_IPA) / 4) +
+                             (width == 3 ? 8 : 0));
+            spin_lock(&broker_lock);
+            log_read = !(local_reserve_read_logged & bit);
+            local_reserve_read_logged |= bit;
+            spin_unlock(&broker_lock);
+        }
+        handled = hv_agx_local_receipt_mmio(&local_reserve, offset, write,
+                                             (unsigned)width, value);
+        if (log_read) {
+            u64 esr = hv_get_esr();
+            printf("HV: AGX local receipt read addr=0x%lx width=%d ESR=0x%lx "
+                   "SAS=%lu SSE=%u SF=%u SRT=%lu value=0x%lx handled=%u PC=0x%lx\n",
+                   addr, width, esr, FIELD_GET(ESR_ISS_DABORT_SAS, esr),
+                   !!(esr & ESR_ISS_DABORT_SSE), !!(esr & ESR_ISS_DABORT_SF),
+                   FIELD_GET(ESR_ISS_DABORT_SRT, esr), *value, handled, ctx->elr);
+        }
+        return handled;
+    }
     if (offset >= AGX_HWDATA_RECEIPT_OFFSET &&
         offset < AGX_HWDATA_RECEIPT_OFFSET+AGX_HWDATA_RECEIPT_BYTES) {
         spin_lock(&broker_lock);
