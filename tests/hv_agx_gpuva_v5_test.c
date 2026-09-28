@@ -32,7 +32,7 @@ static uint64_t translate(void *opaque, uint64_t ipa)
     if (ipa == f->blocked_ipa) return 0;
     if (ipa == f->remapped_ipa) return f->remapped_pa;
     if (f->range_backing && ipa >= P_DATA &&
-        ipa < P_DATA + UINT64_C(56) * 1024 * 1024 &&
+        ipa < P_DATA + UINT64_C(1024) * 1024 * 1024 &&
         !(ipa & (HV_AGX_GPUVA_V5_PAGE - 1))) return ipa;
     for (i = 0; i < 9; ++i) if (f->ipa[i] == ipa) return ipa;
     return 0;
@@ -225,6 +225,23 @@ static void shared_reserve_capacity(void)
                 P_DATA + (uint64_t)page * HV_AGX_GPUVA_V5_PAGE) == HV_AGX_GPUVA_V5_OK);
     free(f);
 }
+static void reserve_1g_still_has_bounded_v5_capacity(void)
+{
+    struct fixture *f = new_fixture();
+    struct hv_agx_gpuva_v5 *before = malloc(sizeof(*before));
+    assert(before && HV_AGX_GPUVA_V5_BACKINGS == 8192);
+    f->range_backing = true;
+    assert(hv_agx_gpuva_v5_create(&f->broker, 1, 1, P_ROOT, false) == HV_AGX_GPUVA_V5_OK);
+    for (unsigned page = 0; page < HV_AGX_GPUVA_V5_BACKINGS; ++page)
+        assert(hv_agx_gpuva_v5_register_shared_backing(&f->broker, 1, 1, 17,
+            P_DATA + (uint64_t)page * HV_AGX_GPUVA_V5_PAGE) == HV_AGX_GPUVA_V5_OK);
+    memcpy(before, &f->broker, sizeof(*before));
+    assert(hv_agx_gpuva_v5_register_shared_backing(&f->broker, 1, 1, 17,
+        P_DATA + UINT64_C(0x8000000)) == HV_AGX_GPUVA_V5_CAPACITY);
+    assert(!memcmp(before, &f->broker, sizeof(*before)));
+    free(before);
+    free(f);
+}
 static void reject_prepopulated_tables(void)
 {
     struct fixture *f = new_fixture();
@@ -268,6 +285,7 @@ int main(void)
     reject_prepopulated_tables();
     shared_graph_grants();
     shared_reserve_capacity();
+    reserve_1g_still_has_bounded_v5_capacity();
     struct fixture *f = new_fixture();
     uint64_t ptoken, qtoken, logical[4]={P_DATA,P_DATA+0x1000,
                                           P_DATA+0x2000,P_DATA+0x3000};

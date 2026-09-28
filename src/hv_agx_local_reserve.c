@@ -22,6 +22,16 @@ bool hv_agx_local_carveout_allows(uint64_t candidate, uint64_t base,
     return !overlaps(candidate, HV_AGX_LOCAL_BYTES, &range);
 }
 
+bool hv_agx_local_scanout_allows(const struct hv_agx_local_receipt *receipt,
+                                  uint64_t pa, uint64_t bytes)
+{
+    const uint64_t local_bytes = HV_AGX_LOCAL_BYTES - UINT64_C(0x1800000);
+    return receipt && receipt->bytes == HV_AGX_LOCAL_BYTES &&
+           receipt->host_pa && receipt->host_pa == receipt->guest_ipa &&
+           bytes && bytes <= local_bytes && pa >= receipt->host_pa &&
+           pa - receipt->host_pa <= local_bytes - bytes;
+}
+
 static bool fail(struct hv_agx_local_failure *failure, enum hv_agx_local_reason reason,
                  uint64_t ipa, uint64_t pa)
 {

@@ -23,6 +23,7 @@
 #include "hv_vgic.h"
 #include "display.h"
 #include "memory.h"
+#include "string.h"
 #include "utils.h"
 #include "xnuboot.h"
 
@@ -178,6 +179,9 @@ static bool scanout_is_ram(void *opaque, uint64_t pa, uint64_t size)
     uint64_t length = cur_boot_args.mem_size;
 
     (void)opaque;
+#ifdef AGX_LOCAL_RESERVE_V2
+    if (!hv_agx_local_scanout_allows(&local_reserve, pa, size)) return false;
+#endif
     return size && pa >= base && size <= length && pa - base <= length - size;
 }
 

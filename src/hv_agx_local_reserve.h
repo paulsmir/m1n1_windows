@@ -58,6 +58,9 @@ typedef bool (*hv_agx_local_translate_fn)(void *context, uint64_t ipa, uint64_t 
 
 /* Only the ADT normal-RAM owner may contain the reserve. Other (including
  * unknown) carveout owners must be disjoint. No address is an allowlist. */
+bool hv_agx_local_scanout_allows(const struct hv_agx_local_receipt *receipt,
+                                  uint64_t pa, uint64_t bytes);
+
 bool hv_agx_local_carveout_allows(uint64_t candidate, uint64_t base,
                                   uint64_t bytes, bool normal_ram);
 
