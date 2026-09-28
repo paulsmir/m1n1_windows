@@ -6,11 +6,18 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#ifdef AGX_LOCAL_RESERVE_V2
+#define HV_AGX_LOCAL_BYTES UINT64_C(0x40000000)
+#define HV_AGX_LOCAL_ALIGNMENT UINT64_C(0x10000)
+#define HV_AGX_LOCAL_ABI_VERSION UINT32_C(2)
+#else
 #define HV_AGX_LOCAL_BYTES UINT64_C(0x4000000)
+#define HV_AGX_LOCAL_ALIGNMENT HV_AGX_LOCAL_BYTES
+#define HV_AGX_LOCAL_ABI_VERSION UINT32_C(1)
+#endif
 #define HV_AGX_LOCAL_LEAF_BYTES UINT64_C(0x4000)
 #define HV_AGX_LOCAL_PHYSICAL_LIMIT (UINT64_C(1) << 40)
 #define HV_AGX_LOCAL_ABI_MAGIC UINT32_C(0x4c584741)
-#define HV_AGX_LOCAL_ABI_VERSION UINT32_C(1)
 #define HV_AGX_LOCAL_MMIO_OFFSET UINT64_C(0xd00)
 #define HV_AGX_LOCAL_MMIO_BYTES UINT64_C(0x28)
 #define HV_AGX_LOCAL_REG_MAGIC UINT64_C(0xd00)
@@ -48,6 +55,11 @@ struct hv_agx_local_failure {
 };
 
 typedef bool (*hv_agx_local_translate_fn)(void *context, uint64_t ipa, uint64_t *pa);
+
+/* Only the ADT normal-RAM owner may contain the reserve. Other (including
+ * unknown) carveout owners must be disjoint. No address is an allowlist. */
+bool hv_agx_local_carveout_allows(uint64_t candidate, uint64_t base,
+                                  uint64_t bytes, bool normal_ram);
 
 bool hv_agx_local_validate(uint64_t guest_ipa,
                            const struct hv_agx_local_range *excluded, size_t excluded_count,

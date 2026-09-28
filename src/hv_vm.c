@@ -456,7 +456,7 @@ u64 hv_translate(u64 addr, bool s1, bool w, u64 *par_out)
     }
 }
 
-u64 hv_pt_walk(u64 addr)
+static u64 hv_pt_walk_impl(u64 addr, bool attributes)
 {
     dprintf("hv_pt_walk(0x%lx)\n", addr);
 
@@ -484,6 +484,7 @@ u64 hv_pt_walk(u64 addr)
     dprintf("  l2d = 0x%lx\n", l2d);
 
     if (!L2_IS_TABLE(l2d)) {
+        if (attributes) return l2d;
         if (L2_IS_SW_BLOCK(l2d))
             l2d += addr & (VADDR_L2_ALIGN_MASK | VADDR_L3_ALIGN_MASK);
         if (L2_IS_HW_BLOCK(l2d)) {
@@ -500,6 +501,7 @@ u64 hv_pt_walk(u64 addr)
     dprintf("  l3d = 0x%lx\n", l3d);
 
     if (!L3_IS_TABLE(l3d)) {
+        if (attributes) return l3d;
         if (L3_IS_SW_BLOCK(l3d))
             l3d += addr & VADDR_L3_ALIGN_MASK;
         if (L3_IS_HW_BLOCK(l3d)) {
@@ -510,11 +512,17 @@ u64 hv_pt_walk(u64 addr)
         return l3d;
     }
 
+    if (attributes) return 0; /* Software subpage tables are not normal RAM. */
     idx = (addr >> VADDR_L4_OFFSET_BITS) & MASK(VADDR_L4_INDEX_BITS);
     dprintf("  l4 idx = 0x%lx\n", idx);
     u64 l4d = ((u64 *)(l3d & PTE_TARGET_MASK))[idx];
     dprintf("  l4d = 0x%lx\n", l4d);
     return l4d;
+}
+
+u64 hv_pt_walk(u64 addr)
+{
+    return hv_pt_walk_impl(addr, false);
 }
 
 //
@@ -536,6 +544,13 @@ u64 hv_ipa_to_pa(u64 ipa)
     // target mask and add back the low two bits - masking with VADDR_L3_ALIGN_MASK (GENMASK(13,2))
     // silently dropped them, misaligning any address that is not 4-byte aligned.
     return (pte & PTE_TARGET_MASK_L4) | (ipa & MASK(VADDR_L4_OFFSET_BITS));
+}
+
+bool hv_ipa_is_normal_rw(u64 ipa)
+{
+    if (!hv_Ltop || ipa >= (1ULL << vaddr_bits)) return false;
+    u64 pte = hv_pt_walk_impl(ipa, true);
+    return IS_HW(pte) && (pte & PTE_ATTRIBUTES) == PTE_ATTRIBUTES;
 }
 
 #define CHECK_RN                                                                                   \

@@ -6,6 +6,9 @@
 #include "hv_agx_config_snapshot.h"
 #include "hv_agx_firmware_prefix.h"
 #include "hv_agx_local_reserve.h"
+#include "hv_agx_retained_backing.h"
+#include "hv_launch_j313.h"
+#include "mcc.h"
 #include "hv_autonomous_layout.generated.h"
 #include "hv_agx_retained_platform.h"
 #include "../../drivers/apple-agx/shared/include/apple_agx_firmware_io.h"
@@ -43,16 +46,66 @@ u64 hv_ipa_to_pa(u64 ipa);
 
 static bool local_reserve_translate(void *opaque, uint64_t ipa, uint64_t *pa)
 {
+#ifdef AGX_LOCAL_RESERVE_V2
+    const struct hv_contract_snapshot *snapshot = opaque;
+    uint64_t leaf = ipa & ~UINT64_C(0x3fff);
+    if (!hv_ipa_is_normal_rw(ipa) ||
+        !hv_agx_retained_backing_allowed(snapshot, leaf, 0x4000,
+            J313_AUTONOMOUS_LAYOUT.ramdisk_base,
+            J313_AUTONOMOUS_LAYOUT.ramdisk_max_size))
+        return false;
+    for (size_t i = 0; i < mcc_carveout_count; ++i) {
+        const struct mcc_carveout *r = &mcc_carveouts[i];
+        if (!r->size || r->base > UINT64_MAX - r->size ||
+            (leaf < r->base + r->size && r->base < leaf + 0x4000))
+            return false;
+    }
+#else
     (void)opaque;
+#endif
     *pa = hv_ipa_to_pa(ipa);
     return *pa != 0;
 }
+
+#ifdef AGX_LOCAL_RESERVE_V2
+static bool local_reserve_carveouts_allow(u64 candidate)
+{
+    int node = adt_path_offset(adt, "/chosen/carveout-memory-map");
+    if (node < 0) return false;
+    int count = adt_get_property_count(adt, node);
+    int offset = adt_first_property_offset(adt, node);
+    bool normal_ram_seen = false;
+    for (int i = 0; i < count; ++i) {
+        const char *name;
+        u32 bytes;
+        const void *value = adt_getprop_by_offset(adt, offset, &name, &bytes);
+        if (!value) return false;
+        if (!strncmp(name, "region-id-", 10)) {
+            u64 range[2];
+            if (bytes != sizeof(range)) return false;
+            memcpy(range, value, sizeof(range));
+            /* J313 region24 is the normal DRAM owner in the archived ADT.
+             * Its geometry must contain the candidate, independently of PA. */
+            bool normal = !strcmp(name, "region-id-24");
+            if (!hv_agx_local_carveout_allows(candidate, range[0], range[1], normal))
+                return false;
+            normal_ram_seen |= normal;
+        }
+        offset += sizeof(struct adt_property) + ALIGN_UP(bytes, 4);
+    }
+    return normal_ram_seen;
+}
+#endif
 
 static void local_reserve_select(void)
 {
     const struct hv_autonomous_layout *layout = &J313_AUTONOMOUS_LAYOUT;
     struct hv_agx_local_range excluded[2];
     struct hv_agx_local_failure failure = {0};
+    void *translation_context = NULL;
+#ifdef AGX_LOCAL_RESERVE_V2
+    static struct hv_contract_snapshot snapshot;
+#endif
     static const char *const failure_names[] = {
         "ok", "argument", "overlap", "unmapped", "pa-alignment",
         "pa-limit", "noncontiguous",
@@ -61,6 +114,11 @@ static void local_reserve_select(void)
     int sgx = adt_path_offset(adt, "/arm-io/sgx");
 
     local_reserve = (struct hv_agx_local_receipt){0};
+#ifdef AGX_LOCAL_RESERVE_V2
+    if (!hv_launch_j313_capture_base(HV_CONTRACT_PRE_HV_INIT, 1, &snapshot))
+        return;
+    translation_context = &snapshot;
+#endif
     if (sgx < 0 || layout->low_mem_pa > ~0ULL - layout->low_mem_size ||
         cur_boot_args.phys_base > ~0ULL - cur_boot_args.mem_size ||
         ADT_GETPROP(adt, sgx, "gfx-shared-region-base", &shared_base) < 0 ||
@@ -73,12 +131,15 @@ static void local_reserve_select(void)
         ram_end = layout->ram_end;
     if (low_end <= layout->phys_base || low_end >= ram_end ||
         shared_base > ~0ULL - shared_size ||
-        low_end > ~0ULL - (HV_AGX_LOCAL_BYTES - 1))
+        low_end > ~0ULL - (HV_AGX_LOCAL_ALIGNMENT - 1))
         return;
-    candidate = (low_end + HV_AGX_LOCAL_BYTES - 1) &
-                ~(HV_AGX_LOCAL_BYTES - 1);
+    candidate = (low_end + HV_AGX_LOCAL_ALIGNMENT - 1) &
+                ~(HV_AGX_LOCAL_ALIGNMENT - 1);
     if (candidate >= ram_end || HV_AGX_LOCAL_BYTES > ram_end - candidate)
         return;
+#ifdef AGX_LOCAL_RESERVE_V2
+    if (!local_reserve_carveouts_allow(candidate)) return;
+#endif
     /* The current J313 guest layout occupies all RAM below the low-window
      * backing end: firmware, framebuffer, RAMDisk, and the alias backing.
      * Mu independently rejects any PEI HOB overlap before reserving pages. */
@@ -89,7 +150,7 @@ static void local_reserve_select(void)
      * fails stage-2 or firmware validation, do not drift into unknown
      * upper carveouts on this boot. */
     if (hv_agx_local_select_detailed(candidate, HV_AGX_LOCAL_BYTES,
-                                     excluded, 2, local_reserve_translate, NULL,
+                                     excluded, 2, local_reserve_translate, translation_context,
                                      &local_reserve, &failure))
         printf("HV: AGX local reserve v%u IPA=0x%lx PA=0x%lx bytes=0x%lx\n",
                HV_AGX_LOCAL_ABI_VERSION, local_reserve.guest_ipa,

@@ -79,6 +79,7 @@ bool hv_pci_init(u64 ecam, u64 bar_window, int irq);
 int hv_pci_intx_irq(void);
 u64 hv_pci_bar_window(void);
 u64 hv_ipa_to_pa(u64 ipa);
+bool hv_ipa_is_normal_rw(u64 ipa);
 bool hv_configure_fb_stream(u64 ipa, u64 size, u64 width, u64 height, u64 stride);
 bool hv_nvme_init_backend(void);
 void hv_nvme_map_bar(u64 base);

@@ -9,6 +9,19 @@ static bool overlaps(uint64_t base, uint64_t bytes,
     return base < range->base + range->bytes && range->base < base + bytes;
 }
 
+bool hv_agx_local_carveout_allows(uint64_t candidate, uint64_t base,
+                                  uint64_t bytes, bool normal_ram)
+{
+    struct hv_agx_local_range range = {base, bytes};
+    if (!bytes || base > UINT64_MAX - bytes ||
+        candidate > UINT64_MAX - HV_AGX_LOCAL_BYTES)
+        return false;
+    if (normal_ram)
+        return candidate >= base && HV_AGX_LOCAL_BYTES <= bytes &&
+               candidate - base <= bytes - HV_AGX_LOCAL_BYTES;
+    return !overlaps(candidate, HV_AGX_LOCAL_BYTES, &range);
+}
+
 static bool fail(struct hv_agx_local_failure *failure, enum hv_agx_local_reason reason,
                  uint64_t ipa, uint64_t pa)
 {
@@ -26,8 +39,10 @@ static bool validate_detailed(uint64_t guest_ipa,
 {
     uint64_t first_pa = 0;
 
+    if (result)
+        *result = (struct hv_agx_local_receipt){0};
     if (!result || !translate || (excluded_count && !excluded) ||
-        (guest_ipa & (HV_AGX_LOCAL_BYTES - 1)) ||
+        (guest_ipa & (HV_AGX_LOCAL_ALIGNMENT - 1)) ||
         guest_ipa > UINT64_MAX - HV_AGX_LOCAL_BYTES)
         return fail(failure, HV_AGX_LOCAL_ARGUMENT, guest_ipa, 0);
     *result = (struct hv_agx_local_receipt){0};
@@ -35,6 +50,23 @@ static bool validate_detailed(uint64_t guest_ipa,
         if (overlaps(guest_ipa, HV_AGX_LOCAL_BYTES, &excluded[i]))
             return fail(failure, HV_AGX_LOCAL_OVERLAP, guest_ipa, excluded[i].base);
     }
+#ifdef AGX_LOCAL_RESERVE_V2
+    /* Validate both ends of every smallest guest page, including the final
+     * byte. Identity prevents a translated alias into a protected PA owner. */
+    first_pa = guest_ipa;
+    if (!guest_ipa || guest_ipa >= HV_AGX_LOCAL_PHYSICAL_LIMIT ||
+        HV_AGX_LOCAL_BYTES > HV_AGX_LOCAL_PHYSICAL_LIMIT - guest_ipa)
+        return fail(failure, HV_AGX_LOCAL_PA_LIMIT, guest_ipa, guest_ipa);
+    for (uint64_t offset = 0; offset < HV_AGX_LOCAL_BYTES; offset += 0x1000) {
+        for (unsigned edge = 0; edge < 2; ++edge) {
+            uint64_t ipa = guest_ipa + offset + (edge ? 0xfff : 0), pa = 0;
+            if (!translate(context, ipa, &pa) || !pa)
+                return fail(failure, HV_AGX_LOCAL_UNMAPPED, ipa, pa);
+            if (pa != ipa)
+                return fail(failure, HV_AGX_LOCAL_NONCONTIGUOUS, ipa, pa);
+        }
+    }
+#else
     for (uint64_t offset = 0; offset < HV_AGX_LOCAL_BYTES;
          offset += HV_AGX_LOCAL_LEAF_BYTES) {
         uint64_t pa = 0;
@@ -44,7 +76,7 @@ static bool validate_detailed(uint64_t guest_ipa,
             return fail(failure, HV_AGX_LOCAL_PA_ALIGNMENT, guest_ipa + offset, pa);
         if (!offset) {
             first_pa = pa;
-            if ((first_pa & (HV_AGX_LOCAL_BYTES - 1)) ||
+            if ((first_pa & (HV_AGX_LOCAL_ALIGNMENT - 1)) ||
                 first_pa >= HV_AGX_LOCAL_PHYSICAL_LIMIT ||
                 HV_AGX_LOCAL_BYTES > HV_AGX_LOCAL_PHYSICAL_LIMIT - first_pa)
                 return fail(failure, HV_AGX_LOCAL_PA_LIMIT, guest_ipa, first_pa);
@@ -52,6 +84,7 @@ static bool validate_detailed(uint64_t guest_ipa,
             return fail(failure, HV_AGX_LOCAL_NONCONTIGUOUS, guest_ipa + offset, pa);
         }
     }
+#endif
     *result = (struct hv_agx_local_receipt){guest_ipa, first_pa, HV_AGX_LOCAL_BYTES};
     if (failure)
         *failure = (struct hv_agx_local_failure){HV_AGX_LOCAL_OK, 0, 0};
@@ -76,12 +109,20 @@ bool hv_agx_local_select_detailed(uint64_t ram_base, uint64_t ram_bytes,
 {
     uint64_t end, candidate;
 
+    if (result)
+        *result = (struct hv_agx_local_receipt){0};
     if (!result || !ram_bytes || ram_base > UINT64_MAX - ram_bytes ||
-        ram_base > UINT64_MAX - (HV_AGX_LOCAL_BYTES - 1))
+        ram_base > UINT64_MAX - (HV_AGX_LOCAL_ALIGNMENT - 1))
         return fail(failure, HV_AGX_LOCAL_ARGUMENT, ram_base, ram_bytes);
     *result = (struct hv_agx_local_receipt){0};
     end = ram_base + ram_bytes;
-    candidate = (ram_base + HV_AGX_LOCAL_BYTES - 1) & ~(HV_AGX_LOCAL_BYTES - 1);
+    candidate = (ram_base + HV_AGX_LOCAL_ALIGNMENT - 1) & ~(HV_AGX_LOCAL_ALIGNMENT - 1);
+#ifdef AGX_LOCAL_RESERVE_V2
+    if (candidate > end || HV_AGX_LOCAL_BYTES > end - candidate)
+        return fail(failure, HV_AGX_LOCAL_ARGUMENT, candidate, end);
+    return validate_detailed(candidate, excluded, excluded_count,
+                              translate, context, result, failure);
+#else
     while (candidate <= end && HV_AGX_LOCAL_BYTES <= end - candidate) {
         if (validate_detailed(candidate, excluded, excluded_count,
                               translate, context, result, failure))
@@ -93,6 +134,7 @@ bool hv_agx_local_select_detailed(uint64_t ram_base, uint64_t ram_bytes,
     if (failure && failure->reason == HV_AGX_LOCAL_OK)
         fail(failure, HV_AGX_LOCAL_ARGUMENT, candidate, end);
     return false;
+#endif
 }
 
 bool hv_agx_local_select(uint64_t ram_base, uint64_t ram_bytes,
