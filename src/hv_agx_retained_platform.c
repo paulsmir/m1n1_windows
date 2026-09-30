@@ -1,5 +1,6 @@
 #include "hv.h"
 #include "hv_agx_retained_platform.h"
+#include "hv_agx_local_reserve.h"
 #include "hv_agx_retained_root.h"
 #include "hv_agx_retained_mmio.h"
 #include "hv_agx_retained_backing.h"
@@ -296,6 +297,15 @@ static void execute(void *context, const AGX_RR_REQUEST *q, AGX_RR_RESPONSE *r)
             if (!status) {
                 enum hv_agx_gpuva_v5_result v5_status =
                     hv_agx_gpuva_v5_init(&gpuva_v5,root_owner.Epoch,&gpuva_ops);
+                uint64_t public_base = 0, public_bytes = 0;
+                if (v5_status == HV_AGX_GPUVA_V5_OK &&
+                    hv_agx_local_public_span(&public_base,&public_bytes))
+                    v5_status = hv_agx_gpuva_v5_configure_local(
+                        &gpuva_v5,public_base,public_bytes,UINT64_C(0x4000000));
+                else
+                    v5_status = HV_AGX_GPUVA_V5_INVALID;
+                if (v5_status != HV_AGX_GPUVA_V5_OK)
+                    gpuva_v5.active = false;
                 printf("HV: GPUVA broker v5 init=%u epoch=%llu\n",
                        v5_status,root_owner.Epoch);
             }

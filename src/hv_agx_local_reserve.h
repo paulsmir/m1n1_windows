@@ -38,6 +38,8 @@ struct hv_agx_local_receipt {
     uint64_t bytes;
 };
 
+bool hv_agx_local_public_span(uint64_t *base, uint64_t *bytes);
+
 enum hv_agx_local_reason {
     HV_AGX_LOCAL_OK,
     HV_AGX_LOCAL_ARGUMENT,

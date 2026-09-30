@@ -36,6 +36,23 @@ static DECLARE_SPINLOCK(broker_lock);
 static DECLARE_SPINLOCK(service_lock);
 static bool resources_mapped;
 static struct hv_agx_local_receipt local_reserve;
+
+bool hv_agx_local_public_span(uint64_t *base, uint64_t *bytes)
+{
+#ifdef AGX_LOCAL_RESERVE_V2
+    if (!base || !bytes || local_reserve.bytes != HV_AGX_LOCAL_BYTES ||
+        !local_reserve.guest_ipa ||
+        local_reserve.host_pa != local_reserve.guest_ipa)
+        return false;
+    *base = local_reserve.guest_ipa;
+    *bytes = HV_AGX_LOCAL_BYTES - UINT64_C(0x4800000);
+    return true;
+#else
+    (void)base;
+    (void)bytes;
+    return false;
+#endif
+}
 static u32 local_reserve_read_logged;
 static u64 firmware_root_base, firmware_root_length;
 

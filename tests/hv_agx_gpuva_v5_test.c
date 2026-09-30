@@ -242,6 +242,29 @@ static void reserve_1g_still_has_bounded_v5_capacity(void)
     free(before);
     free(f);
 }
+static void local_bitmap_ownership_and_eviction(void)
+{
+    struct fixture *f = new_fixture();
+    uint64_t logical[4] = {P_DATA,P_DATA+0x1000,P_DATA+0x2000,P_DATA+0x3000};
+    f->range_backing = true;
+    assert(hv_agx_gpuva_v5_configure_local(&f->broker,P_DATA,
+        UINT64_C(0x3b800000),UINT64_C(0x4000000)) == HV_AGX_GPUVA_V5_OK);
+    assert(hv_agx_gpuva_v5_create(&f->broker,1,1,P_ROOT,false)==HV_AGX_GPUVA_V5_OK);
+    assert(hv_agx_gpuva_v5_create(&f->broker,2,1,Q_ROOT,false)==HV_AGX_GPUVA_V5_OK);
+    assert(hv_agx_gpuva_v5_register_shared_backing(&f->broker,1,1,P_DATA,P_DATA)==HV_AGX_GPUVA_V5_OK);
+    assert(hv_agx_gpuva_v5_register_shared_backing(&f->broker,2,1,P_DATA,P_DATA)==HV_AGX_GPUVA_V5_OK);
+    assert(hv_agx_gpuva_v5_register_backing(&f->broker,1,1,P_DATA,P_DATA+0x4000)==HV_AGX_GPUVA_V5_OWNERSHIP);
+    assert(hv_agx_gpuva_v5_register_shared_backing(&f->broker,1,1,17,P_DATA+0x4000)==HV_AGX_GPUVA_V5_OWNERSHIP);
+    assert(hv_agx_gpuva_v5_register_table(&f->broker,1,1,P_DATA,2)==HV_AGX_GPUVA_V5_OWNERSHIP);
+    assert(hv_agx_gpuva_v5_register_table(&f->broker,1,1,P_L2,2)==HV_AGX_GPUVA_V5_OK);
+    assert(hv_agx_gpuva_v5_update_leaf(&f->broker,1,1,P_L2,8,logical,P_DATA,15,15,15)==HV_AGX_GPUVA_V5_OK);
+    assert(hv_agx_gpuva_v5_revoke_backing(&f->broker,1,1,P_DATA,P_DATA)==HV_AGX_GPUVA_V5_BUSY);
+    assert(hv_agx_gpuva_v5_update_leaf(&f->broker,1,1,P_L2,8,NULL,0,15,0,0)==HV_AGX_GPUVA_V5_OK);
+    assert(hv_agx_gpuva_v5_revoke_backing(&f->broker,1,1,P_DATA,P_DATA)==HV_AGX_GPUVA_V5_OK);
+    assert(hv_agx_gpuva_v5_update_leaf(&f->broker,1,1,P_L2,8,logical,P_DATA,15,15,15)==HV_AGX_GPUVA_V5_OWNERSHIP);
+    assert(hv_agx_gpuva_v5_revoke_backing(&f->broker,2,1,P_DATA,P_DATA)==HV_AGX_GPUVA_V5_OK);
+    free(f);
+}
 static void reject_prepopulated_tables(void)
 {
     struct fixture *f = new_fixture();
@@ -286,6 +309,7 @@ int main(void)
     shared_graph_grants();
     shared_reserve_capacity();
     reserve_1g_still_has_bounded_v5_capacity();
+    local_bitmap_ownership_and_eviction();
     struct fixture *f = new_fixture();
     uint64_t ptoken, qtoken, logical[4]={P_DATA,P_DATA+0x1000,
                                           P_DATA+0x2000,P_DATA+0x3000};

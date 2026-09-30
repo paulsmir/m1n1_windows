@@ -10,6 +10,7 @@
 #define HV_AGX_GPUVA_V5_TABLES 512u
 #define HV_AGX_GPUVA_V5_BACKINGS 8192u
 #define HV_AGX_GPUVA_V5_SLOTS 64u
+#define HV_AGX_GPUVA_V5_LOCAL_PAGES 65536u
 
 enum hv_agx_gpuva_v5_result {
     HV_AGX_GPUVA_V5_OK = 0,
@@ -65,12 +66,17 @@ struct hv_agx_gpuva_v5 {
     struct hv_agx_gpuva_v5_process processes[HV_AGX_GPUVA_V5_PROCESSES];
     struct hv_agx_gpuva_v5_table tables[HV_AGX_GPUVA_V5_TABLES];
     struct hv_agx_gpuva_v5_backing backings[HV_AGX_GPUVA_V5_BACKINGS];
+    uint64_t local_base, local_bytes, private_bytes;
+    uint64_t local_grants[HV_AGX_GPUVA_V5_PROCESSES][HV_AGX_GPUVA_V5_LOCAL_PAGES / 64u];
     struct hv_agx_gpuva_v5_slot slots[HV_AGX_GPUVA_V5_SLOTS];
     bool active, tainted;
 };
 
 enum hv_agx_gpuva_v5_result hv_agx_gpuva_v5_init(
     struct hv_agx_gpuva_v5 *, uint64_t epoch, const struct hv_agx_gpuva_v5_ops *);
+enum hv_agx_gpuva_v5_result hv_agx_gpuva_v5_configure_local(
+    struct hv_agx_gpuva_v5 *, uint64_t base, uint64_t bytes,
+    uint64_t private_bytes);
 enum hv_agx_gpuva_v5_result hv_agx_gpuva_v5_verify(struct hv_agx_gpuva_v5 *);
 enum hv_agx_gpuva_v5_result hv_agx_gpuva_v5_validate_envelope(
     const struct hv_agx_gpuva_v5 *, uint64_t epoch, unsigned command,
