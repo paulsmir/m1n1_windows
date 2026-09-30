@@ -34,6 +34,11 @@ struct fake_platform {
     uint32_t late_snapshot_calls;
     uint64_t late_snapshot_pa;
     uint64_t late_snapshot_iova;
+    uint32_t window_snapshot_calls;
+    uint64_t window_elapsed_ms[3];
+    uint64_t window_surface_pa;
+    uint64_t window_surface_iova;
+    uint32_t window_swap_id;
     uint64_t now_ms;
     uint64_t diagnostic_pa;
     uint64_t diagnostic_iova;
@@ -167,6 +172,19 @@ static void fake_late_snapshot(void *opaque, uint64_t surface_pa,
     fake->late_snapshot_iova = surface_iova;
 }
 
+static void fake_window_snapshot(void *opaque, uint64_t surface_pa,
+                                 uint64_t surface_iova,
+                                 const struct hv_agx_scanout_request *request,
+                                 uint32_t swap_id, uint64_t elapsed_ms)
+{
+    struct fake_platform *fake = opaque;
+    assert(request->Sequence == 2 && fake->window_snapshot_calls < 3);
+    fake->window_elapsed_ms[fake->window_snapshot_calls++] = elapsed_ms;
+    fake->window_surface_pa = surface_pa;
+    fake->window_surface_iova = surface_iova;
+    fake->window_swap_id = swap_id;
+}
+
 static bool fake_diagnostic_fill(void *opaque, uint64_t surface_pa,
                                  uint64_t surface_iova,
                                  const struct hv_agx_scanout_request *request)
@@ -232,6 +250,7 @@ static const struct hv_agx_scanout_platform_ops ops = {
     .diagnostic_snapshot = fake_diagnostic_snapshot,
     .now_ms = fake_now_ms,
     .diagnostic_late_snapshot = fake_late_snapshot,
+    .diagnostic_window_snapshot = fake_window_snapshot,
     .present_begin = fake_present_begin,
     .present_poll = fake_present_poll,
     .present_latch_poll = fake_present_latch_poll,
@@ -586,6 +605,47 @@ static void test_latched_primary_is_sampled_once_after_cdd_window(void)
     assert(fake.present_begin_calls == 1);
 }
 
+static void test_latched_surface_has_late_window_observations(void)
+{
+    struct hv_agx_scanout_broker broker;
+    struct hv_agx_scanout_service service;
+    struct fake_platform fake;
+    const uint64_t offset = UINT64_C(0x30000);
+
+    fake_init(&fake);
+    fake.now_ms = 1000;
+    hv_agx_scanout_broker_init_v2(&broker, true);
+    hv_agx_scanout_service_init(&service, &ops, &fake);
+    register_pool(&service, &broker, &fake);
+    submit_present(&broker, 2, offset);
+    step(&service, &broker, &fake);
+    step(&service, &broker, &fake);
+    fake.present_result = HV_AGX_SCANOUT_ASYNC_APPLIED;
+    fake.applied_swap_id = 10;
+    step(&service, &broker, &fake);
+    fake.latch_result = HV_AGX_SCANOUT_LATCHED;
+    step(&service, &broker, &fake);
+
+    fake.now_ms = 120999;
+    step(&service, &broker, &fake);
+    assert(fake.window_snapshot_calls == 0);
+    fake.now_ms = 121000;
+    step(&service, &broker, &fake);
+    assert(fake.window_snapshot_calls == 1 && fake.window_elapsed_ms[0] == 120000);
+    fake.now_ms = 301000;
+    step(&service, &broker, &fake);
+    assert(fake.window_snapshot_calls == 2 && fake.window_elapsed_ms[1] == 300000);
+    fake.now_ms = 601000;
+    step(&service, &broker, &fake);
+    assert(fake.window_snapshot_calls == 3 && fake.window_elapsed_ms[2] == 600000);
+    assert(fake.window_swap_id == 10);
+    assert(fake.window_surface_pa == fake.pa_base + offset);
+    assert(fake.window_surface_iova == fake.iova + offset);
+    assert(fake.present_begin_calls == 1);
+    assert(fake.free_calls == 0 && fake.unmapped_bytes[0] == 0 &&
+           fake.unmapped_bytes[1] == 0);
+}
+
 static void test_release_cancels_delayed_primary_read(void)
 {
     struct hv_agx_scanout_broker broker;
@@ -614,6 +674,10 @@ static void test_release_cancels_delayed_primary_read(void)
     fake.now_ms = 16000;
     step(&service, &broker, &fake);
     assert(fake.late_snapshot_calls == 0);
+    assert(fake.window_snapshot_calls == 0);
+    fake.now_ms = 601000;
+    step(&service, &broker, &fake);
+    assert(fake.window_snapshot_calls == 0);
     assert(!service.owns_pool);
 }
 
@@ -728,6 +792,7 @@ int main(void)
     test_primary_snapshot_counts_channels_and_corners_without_writing();
     test_v2_present_waits_for_exact_latch_after_applied();
     test_latched_primary_is_sampled_once_after_cdd_window();
+    test_latched_surface_has_late_window_observations();
     test_release_cancels_delayed_primary_read();
     test_v2_wrong_swap_latch_fails_closed_without_retirement();
     test_async_failures_preserve_registered_pool_ownership();

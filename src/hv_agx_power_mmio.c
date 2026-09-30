@@ -325,6 +325,47 @@ static void scanout_diagnostic_late_snapshot(
     scanout_snapshot_report("EXP808_LATE_SNAPSHOT", surface_pa, surface_iova,
                             request);
 }
+#ifdef EXP890_SCANOUT_WINDOW
+static void scanout_diagnostic_window_snapshot(
+    void *opaque, uint64_t surface_pa, uint64_t surface_iova,
+    const struct hv_agx_scanout_request *request,
+    uint32_t applied_swap_id, uint64_t elapsed_ms)
+{
+    uint32_t dcp_swap_id = 0;
+    uint64_t dcp_surface_iova = 0;
+    uint64_t observed_pa = surface_pa;
+    bool observed = display_scanout_observe_latched(
+        &dcp_swap_id, &dcp_surface_iova);
+    bool in_pool = false;
+    uint64_t pool_iova = surface_iova - request->SurfaceOffset;
+
+    (void)opaque;
+    if (observed && request->PoolSize >= request->SurfaceSize &&
+        dcp_surface_iova >= pool_iova &&
+        dcp_surface_iova - pool_iova <=
+            request->PoolSize - request->SurfaceSize) {
+        observed_pa = surface_pa - request->SurfaceOffset +
+                      (dcp_surface_iova - pool_iova);
+        in_pool = true;
+    }
+    printf("EXP890_WINDOW_SOURCE elapsed_since_latch_ms=%lu uptime_ms=%lu "
+           "seq=%lu broker_swap_id=%u dcp_latched_swap_id=%u "
+           "dcp_surface_iova=0x%lx sampled_pa=0x%lx sampled_iova=0x%lx "
+           "same_surface=%u in_pool=%u\n",
+           elapsed_ms, scanout_now_ms(NULL), request->Sequence,
+           applied_swap_id, dcp_swap_id, dcp_surface_iova,
+           in_pool ? observed_pa : surface_pa,
+           in_pool ? dcp_surface_iova : surface_iova,
+           observed && applied_swap_id == dcp_swap_id &&
+               surface_iova == dcp_surface_iova,
+           in_pool);
+    scanout_snapshot_report(in_pool ? "EXP890_WINDOW_SNAPSHOT" :
+                                     "EXP890_STALE_SURFACE_SNAPSHOT",
+                            in_pool ? observed_pa : surface_pa,
+                            in_pool ? dcp_surface_iova : surface_iova,
+                            request);
+}
+#endif
 #endif
 #endif
 
@@ -386,6 +427,9 @@ static const struct hv_agx_scanout_platform_ops scanout_ops = {
 #ifdef EXP808_SCANOUT_DELAYED
     .now_ms = scanout_now_ms,
     .diagnostic_late_snapshot = scanout_diagnostic_late_snapshot,
+#ifdef EXP890_SCANOUT_WINDOW
+    .diagnostic_window_snapshot = scanout_diagnostic_window_snapshot,
+#endif
 #endif
     .present_begin = scanout_present_begin,
     .present_poll = scanout_present_poll,

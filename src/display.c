@@ -36,6 +36,7 @@ static u64 scanout_quiesce_after;
 static bool scanout_swap_active;
 static bool scanout_quiescing;
 static u32 scanout_owner_swap_id;
+static u64 scanout_owner_surface_iova;
 static u64 fb_dva;
 static u64 fb_size;
 static u64 guest_fb_dva;
@@ -694,6 +695,7 @@ bool display_scanout_present_begin(u64 surface_iova, u32 width, u32 height,
         if (owner_swap_id <= 0)
             return false;
         scanout_owner_swap_id = (u32)owner_swap_id;
+        scanout_owner_surface_iova = surface_iova;
         scanout_swap_active = true;
         scanout_quiescing = false;
         if (++scanout_cookie == 0)
@@ -742,6 +744,16 @@ int display_scanout_latch_poll(u32 expected_swap_id)
     return dcp_iomfb_owner_poll_latch(dcp, expected_swap_id);
 }
 
+bool display_scanout_observe_latched(u32 *swap_id, u64 *surface_iova)
+{
+    if (!swap_id || !surface_iova || !dcp || !dcp_iomfb_owner_active(dcp))
+        return false;
+    *swap_id = dcp->iomfb_latched_swap_id;
+    *surface_iova = *swap_id == scanout_owner_swap_id ?
+                        scanout_owner_surface_iova : 0;
+    return *swap_id != 0;
+}
+
 bool display_scanout_quiesce_begin(u64 *cookie)
 {
     dcp_layer_t layer;
@@ -761,6 +773,7 @@ bool display_scanout_quiesce_begin(u64 *cookie)
         if (owner_swap_id <= 0)
             return false;
         scanout_owner_swap_id = (u32)owner_swap_id;
+        scanout_owner_surface_iova = fb_dva;
         scanout_swap_active = true;
         scanout_quiescing = true;
         if (++scanout_cookie == 0)

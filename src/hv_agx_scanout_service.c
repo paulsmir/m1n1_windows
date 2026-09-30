@@ -319,16 +319,22 @@ poll_present_latch(struct hv_agx_scanout_service *service,
         bool latched = hv_agx_scanout_broker_mark_latched(
             broker, service->request.Sequence);
         if (latched && service->ops->now_ms &&
-            service->ops->diagnostic_late_snapshot) {
+            (service->ops->diagnostic_late_snapshot ||
+             service->ops->diagnostic_window_snapshot)) {
             uint64_t now = service->ops->now_ms(service->opaque);
-            if (now <= UINT64_MAX - UINT64_C(15000)) {
+            if (now <= UINT64_MAX - UINT64_C(600000)) {
                 service->late_snapshot_due_ms = now + UINT64_C(15000);
                 service->late_snapshot_pa =
                     service->pool_pa + service->request.SurfaceOffset;
                 service->late_snapshot_iova =
                     service->pool_iova + service->request.SurfaceOffset;
                 service->late_snapshot_request = service->request;
-                service->late_snapshot_armed = true;
+                service->late_snapshot_armed =
+                    service->ops->diagnostic_late_snapshot != NULL;
+                service->window_latch_ms = now;
+                service->window_snapshot_index = 0;
+                service->window_snapshot_armed =
+                    service->ops->diagnostic_window_snapshot != NULL;
             }
         }
     } else
@@ -384,6 +390,32 @@ hv_agx_scanout_service_step(struct hv_agx_scanout_service *service,
                     service->late_snapshot_iova,
                     &service->late_snapshot_request);
                 return HV_AGX_SCANOUT_SERVICE_PROGRESSED;
+            }
+        }
+        if (service->window_snapshot_armed) {
+            static const uint64_t checkpoints_ms[] = {
+                UINT64_C(120000), UINT64_C(300000), UINT64_C(600000),
+            };
+            if (!service->owns_pool || broker->state != HV_AGX_SCANOUT_ACTIVE ||
+                broker->latched_sequence !=
+                    service->late_snapshot_request.Sequence) {
+                service->window_snapshot_armed = false;
+            } else if (service->ops->now_ms &&
+                       service->ops->diagnostic_window_snapshot) {
+                uint64_t now = service->ops->now_ms(service->opaque);
+                if (now >= service->window_latch_ms +
+                           checkpoints_ms[service->window_snapshot_index]) {
+                    service->ops->diagnostic_window_snapshot(
+                        service->opaque, service->late_snapshot_pa,
+                        service->late_snapshot_iova,
+                        &service->late_snapshot_request,
+                        service->applied_swap_id,
+                        now - service->window_latch_ms);
+                    if (++service->window_snapshot_index ==
+                        sizeof(checkpoints_ms) / sizeof(checkpoints_ms[0]))
+                        service->window_snapshot_armed = false;
+                    return HV_AGX_SCANOUT_SERVICE_PROGRESSED;
+                }
             }
         }
         return take_request(service, broker);

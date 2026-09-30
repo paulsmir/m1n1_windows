@@ -60,6 +60,10 @@ struct hv_agx_scanout_platform_ops {
     void (*diagnostic_late_snapshot)(
         void *opaque, uint64_t surface_pa, uint64_t surface_iova,
         const struct hv_agx_scanout_request *request);
+    void (*diagnostic_window_snapshot)(
+        void *opaque, uint64_t surface_pa, uint64_t surface_iova,
+        const struct hv_agx_scanout_request *request,
+        uint32_t applied_swap_id, uint64_t elapsed_ms);
     bool (*present_begin)(void *opaque, uint64_t surface_iova,
                           const struct hv_agx_scanout_request *request,
                           uint64_t *cookie);
@@ -118,6 +122,9 @@ struct hv_agx_scanout_service {
     uint64_t late_snapshot_pa;
     uint64_t late_snapshot_iova;
     struct hv_agx_scanout_request late_snapshot_request;
+    bool window_snapshot_armed;
+    uint32_t window_snapshot_index;
+    uint64_t window_latch_ms;
 };
 
 void hv_agx_scanout_service_init(struct hv_agx_scanout_service *service,

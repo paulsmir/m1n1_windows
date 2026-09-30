@@ -34,6 +34,7 @@ bool display_scanout_present_begin(u64 surface_iova, u32 width, u32 height,
                                    u32 stride, u64 *cookie);
 int display_scanout_present_poll(u64 cookie, u32 *swap_id);
 int display_scanout_latch_poll(u32 expected_swap_id);
+bool display_scanout_observe_latched(u32 *swap_id, u64 *surface_iova);
 bool display_scanout_quiesce_begin(u64 *cookie);
 int display_scanout_quiesce_poll(u64 cookie);
 
