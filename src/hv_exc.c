@@ -1952,7 +1952,9 @@ void hv_exc_sync(struct exc_info *ctx)
 
     if (handled) {
         hv_wdt_breadcrumb('#');
-        ctx->elr += 4;
+        /* HVC saves the following instruction, unlike trapped MSR/SMC. */
+        if (FIELD_GET(ESR_EC, ctx->esr) != ESR_EC_HVC)
+            ctx->elr += 4;
         hv_set_elr(ctx->elr);
         hv_update_fiq();
         hv_wdt_breadcrumb('s');
