@@ -942,7 +942,11 @@ dcp_dev_t *dcp_init(const display_config_t *cfg)
     printf("dcp-iomfb: early PIODMA SID4 ready before RTKit boot\n");
 #endif
 
-    dcp->iovad_dcp = iovad_init(vm_base + 0x10000000, vm_base + 0x20000000);
+    /* EXP953: the guest scanout pool spans the whole 952 MiB VidMm local
+     * range, so the shared DCP/DISP IOVA window is 1.25 GiB.  dart_map()
+     * refuses any page that is already mapped, so a collision with a
+     * firmware mapping fails registration instead of aliasing. */
+    dcp->iovad_dcp = iovad_init(vm_base + 0x10000000, vm_base + 0x60000000);
 
     int ret = dcp_create_firmware_mappings(cfg, dcp);
     if (ret < 0) {
