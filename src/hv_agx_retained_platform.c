@@ -232,6 +232,20 @@ static void gpuva_execute(void *context, const AGX_GPUVA_V5_REQUEST *q,
             q->ProcessGeneration,q->TableIpa,q->LogicalIpa[0],
             q->LogicalIpa[1]);
         break;
+    case AGX_GPUVA_V5_ATTACH_MAILBOX: {
+        uint64_t pa = 0;
+        if (q->ProcessId || q->ProcessGeneration || q->TableIpa ||
+            q->AllocationGeneration || q->Token || q->Slot || q->Index ||
+            q->ValidMask || q->WritableMask || q->LogicalIpa[0] ||
+            q->LogicalIpa[1] || q->LogicalIpa[2] || q->LogicalIpa[3]) {
+            result = HV_AGX_GPUVA_V5_INVALID;
+            break;
+        }
+        result = hv_agx_gpuva_v5_attach_mailbox(&gpuva_v5, q->AuxIpa, &pa);
+        if (result == HV_AGX_GPUVA_V5_OK)
+            gpuva_v5_wire.mailbox = pa ? (unsigned char *)pa : NULL;
+        break;
+    }
     default:
         result = HV_AGX_GPUVA_V5_INVALID;
         break;
@@ -295,7 +309,10 @@ static void execute(void *context, const AGX_RR_REQUEST *q, AGX_RR_RESPONSE *r)
             printf("HV: retained firmware IO prepare status=%d epoch=%llu\n",
                    status,root_owner.Epoch);
             if (!status) {
-                enum hv_agx_gpuva_v5_result v5_status =
+                enum hv_agx_gpuva_v5_result v5_status;
+                /* A new broker epoch starts with no mailbox page attached. */
+                gpuva_v5_wire.mailbox = NULL;
+                v5_status =
                     hv_agx_gpuva_v5_init(&gpuva_v5,root_owner.Epoch,&gpuva_ops);
                 uint64_t public_base = 0, public_bytes = 0;
                 if (v5_status == HV_AGX_GPUVA_V5_OK &&

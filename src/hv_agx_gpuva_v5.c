@@ -79,7 +79,7 @@ enum hv_agx_gpuva_v5_result hv_agx_gpuva_v5_validate_envelope(
     if (!b || !b->active || b->tainted) return HV_AGX_GPUVA_V5_TAINTED;
     if (epoch != b->epoch) return HV_AGX_GPUVA_V5_STALE;
     if (command < AGX_GPUVA_V5_CREATE ||
-        command > AGX_GPUVA_V5_FLUSH_TLB)
+        command > AGX_GPUVA_V5_ATTACH_MAILBOX)
         return HV_AGX_GPUVA_V5_INVALID;
     if (command == AGX_GPUVA_V5_CREATE ? flags > 1u :
         command == AGX_GPUVA_V5_UPDATE_LEAF ?
@@ -138,7 +138,8 @@ static enum hv_agx_gpuva_v5_result table_add(struct hv_agx_gpuva_v5 *b,
     if (!ipa || (ipa & (HV_AGX_GPUVA_V5_PAGE - 1)) || level > 2)
         return HV_AGX_GPUVA_V5_INVALID;
     pa = b->ops.translate_page(b->ops.context, ipa);
-    if (!pa || (pa & (HV_AGX_GPUVA_V5_PAGE - 1)) || pa >= (UINT64_C(1) << 40))
+    if (!pa || (pa & (HV_AGX_GPUVA_V5_PAGE - 1)) || pa >= (UINT64_C(1) << 40) ||
+        pa == b->mailbox_pa)
         return HV_AGX_GPUVA_V5_OWNERSHIP;
     entries = b->ops.map_page(b->ops.context, ipa, pa);
     if (!entries) return HV_AGX_GPUVA_V5_OWNERSHIP;
@@ -283,7 +284,8 @@ static enum hv_agx_gpuva_v5_result register_backing(
     if (!allocation_generation || !page_ipa ||
         (page_ipa & (HV_AGX_GPUVA_V5_PAGE - 1))) return HV_AGX_GPUVA_V5_INVALID;
     pa = b->ops.translate_page(b->ops.context, page_ipa);
-    if (!pa || (pa & (HV_AGX_GPUVA_V5_PAGE - 1)) || pa >= (UINT64_C(1) << 40))
+    if (!pa || (pa & (HV_AGX_GPUVA_V5_PAGE - 1)) || pa >= (UINT64_C(1) << 40) ||
+        pa == b->mailbox_pa)
         return HV_AGX_GPUVA_V5_OWNERSHIP;
     for (i = 0; i < HV_AGX_GPUVA_V5_TABLES; ++i)
         if (b->tables[i].live && b->tables[i].pa == pa)
@@ -652,4 +654,37 @@ enum hv_agx_gpuva_v5_result hv_agx_gpuva_v5_destroy(
     memset(b->local_grants[owner], 0, sizeof(b->local_grants[owner]));
     memset(&b->processes[owner], 0, sizeof(b->processes[owner]));
     return check(b);
+}
+
+enum hv_agx_gpuva_v5_result hv_agx_gpuva_v5_attach_mailbox(
+    struct hv_agx_gpuva_v5 *b, uint64_t ipa, uint64_t *mailbox_pa)
+{
+    unsigned i, local_page;
+    uint64_t pa;
+    enum hv_agx_gpuva_v5_result result = check(b);
+    if (result) return result;
+    if (!mailbox_pa || (ipa & (HV_AGX_GPUVA_V5_PAGE - 1)))
+        return HV_AGX_GPUVA_V5_INVALID;
+    if (!ipa) {
+        b->mailbox_pa = 0;
+        *mailbox_pa = 0;
+        return HV_AGX_GPUVA_V5_OK;
+    }
+    /* The response store targets this page, so it must be ordinary guest RAM
+     * that no process can map as a table or GPU backing while attached. */
+    if (local_index(b, ipa, &local_page)) return HV_AGX_GPUVA_V5_OWNERSHIP;
+    pa = b->ops.translate_page(b->ops.context, ipa);
+    if (!pa || (pa & (HV_AGX_GPUVA_V5_PAGE - 1)) || pa >= (UINT64_C(1) << 40))
+        return HV_AGX_GPUVA_V5_OWNERSHIP;
+    for (i = 0; i < HV_AGX_GPUVA_V5_TABLES; ++i)
+        if (b->tables[i].live &&
+            (b->tables[i].pa == pa || b->tables[i].ipa == ipa))
+            return HV_AGX_GPUVA_V5_OWNERSHIP;
+    for (i = 0; i < HV_AGX_GPUVA_V5_BACKINGS; ++i)
+        if (b->backings[i].live &&
+            (b->backings[i].pa == pa || b->backings[i].ipa == ipa))
+            return HV_AGX_GPUVA_V5_OWNERSHIP;
+    b->mailbox_pa = pa;
+    *mailbox_pa = pa;
+    return HV_AGX_GPUVA_V5_OK;
 }

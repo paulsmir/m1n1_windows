@@ -7,6 +7,8 @@ struct hv_agx_gpuva_v5_wire {
     AGX_GPUVA_V5_REQUEST request;
     AGX_GPUVA_V5_RESPONSE response;
     uint64_t last_sequence;
+    /* Hypervisor view of the attached mailbox page, or NULL. */
+    unsigned char *mailbox;
 };
 typedef void (*hv_agx_gpuva_v5_execute)(void *, const AGX_GPUVA_V5_REQUEST *,
                                         AGX_GPUVA_V5_RESPONSE *);

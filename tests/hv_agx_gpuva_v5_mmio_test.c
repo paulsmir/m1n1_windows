@@ -74,5 +74,29 @@ int main(void)
     }
     write32(&s,AGX_GPUVA_V5_DOORBELL,1);
     assert(executed==3 && s.response.Receipt==4 && s.response.Status!=0);
+    /* Mailbox doorbell: no request words cross the trapped window. */
+    static unsigned char box[AGX_GPUVA_V5_MAILBOX_BYTES];
+    AGX_GPUVA_V5_RESPONSE in_box;
+    assert(!hv_agx_gpuva_v5_mmio(&s,AGX_GPUVA_V5_DOORBELL,&(uint64_t){2},
+                                 true,2,execute,NULL)); /* not attached */
+    s.mailbox=box;
+    q.Version=6; q.Command=AGX_GPUVA_V5_FLUSH_TLB; q.Sequence=5;
+    memset(&s.request,0,sizeof(s.request));
+    memcpy(box,&q,sizeof(q));
+    write32(&s,AGX_GPUVA_V5_DOORBELL,AGX_GPUVA_V5_DOORBELL_MAILBOX);
+    memcpy(&in_box,box+AGX_GPUVA_V5_MAILBOX_RESPONSE,sizeof(in_box));
+    assert(executed==4 && in_box.Receipt==5 && in_box.Status==0 &&
+           in_box.Epoch==7 && s.response.Receipt==5);
+    /* Replay and stale sequences are refused exactly as on the window. */
+    write32(&s,AGX_GPUVA_V5_DOORBELL,AGX_GPUVA_V5_DOORBELL_MAILBOX);
+    memcpy(&in_box,box+AGX_GPUVA_V5_MAILBOX_RESPONSE,sizeof(in_box));
+    assert(executed==4 && in_box.Receipt==5 && in_box.Status!=0);
+    q.Command=AGX_GPUVA_V5_ATTACH_MAILBOX+1; q.Sequence=6;
+    memcpy(box,&q,sizeof(q));
+    write32(&s,AGX_GPUVA_V5_DOORBELL,AGX_GPUVA_V5_DOORBELL_MAILBOX);
+    memcpy(&in_box,box+AGX_GPUVA_V5_MAILBOX_RESPONSE,sizeof(in_box));
+    assert(executed==4 && in_box.Receipt==6 && in_box.Status!=0);
+    assert(!hv_agx_gpuva_v5_mmio(&s,AGX_GPUVA_V5_DOORBELL,&(uint64_t){3},
+                                 true,2,execute,NULL));
     return 0;
 }

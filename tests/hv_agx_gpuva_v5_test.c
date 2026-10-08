@@ -3,6 +3,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include "../src/hv_agx_gpuva_v5.h"
+#include "apple_agx_gpuva_broker_v5.h"
 
 #define P_ROOT UINT64_C(0x10000000)
 #define P_L1   UINT64_C(0x10004000)
@@ -300,6 +301,50 @@ static void cleanup(struct fixture *f, uint64_t id, uint64_t root,
            HV_AGX_GPUVA_V5_OK);
     assert(hv_agx_gpuva_v5_destroy(&f->broker,id,1)==HV_AGX_GPUVA_V5_OK);
 }
+static void mailbox_ownership(void)
+{
+    struct fixture *f = new_fixture();
+    uint64_t pa = 1;
+    prepare(f, 1, P_ROOT, P_L1, P_L2, P_DATA, true);
+    assert(hv_agx_gpuva_v5_validate_envelope(&f->broker, 7,
+           AGX_GPUVA_V5_ATTACH_MAILBOX, 0) == HV_AGX_GPUVA_V5_OK);
+    assert(hv_agx_gpuva_v5_validate_envelope(&f->broker, 7,
+           AGX_GPUVA_V5_ATTACH_MAILBOX, 1) == HV_AGX_GPUVA_V5_INVALID);
+    assert(hv_agx_gpuva_v5_validate_envelope(&f->broker, 7,
+           AGX_GPUVA_V5_ATTACH_MAILBOX + 1, 0) == HV_AGX_GPUVA_V5_INVALID);
+    /* A live table or backing page can never become the response page. */
+    assert(hv_agx_gpuva_v5_attach_mailbox(&f->broker, P_L2, &pa) ==
+           HV_AGX_GPUVA_V5_OWNERSHIP && pa == 1);
+    assert(hv_agx_gpuva_v5_attach_mailbox(&f->broker, P_DATA, &pa) ==
+           HV_AGX_GPUVA_V5_OWNERSHIP);
+    assert(hv_agx_gpuva_v5_attach_mailbox(&f->broker, P_ROOT2 + 0x1000, &pa) ==
+           HV_AGX_GPUVA_V5_INVALID);
+    f->blocked_ipa = P_ROOT2;
+    assert(hv_agx_gpuva_v5_attach_mailbox(&f->broker, P_ROOT2, &pa) ==
+           HV_AGX_GPUVA_V5_OWNERSHIP);
+    f->blocked_ipa = 0;
+    assert(hv_agx_gpuva_v5_attach_mailbox(&f->broker, P_ROOT2, &pa) ==
+           HV_AGX_GPUVA_V5_OK && pa == P_ROOT2 &&
+           f->broker.mailbox_pa == P_ROOT2);
+    /* While attached, the mailbox page can never become a table or backing. */
+    assert(hv_agx_gpuva_v5_register_table(&f->broker, 1, 1, P_ROOT2, 1) ==
+           HV_AGX_GPUVA_V5_OWNERSHIP);
+    assert(hv_agx_gpuva_v5_register_backing(&f->broker, 1, 1, 18, P_ROOT2) ==
+           HV_AGX_GPUVA_V5_OWNERSHIP);
+    assert(hv_agx_gpuva_v5_register_shared_backing(&f->broker, 1, 1, 18,
+           P_ROOT2) == HV_AGX_GPUVA_V5_OWNERSHIP);
+    assert(hv_agx_gpuva_v5_create(&f->broker, 3, 1, P_ROOT2, true) ==
+           HV_AGX_GPUVA_V5_OWNERSHIP);
+    assert(hv_agx_gpuva_v5_attach_mailbox(&f->broker, 0, &pa) ==
+           HV_AGX_GPUVA_V5_OK && pa == 0 && f->broker.mailbox_pa == 0);
+    assert(hv_agx_gpuva_v5_register_table(&f->broker, 1, 1, P_ROOT2, 1) ==
+           HV_AGX_GPUVA_V5_OK);
+    assert(hv_agx_gpuva_v5_attach_mailbox(&f->broker, P_ROOT2, &pa) ==
+           HV_AGX_GPUVA_V5_OWNERSHIP);
+    assert(hv_agx_gpuva_v5_attach_mailbox(&f->broker, P_ROOT2, NULL) ==
+           HV_AGX_GPUVA_V5_INVALID);
+    free(f);
+}
 int main(void)
 {
     independent_flush();
@@ -397,5 +442,6 @@ int main(void)
                HV_AGX_GPUVA_V5_OK);
     assert(hv_agx_gpuva_v5_destroy(&f->broker,1,1)==HV_AGX_GPUVA_V5_OK);
     free(f);
+    mailbox_ownership();
     return 0;
 }

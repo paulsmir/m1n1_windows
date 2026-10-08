@@ -69,6 +69,8 @@ struct hv_agx_gpuva_v5 {
     uint64_t local_base, local_bytes, private_bytes;
     uint64_t local_grants[HV_AGX_GPUVA_V5_PROCESSES][HV_AGX_GPUVA_V5_LOCAL_PAGES / 64u];
     struct hv_agx_gpuva_v5_slot slots[HV_AGX_GPUVA_V5_SLOTS];
+    /* Attached request/response page; never a table or a backing. */
+    uint64_t mailbox_pa;
     bool active, tainted;
 };
 
@@ -124,5 +126,7 @@ enum hv_agx_gpuva_v5_result hv_agx_gpuva_v5_flush_tlb(
     uint64_t root_ipa, uint64_t start_va, uint64_t end_va);
 enum hv_agx_gpuva_v5_result hv_agx_gpuva_v5_destroy(
     struct hv_agx_gpuva_v5 *, uint64_t id, uint64_t generation);
+enum hv_agx_gpuva_v5_result hv_agx_gpuva_v5_attach_mailbox(
+    struct hv_agx_gpuva_v5 *, uint64_t mailbox_ipa, uint64_t *mailbox_pa);
 
 #endif
