@@ -61,6 +61,7 @@ static u64 irq_owner_polls;
 /* Receipt-only: CNTPCT of the last guest CQ-head write and the last INTx injection. */
 static u64 last_cq_doorbell_ticks;
 static u64 last_inject_ticks;
+static u64 irq_renotifies;
 
 static struct {
     u32 intms;
@@ -185,11 +186,11 @@ static void reset_receipt(void)
     if (receipts++ >= 32)
         return;
     printf("HV: NVMe guest reset #%u irq=%d intms=0x%x out=%d notified=%d kick=%d eoipend=%d "
-           "gicd=%d kicks=%lu polls=%lu cqdb_ms=%lu inj_ms=%lu q0 sq=%u/%u cq=%u/%u/%u "
+           "gicd=%d kicks=%lu polls=%lu renotify=%lu cqdb_ms=%lu inj_ms=%lu q0 sq=%u/%u cq=%u/%u/%u "
            "q1 sq=%u/%u cq=%u/%u/%u ie=%d cmds=%lu cpl=%lu sqdb=%lu cqdb=%lu cpu=%d\n",
            receipts, queue_ctrl.irq_asserted, regs.intms, irq_delivery.outstanding,
            irq_delivery.assertion_notified, irq_delivery.owner_kick_pending, irq_eoi_pending,
-           hv_vgic3_irq_enabled(irq), irq_owner_kicks, irq_owner_polls,
+           hv_vgic3_irq_enabled(irq), irq_owner_kicks, irq_owner_polls, irq_renotifies,
            ticks_ago_ms(last_cq_doorbell_ticks), ticks_ago_ms(last_inject_ticks), q0->sq_head,
            q0->sq_tail, q0->cq_head, q0->cq_tail, q0->cq_pending, q1->sq_head, q1->sq_tail,
            q1->cq_head, q1->cq_tail, q1->cq_pending, q1->irq_enabled, queue_ctrl.stats.commands,
@@ -236,12 +237,26 @@ bool hv_nvme_try_handle_dabort(struct exc_info *ctx, bool *matched)
     return handled;
 }
 
+/* Renotify a still-asserted, EOIed line after 10 ms (see vnvme_intx_delivery_renotify_due). */
+#define NVME_RENOTIFY_HOLDOFF_US 10000
+
 void hv_nvme_poll_irq(void)
 {
     /* Never make a bhl owner wait behind synchronous storage I/O. */
     if (!spin_try_lock(&nvme_lock))
         return;
     drain_deferred_eoi();
+    if (vnvme_intx_delivery_renotify_due(&irq_delivery, queue_ctrl.irq_asserted, regs.intms,
+                                         mrs(CNTPCT_EL0), last_inject_ticks,
+                                         mrs(CNTFRQ_EL0) / 1000000 * NVME_RENOTIFY_HOLDOFF_US)) {
+        irq_renotifies++;
+        vnvme_intx_delivery_acknowledged(&irq_delivery);
+        /* Receipt-only, logarithmic: how often the holdoff renotification fires. */
+        if (!(irq_renotifies & (irq_renotifies - 1)))
+            printf("HV: NVMe renotify count=%lu q0 cq=%u/%u q1 cq=%u/%u cpu=%d\n", irq_renotifies,
+                   queue_ctrl.queues[0].cq_head, queue_ctrl.queues[0].cq_tail,
+                   queue_ctrl.queues[1].cq_head, queue_ctrl.queues[1].cq_tail, smp_id());
+    }
     try_raise_intx();
     spin_unlock(&nvme_lock);
 }

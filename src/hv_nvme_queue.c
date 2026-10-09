@@ -117,6 +117,20 @@ bool vnvme_intx_delivery_should_kick_owner(struct vnvme_intx_delivery *delivery,
     return true;
 }
 
+/*
+ * A level line that stays asserted after the guest's EOI must interrupt again.  The
+ * one-notification-per-assertion rule (an early EOI must not re-inject before the DPC
+ * acknowledges the CQ head) is kept for a holdoff only: J313 receipts (EXP1097) showed an
+ * injected and EOIed interrupt whose CQEs the guest never consumed, the line still high
+ * and no further notification until stornvme's ten-second reset.
+ */
+bool vnvme_intx_delivery_renotify_due(const struct vnvme_intx_delivery *delivery, bool asserted,
+                                      u32 intms, u64 now, u64 last_inject, u64 holdoff)
+{
+    return delivery && asserted && !intms && delivery->assertion_notified &&
+           !delivery->outstanding && now - last_inject >= holdoff;
+}
+
 void vnvme_intx_delivery_owner_polled(struct vnvme_intx_delivery *delivery)
 {
     if (delivery)

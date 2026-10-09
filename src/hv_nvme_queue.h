@@ -188,6 +188,8 @@ void vnvme_intx_delivery_update_line(struct vnvme_intx_delivery *delivery, bool 
 void vnvme_intx_delivery_mark_injected(struct vnvme_intx_delivery *delivery);
 void vnvme_intx_delivery_eoi(struct vnvme_intx_delivery *delivery);
 void vnvme_intx_delivery_acknowledged(struct vnvme_intx_delivery *delivery);
+bool vnvme_intx_delivery_renotify_due(const struct vnvme_intx_delivery *delivery, bool asserted,
+                                      u32 intms, u64 now, u64 last_inject, u64 holdoff);
 bool vnvme_intx_delivery_should_kick_owner(struct vnvme_intx_delivery *delivery, bool asserted,
                                            u32 intms, int current_cpu, int owner_cpu);
 void vnvme_intx_delivery_owner_polled(struct vnvme_intx_delivery *delivery);

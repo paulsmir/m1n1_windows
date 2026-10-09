@@ -292,6 +292,25 @@ int main(void)
     vnvme_intx_delivery_eoi(&delivery);
     assert(vnvme_intx_delivery_can_inject(&delivery, true, 0, true, 0));
 
+    /*
+     * EXP1097: an injected, EOIed notification whose CQEs stay unconsumed is renotified
+     * once the holdoff has passed, never while the LR is outstanding, masked, deasserted
+     * or within the holdoff.
+     */
+    delivery = (struct vnvme_intx_delivery){0};
+    vnvme_intx_delivery_update_line(&delivery, true);
+    assert(!vnvme_intx_delivery_renotify_due(&delivery, true, 0, 1000, 0, 100));
+    vnvme_intx_delivery_mark_injected(&delivery);
+    assert(!vnvme_intx_delivery_renotify_due(&delivery, true, 0, 1000, 500, 100));
+    vnvme_intx_delivery_eoi(&delivery);
+    assert(!vnvme_intx_delivery_renotify_due(&delivery, true, 0, 550, 500, 100));
+    assert(!vnvme_intx_delivery_renotify_due(&delivery, false, 0, 1000, 500, 100));
+    assert(!vnvme_intx_delivery_renotify_due(&delivery, true, 1, 1000, 500, 100));
+    assert(vnvme_intx_delivery_renotify_due(&delivery, true, 0, 600, 500, 100));
+    vnvme_intx_delivery_acknowledged(&delivery);
+    assert(vnvme_intx_delivery_can_inject(&delivery, true, 0, true, 0));
+    assert(!vnvme_intx_delivery_renotify_due(&delivery, true, 0, 600, 500, 100));
+
     /* Start the functional command tests with clean queue and trace state. */
     irq_asserts = 0;
     irq_deasserts = 0;
