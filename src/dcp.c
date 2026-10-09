@@ -155,6 +155,52 @@ static const struct dcp_iomfb_property_ops dcp_iomfb_property_ops = {
     .release = dcp_iomfb_property_release,
 };
 
+/* EXP1113 receipt-only: where the ~2 ms present lead goes. Durations of
+ * the synchronous swap_start (A407) and swap_submit (A408) RPCs, of the
+ * per-present console line, and from the end of A408 to the matched D589
+ * latch (0.5 ms bins), summarised every 1024 presents. */
+#define DCP_PRESENT_TIMING_PERIOD 1024u
+#define DCP_PRESENT_TIMING_BINS 12u
+static struct {
+    u64 n, a407_sum, a407_max, a408_sum, a408_max, print_sum, print_max;
+    u64 latch_n, latch_sum, latch_max, last_submit;
+    u32 latch_hist[DCP_PRESENT_TIMING_BINS];
+} present_timing;
+
+static u64 dcp_ticks_us(u64 ticks)
+{
+    return ticks / 24u;
+}
+
+static void dcp_present_timing_note(u64 *sum, u64 *max, u64 ticks)
+{
+    u64 us = dcp_ticks_us(ticks);
+    *sum += us;
+    if (us > *max)
+        *max = us;
+}
+
+static void dcp_present_timing_report(void)
+{
+    u64 n = present_timing.n ? present_timing.n : 1;
+    u64 l = present_timing.latch_n ? present_timing.latch_n : 1;
+    printf("dcp-present-timing n=%lu a407 avg=%lu max=%lu a408 avg=%lu max=%lu "
+           "print avg=%lu max=%lu latch_after_submit n=%lu avg=%lu max=%lu us "
+           "hist500us=%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u\n",
+           present_timing.n, present_timing.a407_sum / n, present_timing.a407_max,
+           present_timing.a408_sum / n, present_timing.a408_max,
+           present_timing.print_sum / n, present_timing.print_max,
+           present_timing.latch_n, present_timing.latch_sum / l,
+           present_timing.latch_max, present_timing.latch_hist[0],
+           present_timing.latch_hist[1], present_timing.latch_hist[2],
+           present_timing.latch_hist[3], present_timing.latch_hist[4],
+           present_timing.latch_hist[5], present_timing.latch_hist[6],
+           present_timing.latch_hist[7], present_timing.latch_hist[8],
+           present_timing.latch_hist[9], present_timing.latch_hist[10],
+           present_timing.latch_hist[11]);
+    memset(&present_timing, 0, sizeof(present_timing));
+}
+
 static int dcp_iomfb_owner_platform(void *opaque, unsigned int callback_id,
                                     const void *input, u32 input_size,
                                     void *output, u32 output_size)
@@ -205,6 +251,17 @@ static int dcp_iomfb_owner_platform(void *opaque, unsigned int callback_id,
     if (latch == DCP_IOMFB_LATCH_MATCHED) {
         dcp->iomfb_latched_swap_id = completed;
         dcp->iomfb_expected_swap_id = 0;
+        if (present_timing.last_submit) {
+            u64 us = dcp_ticks_us(get_ticks() - present_timing.last_submit);
+            u64 bin = us / 500u;
+            present_timing.latch_n++;
+            present_timing.latch_sum += us;
+            if (us > present_timing.latch_max)
+                present_timing.latch_max = us;
+            present_timing.latch_hist[bin < DCP_PRESENT_TIMING_BINS ?
+                                      bin : DCP_PRESENT_TIMING_BINS - 1]++;
+            present_timing.last_submit = 0;
+        }
         printf("dcp-iomfb: exact D589 latch swap_id=%u\n", completed);
     } else {
         printf("dcp-iomfb: stale D589 swap_id=%u expected=%u\n", completed,
@@ -639,6 +696,7 @@ int dcp_iomfb_owner_present(dcp_dev_t *dcp, u64 surface_iova, u32 width,
     u8 start_output[DCP_IOMFB_V13_5_SWAP_START_SIZE] = {0};
     u8 submit_output[DCP_IOMFB_V13_5_SWAP_SUBMIT_OUTPUT_SIZE] = {0};
     u32 swap_id = 0;
+    u64 t0 = get_ticks(), t1, t2, t3;
 
     if (!dcp_iomfb_owner_active(dcp) || dcp->iomfb_expected_swap_id ||
         !dcp_iomfb_present_build_start_v13_5(start_input,
@@ -654,8 +712,10 @@ int dcp_iomfb_owner_present(dcp_dev_t *dcp, u64 surface_iova, u32 width,
         !dcp_iomfb_present_set_swap_id_v13_5(&dcp->iomfb_present_request,
                                               swap_id))
         return -1;
+    t1 = get_ticks();
 
     /* D589 may arrive while the synchronous A408 ACK is being pumped. */
+    present_timing.last_submit = 0;
     dcp_iomfb_owner_arm(dcp, swap_id);
     if (!dcp_iomfb_owner_call(dcp, "A408", &dcp->iomfb_present_request,
                                sizeof(dcp->iomfb_present_request),
@@ -665,8 +725,21 @@ int dcp_iomfb_owner_present(dcp_dev_t *dcp, u64 surface_iova, u32 width,
         dcp->iomfb_expected_swap_id = 0;
         return -1;
     }
+    t2 = get_ticks();
+    if (dcp->iomfb_latched_swap_id != swap_id)
+        present_timing.last_submit = t2;
     printf("dcp-iomfb: A408 APPLIED swap_id=%u; awaiting exact D589 latch\n",
            swap_id);
+    t3 = get_ticks();
+    present_timing.n++;
+    dcp_present_timing_note(&present_timing.a407_sum, &present_timing.a407_max,
+                            t1 - t0);
+    dcp_present_timing_note(&present_timing.a408_sum, &present_timing.a408_max,
+                            t2 - t1);
+    dcp_present_timing_note(&present_timing.print_sum,
+                            &present_timing.print_max, t3 - t2);
+    if (present_timing.n >= DCP_PRESENT_TIMING_PERIOD)
+        dcp_present_timing_report();
     dcp->iomfb_surfaces_cleared = true;
     return (int)swap_id;
 }

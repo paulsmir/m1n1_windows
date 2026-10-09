@@ -229,11 +229,33 @@ static void scanout_unmap(void *opaque, enum hv_agx_scanout_dart dart,
     display_scanout_unmap((unsigned)dart, iova, size);
 }
 
+/* EXP1113 receipt-only: from the guest's present request (broker MMIO
+ * write) to the start of the DCP swap, summarised every 1024 presents. */
+static uint64_t scanout_request_ticks, scanout_request_sequence;
+static struct {
+    uint64_t n, sum_us, max_us;
+} scanout_begin_timing;
+
 static bool scanout_present_begin(void *opaque, uint64_t surface_iova,
                                   const struct hv_agx_scanout_request *request,
                                   uint64_t *cookie)
 {
     (void)opaque;
+    if (request && scanout_request_ticks &&
+        request->Sequence == scanout_request_sequence) {
+        uint64_t us = (get_ticks() - scanout_request_ticks) / 24u;
+        scanout_begin_timing.n++;
+        scanout_begin_timing.sum_us += us;
+        if (us > scanout_begin_timing.max_us)
+            scanout_begin_timing.max_us = us;
+        if (scanout_begin_timing.n >= 1024u) {
+            printf("scanout-begin-timing n=%lu request_to_begin avg=%lu max=%lu us\n",
+                   scanout_begin_timing.n,
+                   scanout_begin_timing.sum_us / scanout_begin_timing.n,
+                   scanout_begin_timing.max_us);
+            memset(&scanout_begin_timing, 0, sizeof(scanout_begin_timing));
+        }
+    }
     return request && display_scanout_present_begin(
                           surface_iova, request->Width, request->Height,
                           request->Stride, cookie);
@@ -518,6 +540,12 @@ static bool handle_agx_power_broker(struct exc_info *ctx, u64 addr, u64 *value, 
         handled = hv_agx_scanout_broker_mmio(
             &scanout_broker, offset - HV_AGX_SCANOUT_MMIO_OFFSET, value, write,
             (unsigned)width);
+        if (write && scanout_broker.state == HV_AGX_SCANOUT_PENDING &&
+            scanout_broker.pending.Command == HV_AGX_SCANOUT_CMD_PRESENT &&
+            scanout_broker.pending.Sequence != scanout_request_sequence) {
+            scanout_request_sequence = scanout_broker.pending.Sequence;
+            scanout_request_ticks = get_ticks();
+        }
         spin_unlock(&broker_lock);
         return handled;
     }
