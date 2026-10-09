@@ -456,6 +456,15 @@ static bool doorbell_write(u32 index, u32 value)
     bool ok;
     if (index & 1) {
         ok = vnvme_cq_doorbell(&queue_ctrl, qid, value);
+        /*
+         * A synchronous batch raises INTx at its first CQE and may still be posting CQEs
+         * on this or another CPU when the guest scans.  If the guest's head write leaves
+         * CQEs it has not seen, notify again (level-triggered INTx stays asserted).
+         */
+        if (ok && queue_ctrl.cq_ack_left_pending) {
+            vnvme_intx_delivery_acknowledged(&irq_delivery);
+            try_raise_intx();
+        }
     } else {
         dma_rmb();
         ok = vnvme_sq_doorbell(&queue_ctrl, qid, value);

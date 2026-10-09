@@ -93,6 +93,19 @@ void vnvme_intx_delivery_eoi(struct vnvme_intx_delivery *delivery)
         delivery->outstanding = false;
 }
 
+/*
+ * The guest acknowledged part of the asserted CQ contents.  The level line stays high for
+ * the CQEs it has not seen, which needs a new notification generation (delivered after the
+ * previous EOI).  Without it those CQEs waited for stornvme's ten-second reset.
+ */
+void vnvme_intx_delivery_acknowledged(struct vnvme_intx_delivery *delivery)
+{
+    if (delivery) {
+        delivery->assertion_notified = false;
+        delivery->owner_kick_pending = false;
+    }
+}
+
 bool vnvme_intx_delivery_should_kick_owner(struct vnvme_intx_delivery *delivery, bool asserted,
                                            u32 intms, int current_cpu, int owner_cpu)
 {
@@ -582,6 +595,7 @@ bool vnvme_cq_doorbell(struct vnvme_ctrl *ctrl, u16 qid, u16 new_head)
     ctrl->stats.cq_doorbells++;
     cq->cq_head = new_head;
     cq->cq_pending -= consumed;
+    ctrl->cq_ack_left_pending = consumed && cq->cq_pending;
     update_irq(ctrl);
 
     if (cq->cq_pending)

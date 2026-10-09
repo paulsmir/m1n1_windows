@@ -167,6 +167,8 @@ struct vnvme_ctrl {
     struct vnvme_queue queues[VNVME_MAX_QUEUES];
     struct vnvme_stats stats;
     bool irq_asserted;
+    /* The last CQ-head write acknowledged CQEs but left later ones pending. */
+    bool cq_ack_left_pending;
     u8 bounce[VNVME_MAX_BLOCKS * VNVME_LBA_SIZE] ALIGNED(VNVME_PAGE_SIZE);
 };
 
@@ -185,6 +187,7 @@ bool vnvme_intx_delivery_can_inject(const struct vnvme_intx_delivery *delivery, 
 void vnvme_intx_delivery_update_line(struct vnvme_intx_delivery *delivery, bool asserted);
 void vnvme_intx_delivery_mark_injected(struct vnvme_intx_delivery *delivery);
 void vnvme_intx_delivery_eoi(struct vnvme_intx_delivery *delivery);
+void vnvme_intx_delivery_acknowledged(struct vnvme_intx_delivery *delivery);
 bool vnvme_intx_delivery_should_kick_owner(struct vnvme_intx_delivery *delivery, bool asserted,
                                            u32 intms, int current_cpu, int owner_cpu);
 void vnvme_intx_delivery_owner_polled(struct vnvme_intx_delivery *delivery);

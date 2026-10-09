@@ -253,6 +253,45 @@ int main(void)
     assert(state.queues[0].sq_tail == 16);
     assert(vnvme_cq_doorbell(&ctrl, 0, state.queues[0].cq_tail));
 
+    /*
+     * A guest CQ-head write that acknowledges only part of a batch leaves completions it
+     * has not seen.  The INTx line stays asserted, so no deassert/reassert transition opens
+     * a new notification generation.  Before this contract the remaining CQEs waited until
+     * stornvme's ten-second reset (System 129).  The engine reports such a partial
+     * acknowledgement, and the delivery model then starts a new generation that is
+     * deliverable after the previous EOI.
+     */
+    vnvme_init(&ctrl, BLOCKS, &ops, NULL);
+    assert(vnvme_set_admin_queue(&ctrl, (uint64_t)max_admin_sq, (uint64_t)max_admin_cq, 256,
+                                 256));
+    for (unsigned i = 0; i < 3; i++)
+        put_cmd(max_admin_sq, i, 0xff, 0x500 + i);
+    assert(vnvme_sq_doorbell(&ctrl, 0, 3));
+    state = snapshot(&ctrl);
+    assert(state.stats.completions == 3 && state.irq_asserted);
+    assert(!ctrl.cq_ack_left_pending);
+    assert(vnvme_cq_doorbell(&ctrl, 0, 1));
+    state = snapshot(&ctrl);
+    assert(state.irq_asserted && ctrl.cq_ack_left_pending);
+    assert(vnvme_cq_doorbell(&ctrl, 0, 3));
+    state = snapshot(&ctrl);
+    assert(!state.irq_asserted && !ctrl.cq_ack_left_pending);
+
+    delivery = (struct vnvme_intx_delivery){0};
+    vnvme_intx_delivery_update_line(&delivery, true);
+    vnvme_intx_delivery_mark_injected(&delivery);
+    vnvme_intx_delivery_eoi(&delivery);
+    assert(!vnvme_intx_delivery_can_inject(&delivery, true, 0, true, 0));
+    vnvme_intx_delivery_acknowledged(&delivery);
+    assert(vnvme_intx_delivery_can_inject(&delivery, true, 0, true, 0));
+    assert(vnvme_intx_delivery_should_kick_owner(&delivery, true, 0, 4, 0));
+    /* Acknowledged before the old EOI: deliverable once that EOI arrives. */
+    vnvme_intx_delivery_mark_injected(&delivery);
+    vnvme_intx_delivery_acknowledged(&delivery);
+    assert(!vnvme_intx_delivery_can_inject(&delivery, true, 0, true, 0));
+    vnvme_intx_delivery_eoi(&delivery);
+    assert(vnvme_intx_delivery_can_inject(&delivery, true, 0, true, 0));
+
     /* Start the functional command tests with clean queue and trace state. */
     irq_asserts = 0;
     irq_deasserts = 0;
