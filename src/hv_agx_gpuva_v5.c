@@ -294,9 +294,6 @@ static enum hv_agx_gpuva_v5_result register_backing(
         if (!shared || allocation_generation != b->local_base || pa != page_ipa ||
             local_granted(b, (unsigned)owner, local_page))
             return HV_AGX_GPUVA_V5_OWNERSHIP;
-        for (i = 0; i < HV_AGX_GPUVA_V5_BACKINGS; ++i)
-            if (b->backings[i].live && b->backings[i].pa == pa)
-                return HV_AGX_GPUVA_V5_OWNERSHIP;
         local_set_grant(b, (unsigned)owner, local_page, true);
         return HV_AGX_GPUVA_V5_OK;
     }
@@ -444,9 +441,14 @@ enum hv_agx_gpuva_v5_result hv_agx_gpuva_v5_update_leaf(
             AppleAgxUatEncodePageDescriptor(1u, pa,
                 AppleAgxUatGpuSharedReadWrite, &rw) != AppleAgxUatResultOk ||
             (before != ro && before != rw)) return HV_AGX_GPUVA_V5_OWNERSHIP;
-        for (i = 0; i < HV_AGX_GPUVA_V5_BACKINGS; ++i)
-            if (b->backings[i].live && b->backings[i].owner == (unsigned)owner &&
-                b->backings[i].pa == pa) break;
+        /* Local-reserve pages are tracked only by the grant bitmap; the
+         * backing table never holds one (register_backing returns first). */
+        i = HV_AGX_GPUVA_V5_BACKINGS;
+        if (!local_index(b, pa, &local_page))
+            for (i = 0; i < HV_AGX_GPUVA_V5_BACKINGS; ++i)
+                if (b->backings[i].live &&
+                    b->backings[i].owner == (unsigned)owner &&
+                    b->backings[i].pa == pa) break;
         if (i == HV_AGX_GPUVA_V5_BACKINGS) {
             if (!local_index(b, pa, &local_page) ||
                 !local_granted(b, (unsigned)owner, local_page))
@@ -476,12 +478,14 @@ enum hv_agx_gpuva_v5_result hv_agx_gpuva_v5_update_leaf(
         for (i = 0; i < 4; ++i)
             if (ipa[i] != ipa[0] + i * UINT64_C(0x1000))
                 return HV_AGX_GPUVA_V5_OWNERSHIP;
-        for (i = 0; i < HV_AGX_GPUVA_V5_BACKINGS; ++i)
-            if (b->backings[i].live &&
-                b->backings[i].generation == allocation_generation &&
-                b->backings[i].owner == (unsigned)owner &&
-                b->backings[i].ipa == ipa[0] && b->backings[i].pa == pa)
-                break;
+        i = HV_AGX_GPUVA_V5_BACKINGS;
+        if (!local_index(b, ipa[0], &local_page))
+            for (i = 0; i < HV_AGX_GPUVA_V5_BACKINGS; ++i)
+                if (b->backings[i].live &&
+                    b->backings[i].generation == allocation_generation &&
+                    b->backings[i].owner == (unsigned)owner &&
+                    b->backings[i].ipa == ipa[0] && b->backings[i].pa == pa)
+                    break;
         if (i == HV_AGX_GPUVA_V5_BACKINGS &&
             (!local_index(b, ipa[0], &local_page) ||
              allocation_generation != b->local_base || pa != ipa[0] ||
