@@ -58,6 +58,9 @@ static struct vnvme_ctrl queue_ctrl;
 static bool irq_eoi_pending;
 static u64 irq_owner_kicks;
 static u64 irq_owner_polls;
+/* Receipt-only: CNTPCT of the last guest CQ-head write and the last INTx injection. */
+static u64 last_cq_doorbell_ticks;
+static u64 last_inject_ticks;
 
 static struct {
     u32 intms;
@@ -160,6 +163,38 @@ static void try_raise_intx(void)
 
     hv_vgic3_inject_irq(irq, hv_vgic3_get_priority(irq), false, true, false, 0);
     vnvme_intx_delivery_mark_injected(&irq_delivery);
+    last_inject_ticks = mrs(CNTPCT_EL0);
+}
+
+static u64 ticks_ago_ms(u64 then)
+{
+    u64 freq = mrs(CNTFRQ_EL0);
+    return then && freq ? (mrs(CNTPCT_EL0) - then) * 1000 / freq : ~0ULL;
+}
+
+/*
+ * Receipt-only: the guest disabled a running controller (stornvme "Reset to device",
+ * System 129, follows a ten-second I/O timeout).  Record the queue and INTx delivery
+ * state it gave up on before the reset clears it.
+ */
+static void reset_receipt(void)
+{
+    static u32 receipts;
+    const struct vnvme_queue *q0 = &queue_ctrl.queues[0], *q1 = &queue_ctrl.queues[1];
+    int irq = hv_pci_intx_irq();
+    if (receipts++ >= 32)
+        return;
+    printf("HV: NVMe guest reset #%u irq=%d intms=0x%x out=%d notified=%d kick=%d eoipend=%d "
+           "gicd=%d kicks=%lu polls=%lu cqdb_ms=%lu inj_ms=%lu q0 sq=%u/%u cq=%u/%u/%u "
+           "q1 sq=%u/%u cq=%u/%u/%u ie=%d cmds=%lu cpl=%lu sqdb=%lu cqdb=%lu cpu=%d\n",
+           receipts, queue_ctrl.irq_asserted, regs.intms, irq_delivery.outstanding,
+           irq_delivery.assertion_notified, irq_delivery.owner_kick_pending, irq_eoi_pending,
+           hv_vgic3_irq_enabled(irq), irq_owner_kicks, irq_owner_polls,
+           ticks_ago_ms(last_cq_doorbell_ticks), ticks_ago_ms(last_inject_ticks), q0->sq_head,
+           q0->sq_tail, q0->cq_head, q0->cq_tail, q0->cq_pending, q1->sq_head, q1->sq_tail,
+           q1->cq_head, q1->cq_tail, q1->cq_pending, q1->irq_enabled, queue_ctrl.stats.commands,
+           queue_ctrl.stats.completions, queue_ctrl.stats.sq_doorbells,
+           queue_ctrl.stats.cq_doorbells, smp_id());
 }
 
 static void drain_deferred_eoi(void)
@@ -341,6 +376,7 @@ static void cc_write(u32 value)
         regs.csts = CSTS_RDY;
         printf("HV: NVMe ready: AQA=0x%x ASQ=0x%lx ACQ=0x%lx\n", regs.aqa, regs.asq, regs.acq);
     } else if (!(value & CC_EN) && (old & CC_EN)) {
+        reset_receipt();
         vnvme_init(&queue_ctrl, backend_blocks, &backend_ops, NULL);
         irq_delivery = (struct vnvme_intx_delivery){0};
         regs.csts = 0;
@@ -455,6 +491,7 @@ static bool doorbell_write(u32 index, u32 value)
             irq_delivery.outstanding, regs.intms);
     bool ok;
     if (index & 1) {
+        last_cq_doorbell_ticks = mrs(CNTPCT_EL0);
         ok = vnvme_cq_doorbell(&queue_ctrl, qid, value);
         /*
          * A synchronous batch raises INTx at its first CQE and may still be posting CQEs
