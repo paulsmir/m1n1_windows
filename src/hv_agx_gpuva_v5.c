@@ -36,6 +36,20 @@ static void local_set_grant(struct hv_agx_gpuva_v5 *b, unsigned owner,
     else *word &= ~bit;
 }
 
+/* Count a published leaf descriptor that maps a local-reserve page. */
+static void local_leaf_ref(struct hv_agx_gpuva_v5 *b, uint64_t descriptor,
+                           bool add)
+{
+    unsigned page;
+    uint16_t *refs;
+    if (!descriptor || !local_index(b, descriptor & GPUVA_PA_MASK, &page))
+        return;
+    refs = &b->local_leaf_refs[page];
+    if (*refs == UINT16_MAX) return;
+    if (add) ++*refs;
+    else if (*refs) --*refs;
+}
+
 static enum hv_agx_gpuva_v5_result check(struct hv_agx_gpuva_v5 *b)
 {
     uint64_t low, high;
@@ -350,7 +364,9 @@ enum hv_agx_gpuva_v5_result hv_agx_gpuva_v5_revoke_backing(
         if (allocation_generation != b->local_base ||
             !local_granted(b, (unsigned)owner, local_page))
             return HV_AGX_GPUVA_V5_STALE;
-        if (referenced(b, (unsigned)owner, page_ipa, 2))
+        /* No leaf of any owner maps the page: skip the owner's table scan. */
+        if (b->local_leaf_refs[local_page] &&
+            referenced(b, (unsigned)owner, page_ipa, 2))
             return HV_AGX_GPUVA_V5_BUSY;
         local_set_grant(b, (unsigned)owner, local_page, false);
         return HV_AGX_GPUVA_V5_OK;
@@ -497,8 +513,13 @@ enum hv_agx_gpuva_v5_result hv_agx_gpuva_v5_update_leaf(
               &encoded) != AppleAgxUatResultOk) return HV_AGX_GPUVA_V5_INVALID;
         descriptor = encoded;
     }
-    return publish_entry(b, (unsigned)owner, &b->tables[table].entries[index],
-                         descriptor);
+    result = publish_entry(b, (unsigned)owner, &b->tables[table].entries[index],
+                           descriptor);
+    if (result == HV_AGX_GPUVA_V5_OK) {
+        local_leaf_ref(b, before, false);
+        local_leaf_ref(b, descriptor, true);
+    }
+    return result;
 }
 
 enum hv_agx_gpuva_v5_result hv_agx_gpuva_v5_relocate_root(

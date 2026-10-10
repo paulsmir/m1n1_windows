@@ -68,6 +68,9 @@ struct hv_agx_gpuva_v5 {
     struct hv_agx_gpuva_v5_backing backings[HV_AGX_GPUVA_V5_BACKINGS];
     uint64_t local_base, local_bytes, private_bytes;
     uint64_t local_grants[HV_AGX_GPUVA_V5_PROCESSES][HV_AGX_GPUVA_V5_LOCAL_PAGES / 64u];
+    /* Leaf entries (all owners) that map each local-reserve page; 0xffff is
+     * sticky (the revoke check then always scans). */
+    uint16_t local_leaf_refs[HV_AGX_GPUVA_V5_LOCAL_PAGES];
     struct hv_agx_gpuva_v5_slot slots[HV_AGX_GPUVA_V5_SLOTS];
     /* Attached request/response page; never a table or a backing. */
     uint64_t mailbox_pa;

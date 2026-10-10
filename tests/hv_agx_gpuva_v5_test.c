@@ -266,6 +266,49 @@ static void local_bitmap_ownership_and_eviction(void)
     assert(hv_agx_gpuva_v5_revoke_backing(&f->broker,2,1,P_DATA,P_DATA)==HV_AGX_GPUVA_V5_OK);
     free(f);
 }
+/* REVOKE of a local grant scanned every level-2 table of the owner (EXP1128:
+ * 59200 revokes cost 1.95 s while Settings closed). The broker now counts
+ * leaf references per local page and scans only when the count is nonzero;
+ * the count must stay exact through aliases and other owners' leaves. */
+static void local_leaf_reference_count(void)
+{
+    struct fixture *f = new_fixture();
+    uint64_t logical[4] = {P_DATA,P_DATA+0x1000,P_DATA+0x2000,P_DATA+0x3000};
+    unsigned page = 0;
+    f->range_backing = true;
+    assert(hv_agx_gpuva_v5_configure_local(&f->broker,P_DATA,
+        UINT64_C(0x3b800000),UINT64_C(0x4000000)) == HV_AGX_GPUVA_V5_OK);
+    assert(hv_agx_gpuva_v5_create(&f->broker,1,1,P_ROOT,false)==HV_AGX_GPUVA_V5_OK);
+    assert(hv_agx_gpuva_v5_create(&f->broker,2,1,Q_ROOT,false)==HV_AGX_GPUVA_V5_OK);
+    assert(hv_agx_gpuva_v5_register_table(&f->broker,1,1,P_L2,2)==HV_AGX_GPUVA_V5_OK);
+    assert(hv_agx_gpuva_v5_register_table(&f->broker,2,1,Q_L2,2)==HV_AGX_GPUVA_V5_OK);
+    assert(hv_agx_gpuva_v5_register_shared_backing(&f->broker,1,1,P_DATA,P_DATA)==HV_AGX_GPUVA_V5_OK);
+    assert(hv_agx_gpuva_v5_register_shared_backing(&f->broker,2,1,P_DATA,P_DATA)==HV_AGX_GPUVA_V5_OK);
+    /* Two leaves of owner 1 and one of owner 2 reference the same page. */
+    assert(hv_agx_gpuva_v5_update_leaf(&f->broker,1,1,P_L2,8,logical,P_DATA,15,15,15)==HV_AGX_GPUVA_V5_OK);
+    assert(hv_agx_gpuva_v5_update_leaf(&f->broker,1,1,P_L2,9,logical,P_DATA,15,15,0)==HV_AGX_GPUVA_V5_OK);
+    assert(hv_agx_gpuva_v5_update_leaf(&f->broker,2,1,Q_L2,3,logical,P_DATA,15,15,15)==HV_AGX_GPUVA_V5_OK);
+    assert(f->broker.local_leaf_refs[page]==3u);
+    /* Rewriting a leaf with the same page leaves the count unchanged. */
+    assert(hv_agx_gpuva_v5_update_leaf(&f->broker,1,1,P_L2,9,logical,P_DATA,15,15,15)==HV_AGX_GPUVA_V5_OK);
+    assert(f->broker.local_leaf_refs[page]==3u);
+    assert(hv_agx_gpuva_v5_update_leaf(&f->broker,1,1,P_L2,8,NULL,0,15,0,0)==HV_AGX_GPUVA_V5_OK);
+    assert(f->broker.local_leaf_refs[page]==2u);
+    /* Owner 1 still has the alias at index 9. */
+    assert(hv_agx_gpuva_v5_revoke_backing(&f->broker,1,1,P_DATA,P_DATA)==HV_AGX_GPUVA_V5_BUSY);
+    assert(hv_agx_gpuva_v5_update_leaf(&f->broker,1,1,P_L2,9,NULL,0,15,0,0)==HV_AGX_GPUVA_V5_OK);
+    /* Only owner 2's leaf remains: owner 1 may revoke, owner 2 may not. */
+    assert(f->broker.local_leaf_refs[page]==1u);
+    assert(hv_agx_gpuva_v5_revoke_backing(&f->broker,1,1,P_DATA,P_DATA)==HV_AGX_GPUVA_V5_OK);
+    assert(hv_agx_gpuva_v5_revoke_backing(&f->broker,2,1,P_DATA,P_DATA)==HV_AGX_GPUVA_V5_BUSY);
+    /* A refused update (no grant) does not change the count. */
+    assert(hv_agx_gpuva_v5_update_leaf(&f->broker,1,1,P_L2,8,logical,P_DATA,15,15,15)==HV_AGX_GPUVA_V5_OWNERSHIP);
+    assert(f->broker.local_leaf_refs[page]==1u);
+    assert(hv_agx_gpuva_v5_update_leaf(&f->broker,2,1,Q_L2,3,NULL,0,15,0,0)==HV_AGX_GPUVA_V5_OK);
+    assert(f->broker.local_leaf_refs[page]==0u);
+    assert(hv_agx_gpuva_v5_revoke_backing(&f->broker,2,1,P_DATA,P_DATA)==HV_AGX_GPUVA_V5_OK);
+    free(f);
+}
 static void reject_prepopulated_tables(void)
 {
     struct fixture *f = new_fixture();
@@ -355,6 +398,7 @@ int main(void)
     shared_reserve_capacity();
     reserve_1g_still_has_bounded_v5_capacity();
     local_bitmap_ownership_and_eviction();
+    local_leaf_reference_count();
     struct fixture *f = new_fixture();
     uint64_t ptoken, qtoken, logical[4]={P_DATA,P_DATA+0x1000,
                                           P_DATA+0x2000,P_DATA+0x3000};
