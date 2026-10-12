@@ -50,6 +50,123 @@ static void local_leaf_ref(struct hv_agx_gpuva_v5 *b, uint64_t descriptor,
     else if (*refs) --*refs;
 }
 
+/* M2-d backing index: records are found by PA and by IPA through two
+ * linear-probing tables of record index + 1, kept gap-free by
+ * backward-shift deletion, so every lookup is O(1) expected. */
+#define BACKING_SLOT_MASK (HV_AGX_GPUVA_V5_BACKING_SLOTS - 1u)
+
+static uint32_t backing_hash(uint64_t key)
+{
+    return (uint32_t)(((key / HV_AGX_GPUVA_V5_PAGE) *
+                       UINT64_C(0x9e3779b97f4a7c15)) >>
+                      (64u - HV_AGX_GPUVA_V5_BACKING_SLOT_BITS));
+}
+
+static uint64_t backing_key(const struct hv_agx_gpuva_v5 *b, uint32_t ref,
+                            bool by_ipa)
+{
+    return by_ipa ? b->backings[ref - 1u].ipa : b->backings[ref - 1u].pa;
+}
+
+static struct hv_agx_gpuva_v5_backing *backing_find(
+    const struct hv_agx_gpuva_v5 *b, uint64_t key, bool by_ipa)
+{
+    const uint32_t *index = by_ipa ? b->backing_by_ipa : b->backing_by_pa;
+    uint32_t slot = backing_hash(key), probes;
+    for (probes = 0; probes < HV_AGX_GPUVA_V5_BACKING_SLOTS; ++probes) {
+        uint32_t ref = index[slot];
+        if (!ref) return NULL;
+        if (backing_key(b, ref, by_ipa) == key)
+            return (struct hv_agx_gpuva_v5_backing *)&b->backings[ref - 1u];
+        slot = (slot + 1u) & BACKING_SLOT_MASK;
+    }
+    return NULL;
+}
+
+static void backing_index_insert(struct hv_agx_gpuva_v5 *b, uint32_t ref,
+                                 bool by_ipa)
+{
+    uint32_t *index = by_ipa ? b->backing_by_ipa : b->backing_by_pa;
+    uint32_t slot = backing_hash(backing_key(b, ref, by_ipa));
+    while (index[slot]) slot = (slot + 1u) & BACKING_SLOT_MASK;
+    index[slot] = ref;
+}
+
+static void backing_index_erase(struct hv_agx_gpuva_v5 *b, uint32_t ref,
+                                bool by_ipa)
+{
+    uint32_t *index = by_ipa ? b->backing_by_ipa : b->backing_by_pa;
+    uint32_t slot = backing_hash(backing_key(b, ref, by_ipa)), next;
+    while (index[slot] != ref) slot = (slot + 1u) & BACKING_SLOT_MASK;
+    for (;;) {
+        index[slot] = 0;
+        next = slot;
+        for (;;) {
+            uint32_t moved, home;
+            next = (next + 1u) & BACKING_SLOT_MASK;
+            moved = index[next];
+            if (!moved) return;
+            home = backing_hash(backing_key(b, moved, by_ipa));
+            /* An entry may fill the hole unless its home lies in (slot, next]. */
+            if (((next - home) & BACKING_SLOT_MASK) >=
+                ((next - slot) & BACKING_SLOT_MASK)) break;
+        }
+        index[slot] = index[next];
+        slot = next;
+    }
+}
+
+static bool backing_owner(const struct hv_agx_gpuva_v5_backing *r,
+                          unsigned owner)
+{
+    return (r->owners[owner / 64u] >> (owner % 64u)) & 1u;
+}
+
+static void backing_set_owner(struct hv_agx_gpuva_v5_backing *r,
+                              unsigned owner, bool owned)
+{
+    uint64_t bit = UINT64_C(1) << (owner % 64u);
+    if (owned) r->owners[owner / 64u] |= bit;
+    else r->owners[owner / 64u] &= ~bit;
+}
+
+static bool backing_unowned(const struct hv_agx_gpuva_v5_backing *r)
+{
+    unsigned i;
+    for (i = 0; i < HV_AGX_GPUVA_V5_PROCESSES / 64u; ++i)
+        if (r->owners[i]) return false;
+    return true;
+}
+
+static void backing_drop(struct hv_agx_gpuva_v5 *b,
+                         struct hv_agx_gpuva_v5_backing *r)
+{
+    uint32_t ref = (uint32_t)(r - b->backings) + 1u;
+    backing_index_erase(b, ref, false);
+    backing_index_erase(b, ref, true);
+    if (private_local(b, r->ipa)) --b->private_backings;
+    else --b->system_backings;
+    memset(r, 0, sizeof(*r));
+    b->backing_free[b->backing_free_count++] = ref;
+}
+
+/* Count a published leaf descriptor that maps a local-reserve or a
+ * registered system/private page. */
+static void backing_leaf_ref(struct hv_agx_gpuva_v5 *b, uint64_t descriptor,
+                             bool add)
+{
+    struct hv_agx_gpuva_v5_backing *r;
+    unsigned page;
+    if (!descriptor || local_index(b, descriptor & GPUVA_PA_MASK, &page)) {
+        local_leaf_ref(b, descriptor, add);
+        return;
+    }
+    r = backing_find(b, descriptor & GPUVA_PA_MASK, false);
+    if (!r || r->leaf_refs == UINT32_MAX) return;
+    if (add) ++r->leaf_refs;
+    else if (r->leaf_refs) --r->leaf_refs;
+}
+
 static enum hv_agx_gpuva_v5_result check(struct hv_agx_gpuva_v5 *b)
 {
     uint64_t low, high;
@@ -165,9 +282,7 @@ static enum hv_agx_gpuva_v5_result table_add(struct hv_agx_gpuva_v5 *b,
         if (b->tables[i].live &&
             (b->tables[i].pa == pa || b->tables[i].ipa == ipa))
             return HV_AGX_GPUVA_V5_OWNERSHIP;
-    for (i = 0; i < HV_AGX_GPUVA_V5_BACKINGS; ++i)
-        if (b->backings[i].live && b->backings[i].pa == pa)
-            return HV_AGX_GPUVA_V5_OWNERSHIP;
+    if (backing_find(b, pa, false)) return HV_AGX_GPUVA_V5_OWNERSHIP;
     if (local_index(b, ipa, &local_page))
         for (grant_owner = 0; grant_owner < HV_AGX_GPUVA_V5_PROCESSES;
              ++grant_owner)
@@ -223,6 +338,7 @@ enum hv_agx_gpuva_v5_result hv_agx_gpuva_v5_init(
     b->epoch = epoch;
     b->context0_ttbr0 = low;
     b->context0_ttbr1 = high;
+    b->system_backing_limit = HV_AGX_GPUVA_V5_BACKINGS;
     b->active = true;
     return HV_AGX_GPUVA_V5_OK;
 }
@@ -290,7 +406,10 @@ static enum hv_agx_gpuva_v5_result register_backing(
 {
     int owner;
     uint64_t pa;
-    unsigned i, local_page, first, end;
+    unsigned i, local_page;
+    uint32_t ref;
+    bool private_page;
+    struct hv_agx_gpuva_v5_backing *by_pa, *by_ipa, *record;
     enum hv_agx_gpuva_v5_result result = check(b);
     if (result) return result;
     owner = process_index(b, id, generation);
@@ -311,27 +430,39 @@ static enum hv_agx_gpuva_v5_result register_backing(
         local_set_grant(b, (unsigned)owner, local_page, true);
         return HV_AGX_GPUVA_V5_OK;
     }
-    if (private_local(b, page_ipa) &&
-        (shared || pa != page_ipa)) return HV_AGX_GPUVA_V5_OWNERSHIP;
-    first = private_local(b, page_ipa) ? HV_AGX_GPUVA_V5_BACKINGS / 2u : 0u;
-    end = private_local(b, page_ipa) || !b->local_bytes ?
-          HV_AGX_GPUVA_V5_BACKINGS : HV_AGX_GPUVA_V5_BACKINGS / 2u;
-    for (i = 0; i < HV_AGX_GPUVA_V5_BACKINGS; ++i)
-        if (b->backings[i].live &&
-            (b->backings[i].pa == pa || b->backings[i].ipa == page_ipa) &&
-            (!shared || !b->backings[i].shared ||
-             b->backings[i].generation != allocation_generation ||
-             b->backings[i].owner == (unsigned)owner ||
-             b->backings[i].pa != pa || b->backings[i].ipa != page_ipa))
+    private_page = private_local(b, page_ipa);
+    if (private_page && (shared || pa != page_ipa))
+        return HV_AGX_GPUVA_V5_OWNERSHIP;
+    by_pa = backing_find(b, pa, false);
+    by_ipa = backing_find(b, page_ipa, true);
+    if (by_pa || by_ipa) {
+        /* Only another owner's exact shared identity may join a record. */
+        if (!shared || by_pa != by_ipa || !by_pa->shared ||
+            by_pa->generation != allocation_generation ||
+            backing_owner(by_pa, (unsigned)owner))
             return HV_AGX_GPUVA_V5_OWNERSHIP;
-    for (i = first; i < end; ++i)
-        if (!b->backings[i].live) {
-            b->backings[i] = (struct hv_agx_gpuva_v5_backing){
-                page_ipa, pa, allocation_generation, (unsigned)owner, true,
-                shared};
-            return HV_AGX_GPUVA_V5_OK;
-        }
-    return HV_AGX_GPUVA_V5_CAPACITY;
+        backing_set_owner(by_pa, (unsigned)owner, true);
+        ++b->owner_backings[owner];
+        return HV_AGX_GPUVA_V5_OK;
+    }
+    if (private_page ? b->private_backings >= HV_AGX_GPUVA_V5_PRIVATE_BACKINGS
+                     : b->system_backings >= b->system_backing_limit)
+        return HV_AGX_GPUVA_V5_CAPACITY;
+    if (b->backing_free_count) ref = b->backing_free[--b->backing_free_count];
+    else if (b->backing_high < HV_AGX_GPUVA_V5_BACKING_RECORDS)
+        ref = ++b->backing_high;
+    else return HV_AGX_GPUVA_V5_CAPACITY;
+    record = &b->backings[ref - 1u];
+    *record = (struct hv_agx_gpuva_v5_backing){
+        .ipa = page_ipa, .pa = pa, .generation = allocation_generation,
+        .live = true, .shared = shared};
+    backing_set_owner(record, (unsigned)owner, true);
+    backing_index_insert(b, ref, false);
+    backing_index_insert(b, ref, true);
+    if (private_page) ++b->private_backings;
+    else ++b->system_backings;
+    ++b->owner_backings[owner];
+    return HV_AGX_GPUVA_V5_OK;
 }
 
 enum hv_agx_gpuva_v5_result hv_agx_gpuva_v5_register_backing(
@@ -355,7 +486,8 @@ enum hv_agx_gpuva_v5_result hv_agx_gpuva_v5_revoke_backing(
     uint64_t allocation_generation, uint64_t page_ipa)
 {
     int owner;
-    unsigned i, local_page;
+    unsigned local_page;
+    struct hv_agx_gpuva_v5_backing *record;
     enum hv_agx_gpuva_v5_result result = check(b);
     if (result) return result;
     owner = process_index(b, id, generation);
@@ -371,16 +503,17 @@ enum hv_agx_gpuva_v5_result hv_agx_gpuva_v5_revoke_backing(
         local_set_grant(b, (unsigned)owner, local_page, false);
         return HV_AGX_GPUVA_V5_OK;
     }
-    for (i = 0; i < HV_AGX_GPUVA_V5_BACKINGS; ++i)
-        if (b->backings[i].live && b->backings[i].owner == (unsigned)owner &&
-            b->backings[i].ipa == page_ipa &&
-            b->backings[i].generation == allocation_generation) {
-            if (referenced(b, (unsigned)owner, b->backings[i].pa, 2))
-                return HV_AGX_GPUVA_V5_BUSY;
-            memset(&b->backings[i], 0, sizeof(b->backings[i]));
-            return HV_AGX_GPUVA_V5_OK;
-        }
-    return HV_AGX_GPUVA_V5_STALE;
+    record = backing_find(b, page_ipa, true);
+    if (!record || !backing_owner(record, (unsigned)owner) ||
+        record->generation != allocation_generation)
+        return HV_AGX_GPUVA_V5_STALE;
+    /* No leaf of any owner maps the page: skip the owner's table scan. */
+    if (record->leaf_refs && referenced(b, (unsigned)owner, record->pa, 2))
+        return HV_AGX_GPUVA_V5_BUSY;
+    backing_set_owner(record, (unsigned)owner, false);
+    --b->owner_backings[owner];
+    if (backing_unowned(record)) backing_drop(b, record);
+    return HV_AGX_GPUVA_V5_OK;
 }
 
 enum hv_agx_gpuva_v5_result hv_agx_gpuva_v5_revoke_table(
@@ -440,6 +573,7 @@ enum hv_agx_gpuva_v5_result hv_agx_gpuva_v5_update_leaf(
     uint64_t pa = 0, descriptor = 0, before, ipa[4] = {0};
     unsigned long long encoded = 0, ro = 0, rw = 0;
     unsigned i, local_page, final_valid = 0, final_write = 0;
+    struct hv_agx_gpuva_v5_backing *record;
     enum hv_agx_gpuva_v5_result result = check(b);
     if (result) return result;
     owner = process_index(b, id, generation);
@@ -459,13 +593,10 @@ enum hv_agx_gpuva_v5_result hv_agx_gpuva_v5_update_leaf(
             (before != ro && before != rw)) return HV_AGX_GPUVA_V5_OWNERSHIP;
         /* Local-reserve pages are tracked only by the grant bitmap; the
          * backing table never holds one (register_backing returns first). */
-        i = HV_AGX_GPUVA_V5_BACKINGS;
-        if (!local_index(b, pa, &local_page))
-            for (i = 0; i < HV_AGX_GPUVA_V5_BACKINGS; ++i)
-                if (b->backings[i].live &&
-                    b->backings[i].owner == (unsigned)owner &&
-                    b->backings[i].pa == pa) break;
-        if (i == HV_AGX_GPUVA_V5_BACKINGS) {
+        record = local_index(b, pa, &local_page) ? NULL :
+                 backing_find(b, pa, false);
+        if (record && !backing_owner(record, (unsigned)owner)) record = NULL;
+        if (!record) {
             if (!local_index(b, pa, &local_page) ||
                 !local_granted(b, (unsigned)owner, local_page))
                 return HV_AGX_GPUVA_V5_OWNERSHIP;
@@ -473,7 +604,7 @@ enum hv_agx_gpuva_v5_result hv_agx_gpuva_v5_update_leaf(
                 ipa[part] = pa + part * UINT64_C(0x1000);
         } else {
             for (unsigned part = 0; part < 4; ++part)
-                ipa[part] = b->backings[i].ipa + part * UINT64_C(0x1000);
+                ipa[part] = record->ipa + part * UINT64_C(0x1000);
         }
         final_valid = 15u;
         final_write = before == rw ? 15u : 0u;
@@ -494,15 +625,12 @@ enum hv_agx_gpuva_v5_result hv_agx_gpuva_v5_update_leaf(
         for (i = 0; i < 4; ++i)
             if (ipa[i] != ipa[0] + i * UINT64_C(0x1000))
                 return HV_AGX_GPUVA_V5_OWNERSHIP;
-        i = HV_AGX_GPUVA_V5_BACKINGS;
-        if (!local_index(b, ipa[0], &local_page))
-            for (i = 0; i < HV_AGX_GPUVA_V5_BACKINGS; ++i)
-                if (b->backings[i].live &&
-                    b->backings[i].generation == allocation_generation &&
-                    b->backings[i].owner == (unsigned)owner &&
-                    b->backings[i].ipa == ipa[0] && b->backings[i].pa == pa)
-                    break;
-        if (i == HV_AGX_GPUVA_V5_BACKINGS &&
+        record = local_index(b, ipa[0], &local_page) ? NULL :
+                 backing_find(b, pa, false);
+        if (record && (record->generation != allocation_generation ||
+                       !backing_owner(record, (unsigned)owner) ||
+                       record->ipa != ipa[0])) record = NULL;
+        if (!record &&
             (!local_index(b, ipa[0], &local_page) ||
              allocation_generation != b->local_base || pa != ipa[0] ||
              !local_granted(b, (unsigned)owner, local_page)))
@@ -516,8 +644,8 @@ enum hv_agx_gpuva_v5_result hv_agx_gpuva_v5_update_leaf(
     result = publish_entry(b, (unsigned)owner, &b->tables[table].entries[index],
                            descriptor);
     if (result == HV_AGX_GPUVA_V5_OK) {
-        local_leaf_ref(b, before, false);
-        local_leaf_ref(b, descriptor, true);
+        backing_leaf_ref(b, before, false);
+        backing_leaf_ref(b, descriptor, true);
     }
     return result;
 }
@@ -662,9 +790,7 @@ enum hv_agx_gpuva_v5_result hv_agx_gpuva_v5_destroy(
     for (i = 1; i < HV_AGX_GPUVA_V5_SLOTS; ++i)
         if (b->slots[i].occupied && b->slots[i].owner == (unsigned)owner)
             return HV_AGX_GPUVA_V5_BUSY;
-    for (i = 0; i < HV_AGX_GPUVA_V5_BACKINGS; ++i)
-        if (b->backings[i].live && b->backings[i].owner == (unsigned)owner)
-            return HV_AGX_GPUVA_V5_BUSY;
+    if (b->owner_backings[owner]) return HV_AGX_GPUVA_V5_BUSY;
     for (i = 0; i < HV_AGX_GPUVA_V5_LOCAL_PAGES / 64u; ++i)
         if (b->local_grants[owner][i]) return HV_AGX_GPUVA_V5_BUSY;
     for (i = 0; i < HV_AGX_GPUVA_V5_TABLES; ++i)
@@ -673,9 +799,6 @@ enum hv_agx_gpuva_v5_result hv_agx_gpuva_v5_destroy(
     for (i = 0; i < HV_AGX_GPUVA_V5_TABLES; ++i)
         if (b->tables[i].live && b->tables[i].owner == (unsigned)owner)
             memset(&b->tables[i], 0, sizeof(b->tables[i]));
-    for (i = 0; i < HV_AGX_GPUVA_V5_BACKINGS; ++i)
-        if (b->backings[i].live && b->backings[i].owner == (unsigned)owner)
-            memset(&b->backings[i], 0, sizeof(b->backings[i]));
     memset(b->local_grants[owner], 0, sizeof(b->local_grants[owner]));
     memset(&b->processes[owner], 0, sizeof(b->processes[owner]));
     return check(b);
@@ -705,11 +828,44 @@ enum hv_agx_gpuva_v5_result hv_agx_gpuva_v5_attach_mailbox(
         if (b->tables[i].live &&
             (b->tables[i].pa == pa || b->tables[i].ipa == ipa))
             return HV_AGX_GPUVA_V5_OWNERSHIP;
-    for (i = 0; i < HV_AGX_GPUVA_V5_BACKINGS; ++i)
-        if (b->backings[i].live &&
-            (b->backings[i].pa == pa || b->backings[i].ipa == ipa))
-            return HV_AGX_GPUVA_V5_OWNERSHIP;
+    if (backing_find(b, pa, false) || backing_find(b, ipa, true))
+        return HV_AGX_GPUVA_V5_OWNERSHIP;
     b->mailbox_pa = pa;
     *mailbox_pa = pa;
     return HV_AGX_GPUVA_V5_OK;
+}
+
+enum hv_agx_gpuva_v5_result hv_agx_gpuva_v5_configure_system_backings(
+    struct hv_agx_gpuva_v5 *b, unsigned limit)
+{
+    if (!b || !b->active || !limit || limit > HV_AGX_GPUVA_V5_BACKINGS)
+        return HV_AGX_GPUVA_V5_INVALID;
+    if (limit < b->system_backings) return HV_AGX_GPUVA_V5_BUSY;
+    b->system_backing_limit = limit;
+    return HV_AGX_GPUVA_V5_OK;
+}
+
+unsigned hv_agx_gpuva_v5_live_backings(const struct hv_agx_gpuva_v5 *b)
+{
+    unsigned i, count = 0;
+    for (i = 0; i < HV_AGX_GPUVA_V5_PROCESSES; ++i) count += b->owner_backings[i];
+    return count;
+}
+
+const struct hv_agx_gpuva_v5_backing *hv_agx_gpuva_v5_backing_by_pa(
+    const struct hv_agx_gpuva_v5 *b, uint64_t pa)
+{
+    return backing_find(b, pa, false);
+}
+
+const struct hv_agx_gpuva_v5_backing *hv_agx_gpuva_v5_backing_by_ipa(
+    const struct hv_agx_gpuva_v5 *b, uint64_t ipa)
+{
+    return backing_find(b, ipa, true);
+}
+
+bool hv_agx_gpuva_v5_backing_owned(const struct hv_agx_gpuva_v5_backing *r,
+                                   unsigned owner)
+{
+    return r && owner < HV_AGX_GPUVA_V5_PROCESSES && backing_owner(r, owner);
 }

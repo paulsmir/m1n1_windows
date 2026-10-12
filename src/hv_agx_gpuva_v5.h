@@ -8,7 +8,14 @@
 #define HV_AGX_GPUVA_V5_PAGE UINT64_C(0x4000)
 #define HV_AGX_GPUVA_V5_PROCESSES 128u
 #define HV_AGX_GPUVA_V5_TABLES 512u
-#define HV_AGX_GPUVA_V5_BACKINGS 8192u
+/* M2-d: 16-KiB system pages a GPU leaf may map (2 GiB) and the 64-MiB
+ * private local pool, one record per page found by PA or IPA in O(1). */
+#define HV_AGX_GPUVA_V5_BACKINGS 131072u
+#define HV_AGX_GPUVA_V5_PRIVATE_BACKINGS 4096u
+#define HV_AGX_GPUVA_V5_BACKING_RECORDS \
+    (HV_AGX_GPUVA_V5_BACKINGS + HV_AGX_GPUVA_V5_PRIVATE_BACKINGS)
+#define HV_AGX_GPUVA_V5_BACKING_SLOT_BITS 18u
+#define HV_AGX_GPUVA_V5_BACKING_SLOTS (1u << HV_AGX_GPUVA_V5_BACKING_SLOT_BITS)
 #define HV_AGX_GPUVA_V5_SLOTS 64u
 #define HV_AGX_GPUVA_V5_LOCAL_PAGES 65536u
 
@@ -56,7 +63,12 @@ struct hv_agx_gpuva_v5_slot {
 };
 struct hv_agx_gpuva_v5_backing {
     uint64_t ipa, pa, generation;
-    unsigned owner;
+    /* Owners that registered the page: one for an exclusive backing, every
+     * sharer of the same IPA, PA and allocation generation for a shared one. */
+    uint64_t owners[HV_AGX_GPUVA_V5_PROCESSES / 64u];
+    /* Published leaf descriptors (all owners) that map pa; UINT32_MAX is
+     * sticky (revoke then always scans the owner's tables). */
+    uint32_t leaf_refs;
     bool live;
     bool shared;
 };
@@ -65,7 +77,14 @@ struct hv_agx_gpuva_v5 {
     uint64_t epoch, context0_ttbr0, context0_ttbr1, next_token;
     struct hv_agx_gpuva_v5_process processes[HV_AGX_GPUVA_V5_PROCESSES];
     struct hv_agx_gpuva_v5_table tables[HV_AGX_GPUVA_V5_TABLES];
-    struct hv_agx_gpuva_v5_backing backings[HV_AGX_GPUVA_V5_BACKINGS];
+    struct hv_agx_gpuva_v5_backing backings[HV_AGX_GPUVA_V5_BACKING_RECORDS];
+    /* Record index + 1 by PA and by IPA (linear probing, 0 is empty). */
+    uint32_t backing_by_pa[HV_AGX_GPUVA_V5_BACKING_SLOTS];
+    uint32_t backing_by_ipa[HV_AGX_GPUVA_V5_BACKING_SLOTS];
+    uint32_t backing_free[HV_AGX_GPUVA_V5_BACKING_RECORDS];
+    unsigned backing_free_count, backing_high;
+    unsigned system_backings, private_backings, system_backing_limit;
+    unsigned owner_backings[HV_AGX_GPUVA_V5_PROCESSES];
     uint64_t local_base, local_bytes, private_bytes;
     uint64_t local_grants[HV_AGX_GPUVA_V5_PROCESSES][HV_AGX_GPUVA_V5_LOCAL_PAGES / 64u];
     /* Leaf entries (all owners) that map each local-reserve page; 0xffff is
@@ -131,5 +150,17 @@ enum hv_agx_gpuva_v5_result hv_agx_gpuva_v5_destroy(
     struct hv_agx_gpuva_v5 *, uint64_t id, uint64_t generation);
 enum hv_agx_gpuva_v5_result hv_agx_gpuva_v5_attach_mailbox(
     struct hv_agx_gpuva_v5 *, uint64_t mailbox_ipa, uint64_t *mailbox_pa);
+/* Set the system-page limit (1..HV_AGX_GPUVA_V5_BACKINGS, not below the pages
+ * registered now); the default is HV_AGX_GPUVA_V5_BACKINGS. */
+enum hv_agx_gpuva_v5_result hv_agx_gpuva_v5_configure_system_backings(
+    struct hv_agx_gpuva_v5 *, unsigned limit);
+/* Live (owner, page) registrations, and the record for a PA or an IPA. */
+unsigned hv_agx_gpuva_v5_live_backings(const struct hv_agx_gpuva_v5 *);
+const struct hv_agx_gpuva_v5_backing *hv_agx_gpuva_v5_backing_by_pa(
+    const struct hv_agx_gpuva_v5 *, uint64_t pa);
+const struct hv_agx_gpuva_v5_backing *hv_agx_gpuva_v5_backing_by_ipa(
+    const struct hv_agx_gpuva_v5 *, uint64_t ipa);
+bool hv_agx_gpuva_v5_backing_owned(const struct hv_agx_gpuva_v5_backing *,
+                                   unsigned owner);
 
 #endif

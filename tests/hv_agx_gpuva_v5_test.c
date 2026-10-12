@@ -33,7 +33,7 @@ static uint64_t translate(void *opaque, uint64_t ipa)
     if (ipa == f->blocked_ipa) return 0;
     if (ipa == f->remapped_ipa) return f->remapped_pa;
     if (f->range_backing && ipa >= P_DATA &&
-        ipa < P_DATA + UINT64_C(1024) * 1024 * 1024 &&
+        ipa < P_DATA + UINT64_C(4096) * 1024 * 1024 &&
         !(ipa & (HV_AGX_GPUVA_V5_PAGE - 1))) return ipa;
     for (i = 0; i < 9; ++i) if (f->ipa[i] == ipa) return ipa;
     return 0;
@@ -226,21 +226,107 @@ static void shared_reserve_capacity(void)
                 P_DATA + (uint64_t)page * HV_AGX_GPUVA_V5_PAGE) == HV_AGX_GPUVA_V5_OK);
     free(f);
 }
-static void reserve_1g_still_has_bounded_v5_capacity(void)
+static void system_backings_hold_uma_capacity(void)
 {
+    /* M2-d: 2 GiB of distinct 16-KiB system pages, each found in O(1). The
+     * page past the limit is refused without mutation; a sharer joining an
+     * existing record takes no capacity; a revoke frees a record. */
     struct fixture *f = new_fixture();
     struct hv_agx_gpuva_v5 *before = malloc(sizeof(*before));
-    assert(before && HV_AGX_GPUVA_V5_BACKINGS == 8192);
+    const uint64_t last = P_DATA +
+        (uint64_t)HV_AGX_GPUVA_V5_BACKINGS * HV_AGX_GPUVA_V5_PAGE;
+    const struct hv_agx_gpuva_v5_backing *record;
+    assert(before && HV_AGX_GPUVA_V5_BACKINGS == 131072);
     f->range_backing = true;
     assert(hv_agx_gpuva_v5_create(&f->broker, 1, 1, P_ROOT, false) == HV_AGX_GPUVA_V5_OK);
+    assert(hv_agx_gpuva_v5_create(&f->broker, 2, 1, Q_ROOT, false) == HV_AGX_GPUVA_V5_OK);
     for (unsigned page = 0; page < HV_AGX_GPUVA_V5_BACKINGS; ++page)
         assert(hv_agx_gpuva_v5_register_shared_backing(&f->broker, 1, 1, 17,
             P_DATA + (uint64_t)page * HV_AGX_GPUVA_V5_PAGE) == HV_AGX_GPUVA_V5_OK);
+    assert(hv_agx_gpuva_v5_live_backings(&f->broker) == HV_AGX_GPUVA_V5_BACKINGS);
     memcpy(before, &f->broker, sizeof(*before));
-    assert(hv_agx_gpuva_v5_register_shared_backing(&f->broker, 1, 1, 17,
-        P_DATA + UINT64_C(0x8000000)) == HV_AGX_GPUVA_V5_CAPACITY);
+    assert(hv_agx_gpuva_v5_register_shared_backing(&f->broker, 1, 1, 17, last) ==
+           HV_AGX_GPUVA_V5_CAPACITY);
     assert(!memcmp(before, &f->broker, sizeof(*before)));
+    assert(hv_agx_gpuva_v5_register_shared_backing(&f->broker, 2, 1, 17, P_DATA) ==
+           HV_AGX_GPUVA_V5_OK);
+    assert(hv_agx_gpuva_v5_live_backings(&f->broker) == HV_AGX_GPUVA_V5_BACKINGS + 1u);
+    /* Exclusive identity and a second shared generation stay refused. */
+    assert(hv_agx_gpuva_v5_register_backing(&f->broker, 2, 1, 17, P_DATA + 0x4000) ==
+           HV_AGX_GPUVA_V5_OWNERSHIP);
+    assert(hv_agx_gpuva_v5_register_shared_backing(&f->broker, 2, 1, 18, P_DATA + 0x4000) ==
+           HV_AGX_GPUVA_V5_OWNERSHIP);
+    assert(hv_agx_gpuva_v5_register_shared_backing(&f->broker, 2, 1, 17, last) ==
+           HV_AGX_GPUVA_V5_CAPACITY);
+    assert(hv_agx_gpuva_v5_revoke_backing(&f->broker, 1, 1, 17, P_DATA + 0x14000) ==
+           HV_AGX_GPUVA_V5_OK);
+    assert(!hv_agx_gpuva_v5_backing_by_ipa(&f->broker, P_DATA + 0x14000));
+    assert(hv_agx_gpuva_v5_register_backing(&f->broker, 2, 1, 19, last) == HV_AGX_GPUVA_V5_OK);
+    record = hv_agx_gpuva_v5_backing_by_pa(&f->broker, last);
+    assert(record && record->ipa == last && record->generation == 19 && !record->shared &&
+           hv_agx_gpuva_v5_backing_owned(record, 1) && !hv_agx_gpuva_v5_backing_owned(record, 0));
+    /* Owner 1 (index 0) still holds the shared first page with owner 2. */
+    record = hv_agx_gpuva_v5_backing_by_ipa(&f->broker, P_DATA);
+    assert(record && hv_agx_gpuva_v5_backing_owned(record, 0) &&
+           hv_agx_gpuva_v5_backing_owned(record, 1));
+    assert(hv_agx_gpuva_v5_destroy(&f->broker, 2, 1) == HV_AGX_GPUVA_V5_BUSY);
     free(before);
+    free(f);
+}
+static void backing_index_survives_deletion(void)
+{
+    /* Backward-shift deletion: after revoking every third page and
+     * re-registering some, every live page is found and no revoked one. */
+    struct fixture *f = new_fixture();
+    const unsigned pages = 50000;
+    f->range_backing = true;
+    assert(hv_agx_gpuva_v5_create(&f->broker, 1, 1, P_ROOT, false) == HV_AGX_GPUVA_V5_OK);
+    for (unsigned page = 0; page < pages; ++page)
+        assert(hv_agx_gpuva_v5_register_backing(&f->broker, 1, 1, 17,
+            P_DATA + (uint64_t)page * HV_AGX_GPUVA_V5_PAGE) == HV_AGX_GPUVA_V5_OK);
+    for (unsigned page = 0; page < pages; page += 3)
+        assert(hv_agx_gpuva_v5_revoke_backing(&f->broker, 1, 1, 17,
+            P_DATA + (uint64_t)page * HV_AGX_GPUVA_V5_PAGE) == HV_AGX_GPUVA_V5_OK);
+    for (unsigned page = 0; page < pages; page += 9)
+        assert(hv_agx_gpuva_v5_register_backing(&f->broker, 1, 1, 21,
+            P_DATA + (uint64_t)page * HV_AGX_GPUVA_V5_PAGE) == HV_AGX_GPUVA_V5_OK);
+    for (unsigned page = 0; page < pages; ++page) {
+        uint64_t ipa = P_DATA + (uint64_t)page * HV_AGX_GPUVA_V5_PAGE;
+        const struct hv_agx_gpuva_v5_backing *by_ipa =
+            hv_agx_gpuva_v5_backing_by_ipa(&f->broker, ipa);
+        const struct hv_agx_gpuva_v5_backing *by_pa =
+            hv_agx_gpuva_v5_backing_by_pa(&f->broker, ipa);
+        if (page % 9 == 0) assert(by_ipa && by_ipa == by_pa && by_ipa->generation == 21);
+        else if (page % 3 == 0) assert(!by_ipa && !by_pa);
+        else assert(by_ipa && by_ipa == by_pa && by_ipa->generation == 17);
+    }
+    assert(hv_agx_gpuva_v5_live_backings(&f->broker) ==
+           pages - (pages + 2) / 3 + (pages + 8) / 9);
+    free(f);
+}
+static void shared_backing_leaf_references(void)
+{
+    /* A sharer without a leaf may revoke while another owner's leaf maps the
+     * page; the mapping owner may not until its leaf is gone. */
+    struct fixture *f = new_fixture();
+    uint64_t contiguous[4] = {P_DATA,P_DATA+0x1000,P_DATA+0x2000,P_DATA+0x3000};
+    assert(hv_agx_gpuva_v5_create(&f->broker,1,1,P_ROOT,false)==HV_AGX_GPUVA_V5_OK);
+    assert(hv_agx_gpuva_v5_create(&f->broker,2,1,Q_ROOT,false)==HV_AGX_GPUVA_V5_OK);
+    assert(hv_agx_gpuva_v5_register_table(&f->broker,1,1,P_L1,1)==HV_AGX_GPUVA_V5_OK);
+    assert(hv_agx_gpuva_v5_register_table(&f->broker,1,1,P_L2,2)==HV_AGX_GPUVA_V5_OK);
+    assert(hv_agx_gpuva_v5_update_parent(&f->broker,1,1,P_ROOT,0,P_L1)==HV_AGX_GPUVA_V5_OK);
+    assert(hv_agx_gpuva_v5_update_parent(&f->broker,1,1,P_L1,0,P_L2)==HV_AGX_GPUVA_V5_OK);
+    assert(hv_agx_gpuva_v5_register_shared_backing(&f->broker,1,1,17,P_DATA)==HV_AGX_GPUVA_V5_OK);
+    assert(hv_agx_gpuva_v5_register_shared_backing(&f->broker,2,1,17,P_DATA)==HV_AGX_GPUVA_V5_OK);
+    assert(hv_agx_gpuva_v5_update_leaf(&f->broker,1,1,P_L2,8,contiguous,17,15,15,15)==HV_AGX_GPUVA_V5_OK);
+    assert(hv_agx_gpuva_v5_backing_by_pa(&f->broker,P_DATA)->leaf_refs==1);
+    assert(hv_agx_gpuva_v5_revoke_backing(&f->broker,2,1,17,P_DATA)==HV_AGX_GPUVA_V5_OK);
+    assert(hv_agx_gpuva_v5_revoke_backing(&f->broker,1,1,17,P_DATA)==HV_AGX_GPUVA_V5_BUSY);
+    assert(hv_agx_gpuva_v5_register_table(&f->broker,2,1,P_DATA,2)==HV_AGX_GPUVA_V5_OWNERSHIP);
+    assert(hv_agx_gpuva_v5_update_leaf(&f->broker,1,1,P_L2,8,0,0,15,0,0)==HV_AGX_GPUVA_V5_OK);
+    assert(hv_agx_gpuva_v5_backing_by_pa(&f->broker,P_DATA)->leaf_refs==0);
+    assert(hv_agx_gpuva_v5_revoke_backing(&f->broker,1,1,17,P_DATA)==HV_AGX_GPUVA_V5_OK);
+    assert(!hv_agx_gpuva_v5_backing_by_pa(&f->broker,P_DATA));
     free(f);
 }
 static void local_bitmap_ownership_and_eviction(void)
@@ -396,7 +482,9 @@ int main(void)
     reject_prepopulated_tables();
     shared_graph_grants();
     shared_reserve_capacity();
-    reserve_1g_still_has_bounded_v5_capacity();
+    system_backings_hold_uma_capacity();
+    backing_index_survives_deletion();
+    shared_backing_leaf_references();
     local_bitmap_ownership_and_eviction();
     local_leaf_reference_count();
     struct fixture *f = new_fixture();
