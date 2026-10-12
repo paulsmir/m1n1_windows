@@ -68,9 +68,7 @@ static bool local_reserve_translate(void *opaque, uint64_t ipa, uint64_t *pa)
     const struct hv_contract_snapshot *snapshot = opaque;
     uint64_t leaf = ipa & ~UINT64_C(0x3fff);
     if (!hv_ipa_is_normal_rw(ipa) ||
-        !hv_agx_retained_backing_allowed(snapshot, leaf, 0x4000,
-            J313_AUTONOMOUS_LAYOUT.ramdisk_base,
-            J313_AUTONOMOUS_LAYOUT.ramdisk_max_size))
+        !hv_agx_retained_backing_allowed(snapshot, leaf, 0x4000))
         return false;
     for (size_t i = 0; i < mcc_carveout_count; ++i) {
         const struct mcc_carveout *r = &mcc_carveouts[i];

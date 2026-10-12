@@ -45,6 +45,9 @@ enum hv_contract_region_kind {
     HV_CONTRACT_REGION_FRAMEBUFFER,
     HV_CONTRACT_REGION_LOW_MEMORY,
     HV_CONTRACT_REGION_DART_TABLES,
+    /* M1: a boot medium the launcher preloaded into guest RAM. Only a
+     * launcher that wrote one publishes it; GPU DMA must not reach it. */
+    HV_CONTRACT_REGION_RAMDISK,
 };
 
 enum hv_contract_field {

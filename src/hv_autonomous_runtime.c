@@ -291,6 +291,13 @@ static bool prepare_boot_data(struct hv_autonomous_runtime *runtime,
     if (preoslog[1])
         dc_cvau_range((void *)runtime->guest_layout.preoslog_base, preoslog[1]);
     dc_cvau_range((void *)runtime->guest_layout.boot_args_base, sizeof(guest_args));
+    /* M1: standalone never preloads a boot medium and publishes no ramdisk
+     * region, so GPU backing pages may use the window. Clear any "ASIRAMDK"
+     * header an earlier assisted launch left without a SoC reset: Mu's PEI
+     * reads it with the MMU off and would otherwise keep the window from the
+     * OS while this m1n1 lets GPU DMA reach it. */
+    memset((void *)layout->ramdisk_base, 0, 0x1000);
+    dc_civac_range((void *)layout->ramdisk_base, 0x1000);
     status->firmware_entry = runtime->guest_layout.firmware_base;
     printf("Standalone: assisted layout ADT=0x%lx TC=0x%lx FW=0x%lx SEPFW=0x%lx "
            "preoslog=0x%lx bootargs=0x%lx top=0x%lx\n",

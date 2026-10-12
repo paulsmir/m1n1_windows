@@ -58,8 +58,7 @@ static unsigned long long translate_guest(void *context, unsigned long long ipa)
         pa - base > length - 0x4000 || pa >= (1ULL << 40) ||
         (pa < root_base + root_length && pa + 0x4000 > root_base))
         return 0;
-    if (!launch_memory_valid || !hv_agx_retained_backing_allowed(&launch_memory,pa,0x4000,
-            J313_AUTONOMOUS_LAYOUT.ramdisk_base,J313_AUTONOMOUS_LAYOUT.ramdisk_max_size))
+    if (!launch_memory_valid || !hv_agx_retained_backing_allowed(&launch_memory,pa,0x4000))
         return 0;
     for (offset = 0; offset < 0x4000; offset += 0x1000)
         if (hv_ipa_to_pa(ipa + offset) != pa + offset ||
