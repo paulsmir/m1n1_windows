@@ -399,6 +399,59 @@ int hv_map_hw(u64 from, u64 to, u64 size)
     return hv_map(from, to | PTE_ATTRIBUTES | PTE_VALID, size, 1);
 }
 
+/* M2-f2: the AGX pool window. Its L3 tables are created before the guest
+ * runs, every entry invalid; at run time only leaf entries change, outside
+ * the launch recorder. An invalid -> valid change needs no TLB maintenance
+ * (faulting entries are never cached); valid -> invalid is followed by
+ * hv_window_sync(true). */
+bool hv_window_prepare(u64 base, u64 size)
+{
+    if (!size || ((base | size) & MASK(VADDR_L2_OFFSET_BITS)) || base > ~size)
+        return false;
+    for (u64 at = base; at < base + size; at += BIT(VADDR_L2_OFFSET_BITS)) {
+        u64 *l2 = hv_pt_get_l2(at);
+        u64 idx = (at >> VADDR_L2_OFFSET_BITS) & MASK(VADDR_L2_INDEX_BITS);
+        if (L2_IS_NOT_TABLE(l2[idx]))
+            return false;
+        u64 *l3 = hv_pt_get_l3(at);
+        if (!l3)
+            return false;
+        for (idx = 0; idx < ENTRIES_PER_L3_TABLE; idx++)
+            if (l3[idx])
+                return false;
+    }
+    return true;
+}
+
+bool hv_window_map_page(u64 ipa, u64 pa)
+{
+    u64 *l2, *l3, l2idx, idx;
+
+    if ((ipa | pa) & MASK(VADDR_L3_OFFSET_BITS))
+        return false;
+    l2 = hv_pt_get_l2(ipa);
+    l2idx = (ipa >> VADDR_L2_OFFSET_BITS) & MASK(VADDR_L2_INDEX_BITS);
+    /* Never allocate at run time: the window must have been prepared. */
+    if (!L2_IS_TABLE(l2[l2idx]))
+        return false;
+    l3 = (u64 *)(l2[l2idx] & PTE_TARGET_MASK);
+    idx = (ipa >> VADDR_L3_OFFSET_BITS) & MASK(VADDR_L3_INDEX_BITS);
+    if (L3_IS_TABLE(l3[idx]))
+        return false;
+    l3[idx] = pa ? pa | PTE_ATTRIBUTES | PTE_VALID | FIELD_PREP(PTE_TYPE, PTE_PAGE) : 0;
+    return true;
+}
+
+void hv_window_sync(bool invalidated)
+{
+    sysop("dsb ish");
+    if (invalidated) {
+        sysop("tlbi vmalls12e1is");
+        sysop("dsb ish");
+    }
+    sysop("isb");
+}
+
 int hv_map_sw(u64 from, u64 to, u64 size)
 {
     return hv_map(from, to | FIELD_PREP(SPTE_TYPE, SPTE_MAP), size, 1);

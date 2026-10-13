@@ -6,6 +6,7 @@
 #include "hv_agx_config_snapshot.h"
 #include "hv_agx_firmware_prefix.h"
 #include "hv_agx_local_reserve.h"
+#include "hv_agx_pool_window.h"
 #include "hv_agx_retained_backing.h"
 #include "hv_launch_j313.h"
 #include "mcc.h"
@@ -22,6 +23,7 @@
 #include "hv_agx_scanout_service.h"
 #include "hv_vgic.h"
 #include "display.h"
+#include "malloc.h"
 #include "memory.h"
 #include "string.h"
 #include "utils.h"
@@ -36,6 +38,77 @@ static DECLARE_SPINLOCK(broker_lock);
 static DECLARE_SPINLOCK(service_lock);
 static bool resources_mapped;
 static struct hv_agx_local_receipt local_reserve;
+
+/* M2-f2: the AGX pool window (segment 3's CPU base) on J313: above any J313
+ * guest RAM end (0xc00000000 on 16 GB), below the vGIC (0xf00000000). */
+#define HV_AGX_POOL_WINDOW_IPA UINT64_C(0xd00000000)
+#define HV_AGX_POOL_WINDOW_CAPACITY UINT64_C(0x100000000)
+static struct hv_agx_pool_window pool_window;
+
+static uint64_t pool_window_translate(void *context, uint64_t ipa)
+{
+    uint64_t pa = hv_agx_retained_platform_ram_page(ipa);
+    (void)context;
+    /* Local-reserve pages belong to the broker's grant path, never aliased. */
+    if (pa && local_reserve.bytes && pa < local_reserve.host_pa + local_reserve.bytes &&
+        pa + AGX_POOL_WINDOW_PAGE > local_reserve.host_pa)
+        return 0;
+    return pa;
+}
+
+static bool pool_window_map(void *context, uint64_t window_ipa, uint64_t pa)
+{
+    (void)context;
+    return hv_window_map_page(window_ipa, pa);
+}
+
+static void pool_window_sync(void *context, bool invalidated)
+{
+    (void)context;
+    hv_window_sync(invalidated);
+}
+
+static bool pool_window_busy(void *context, uint64_t pa)
+{
+    (void)context;
+    return hv_agx_retained_platform_page_busy(pa);
+}
+
+static const struct hv_agx_pool_window_ops pool_window_ops = {
+    NULL, pool_window_translate, pool_window_map, pool_window_sync,
+    pool_window_busy};
+
+static void pool_window_select(void)
+{
+    u64 ram_base = cur_boot_args.phys_base, ram_bytes = cur_boot_args.mem_size;
+    u64 pages_bytes = hv_agx_pool_window_pages_bytes(HV_AGX_POOL_WINDOW_CAPACITY);
+    u64 present_bytes = hv_agx_pool_window_present_bytes(ram_bytes);
+    uint64_t *pages = memalign(AGX_POOL_WINDOW_PAGE, pages_bytes);
+    uint64_t *present = memalign(AGX_POOL_WINDOW_PAGE, present_bytes);
+
+    if (!pages || !present ||
+        !hv_window_prepare(HV_AGX_POOL_WINDOW_IPA, HV_AGX_POOL_WINDOW_CAPACITY)) {
+        printf("HV: AGX pool window unavailable (storage %u, stage-2 range not free)\n",
+               pages && present);
+        free(pages);
+        free(present);
+        return;
+    }
+    memset(pages, 0, pages_bytes);
+    memset(present, 0, present_bytes);
+    if (!hv_agx_pool_window_init(&pool_window, HV_AGX_POOL_WINDOW_IPA,
+                                 HV_AGX_POOL_WINDOW_CAPACITY, ram_base, ram_bytes,
+                                 pages, present, &pool_window_ops)) {
+        printf("HV: AGX pool window unavailable (overlaps RAM 0x%lx+0x%lx)\n",
+               ram_base, ram_bytes);
+        free(pages);
+        free(present);
+        return;
+    }
+    printf("HV: AGX pool window v%u IPA=0x%lx bytes=0x%lx broker+0x%x\n",
+           AGX_POOL_WINDOW_VERSION, (u64)HV_AGX_POOL_WINDOW_IPA,
+           (u64)HV_AGX_POOL_WINDOW_CAPACITY, AGX_POOL_WINDOW_OFFSET);
+}
 
 bool hv_agx_local_public_span(uint64_t *base, uint64_t *bytes)
 {
@@ -472,6 +545,19 @@ static bool handle_agx_power_broker(struct exc_info *ctx, u64 addr, u64 *value, 
         }
         return handled;
     }
+    if (offset >= AGX_POOL_WINDOW_OFFSET &&
+        offset < AGX_POOL_WINDOW_OFFSET + AGX_POOL_WINDOW_BYTES) {
+        u64 command = write ? *value : 0;
+        spin_lock(&broker_lock);
+        handled = hv_agx_pool_window_mmio(&pool_window, offset - AGX_POOL_WINDOW_OFFSET,
+                                          value, write, (unsigned)width);
+        if (handled && write && offset - AGX_POOL_WINDOW_OFFSET == AGX_POOL_WINDOW_REG_COMMAND &&
+            (pool_window.result != AgxPoolWindowOk || command == AGX_POOL_WINDOW_CMD_UNMAP_ALL))
+            printf("HV: AGX pool window cmd=%lu result=%u mapped=0x%lx\n", command,
+                   pool_window.result, pool_window.mapped);
+        spin_unlock(&broker_lock);
+        return handled;
+    }
     if (offset >= AGX_HWDATA_RECEIPT_OFFSET &&
         offset < AGX_HWDATA_RECEIPT_OFFSET+AGX_HWDATA_RECEIPT_BYTES) {
         spin_lock(&broker_lock);
@@ -600,6 +686,7 @@ bool hv_agx_g2_resources_map(void)
     }
     if (!config_snapshot_valid)
         printf("HV: AGX boot config snapshot unavailable; firmware start must fail closed\n");
+    pool_window_select();
     ret = hv_map_hook(HV_AGX_G2_POWER_BROKER_BASE, handle_agx_power_broker,
                       HV_AGX_G2_POWER_BROKER_SIZE);
     if (ret < 0) {

@@ -13,4 +13,6 @@ bool hv_agx_retained_platform_profile(u64 offset,u64 *value,bool write,
 bool hv_agx_retained_gpu_region(struct exc_info *ctx, u64 addr, u64 *value,
                                 bool write, int width);
 bool hv_agx_retained_can_power_off(void);
+u64 hv_agx_retained_platform_ram_page(u64 ipa);
+bool hv_agx_retained_platform_page_busy(u64 pa);
 #endif

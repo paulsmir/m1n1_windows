@@ -503,6 +503,26 @@ bool hv_agx_retained_gpu_region(struct exc_info *ctx, u64 addr, u64 *value,
     return true;
 }
 
+/* M2-f2 pool window: a window page aliases plain guest RAM a GPU backing could
+ * use, and leaves the window only while no broker backing, table or mailbox
+ * holds its PA. Callers hold broker_lock. */
+u64 hv_agx_retained_platform_ram_page(u64 ipa)
+{
+    return translate_guest(NULL, ipa);
+}
+
+bool hv_agx_retained_platform_page_busy(u64 pa)
+{
+    const struct hv_agx_gpuva_v5_backing *backing =
+        hv_agx_gpuva_v5_backing_by_pa(&gpuva_v5, pa);
+    unsigned i;
+    if (backing && backing->live) return true;
+    if (gpuva_v5.mailbox_pa && gpuva_v5.mailbox_pa == pa) return true;
+    for (i = 0; i < HV_AGX_GPUVA_V5_TABLES; ++i)
+        if (gpuva_v5.tables[i].live && gpuva_v5.tables[i].pa == pa) return true;
+    return false;
+}
+
 bool hv_agx_retained_can_power_off(void)
 {
     return !root_owner.Prepared && !root_owner.Active;
