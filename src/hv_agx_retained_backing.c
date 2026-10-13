@@ -3,6 +3,17 @@ static bool overlaps(uint64_t a,uint64_t n,uint64_t b,uint64_t m)
 {
     return m && a < b+m && b < a+n;
 }
+/* Boot inputs the launcher hands the guest (firmware image, its heap, ADT and
+ * boot-args copies) become guest RAM once the guest runs: the OS allocates
+ * them (EXP1251: Windows' RAM map starts at the guest RAM base and its pages
+ * there were refused). Only regions the hypervisor or devices keep using
+ * after launch -- the boot framebuffer, device DART tables, a published
+ * ramdisk -- deny GPU backing. */
+static bool boot_input(unsigned kind)
+{
+    return kind == HV_CONTRACT_REGION_HEAP || kind == HV_CONTRACT_REGION_FIRMWARE ||
+           kind == HV_CONTRACT_REGION_ADT || kind == HV_CONTRACT_REGION_BOOT_ARGS;
+}
 bool hv_agx_retained_backing_allowed(const struct hv_contract_snapshot *s,
     uint64_t pa,uint64_t bytes)
 {
@@ -21,7 +32,8 @@ bool hv_agx_retained_backing_allowed(const struct hv_contract_snapshot *s,
         if(r->kind==HV_CONTRACT_REGION_GUEST_RAM) {
             if(pa>=r->base && bytes<=r->size && pa-r->base<=r->size-bytes)
                 guest_region=true;
-        } else if(r->kind!=HV_CONTRACT_REGION_LOW_MEMORY && overlaps(pa,bytes,r->base,r->size))
+        } else if(r->kind!=HV_CONTRACT_REGION_LOW_MEMORY && !boot_input(r->kind) &&
+                  overlaps(pa,bytes,r->base,r->size))
             return false;
     }
     return guest_region;
