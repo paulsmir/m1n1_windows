@@ -10,7 +10,11 @@
 /* M2-f2c (ABI v3): this hypervisor selects the reserve size and publishes it
  * in the receipt; consumers derive segment 2 (bytes - private - backend) and
  * the backend arena (the last 8 MiB) from it. */
-#define HV_AGX_LOCAL_BYTES UINT64_C(0x40000000)
+/* M2-f2c-2: J313 selects 384 MiB -- segment 2 312 MiB for scanout primaries,
+ * G3 page tables and CPU-invisible BOs, 1.8x the 172 MiB peak measured under
+ * the standard benchmark (EXP1252-EXP1254-B); the KMD's own pool segment
+ * carries the Mesa BOs. The other 640 MiB return to Windows. */
+#define HV_AGX_LOCAL_BYTES UINT64_C(0x18000000)
 #define HV_AGX_LOCAL_ALIGNMENT UINT64_C(0x10000)
 #define HV_AGX_LOCAL_ABI_VERSION UINT32_C(3)
 #else
