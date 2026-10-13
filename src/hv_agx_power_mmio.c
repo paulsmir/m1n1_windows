@@ -118,7 +118,7 @@ bool hv_agx_local_public_span(uint64_t *base, uint64_t *bytes)
         local_reserve.host_pa != local_reserve.guest_ipa)
         return false;
     *base = local_reserve.guest_ipa;
-    *bytes = HV_AGX_LOCAL_BYTES - UINT64_C(0x4800000);
+    *bytes = local_reserve.bytes - HV_AGX_LOCAL_PRIVATE_BYTES - HV_AGX_LOCAL_BACKEND_BYTES;
     return true;
 #else
     (void)base;
@@ -127,6 +127,19 @@ bool hv_agx_local_public_span(uint64_t *base, uint64_t *bytes)
 #endif
 }
 static u32 local_reserve_read_logged;
+
+/* M2-f2c: the DCP pool a guest registers is segment 2 of the selected
+ * reserve (EXP953: it covers all of segment 2). */
+static void scanout_pool_follow_reserve(void)
+{
+    uint64_t base, bytes;
+    if (!hv_agx_local_public_span(&base, &bytes))
+        return;
+    spin_lock(&broker_lock);
+    if (!hv_agx_scanout_broker_set_pool_size(&scanout_broker, bytes))
+        printf("HV: AGX scanout pool size 0x%lx refused\n", bytes);
+    spin_unlock(&broker_lock);
+}
 static u64 firmware_root_base, firmware_root_length;
 
 
@@ -642,8 +655,10 @@ bool hv_agx_g2_resources_map(void)
      * Retry the receipt when that update has installed guest RAM stage-2
      * mappings; leave the already published MMIO hook untouched. */
     if (resources_mapped) {
-        if (local_reserve.bytes != HV_AGX_LOCAL_BYTES)
+        if (local_reserve.bytes != HV_AGX_LOCAL_BYTES) {
             local_reserve_select();
+            scanout_pool_follow_reserve();
+        }
         return true;
     }
 
@@ -666,6 +681,7 @@ bool hv_agx_g2_resources_map(void)
         hv_agx_scanout_broker_init(&scanout_broker);
         printf("HV: AGX scanout stays ABI v1 without a proven latch source\n");
     }
+    scanout_pool_follow_reserve();
     config_snapshot_valid = hv_agx_config_snapshot_from_adt(adt, &config_snapshot);
     {
         int sgx = adt_path_offset(adt, "/arm-io/sgx");

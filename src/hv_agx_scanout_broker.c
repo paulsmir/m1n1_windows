@@ -43,7 +43,7 @@ static bool surface_valid(const struct hv_agx_scanout_broker *broker)
     uint64_t offset = broker->staging_surface_offset;
     uint64_t size = broker->staging_surface_size;
 
-    if (broker->registered_pool_size != HV_AGX_SCANOUT_J313_POOL_SIZE ||
+    if (broker->registered_pool_size != broker->pool_size ||
         (offset & (HV_AGX_SCANOUT_ALIGNMENT - 1)) != 0 ||
         size != HV_AGX_SCANOUT_J313_SURFACE_SIZE ||
         broker->staging_width != HV_AGX_SCANOUT_J313_WIDTH ||
@@ -80,7 +80,7 @@ static bool submit(struct hv_agx_scanout_broker *broker, uint32_t command)
     if (command == HV_AGX_SCANOUT_CMD_REGISTER_POOL) {
         if (broker->state != HV_AGX_SCANOUT_UNREGISTERED ||
             !aligned(broker->staging_pool_ipa) ||
-            broker->staging_pool_size != HV_AGX_SCANOUT_J313_POOL_SIZE ||
+            broker->staging_pool_size != broker->pool_size ||
             add_overflows(broker->staging_pool_ipa, broker->staging_pool_size)) {
             reject_terminal(broker, HV_AGX_SCANOUT_RESULT_INVALID_POOL, sequence);
             return true;
@@ -139,6 +139,18 @@ void hv_agx_scanout_broker_init(struct hv_agx_scanout_broker *broker)
     broker->state = HV_AGX_SCANOUT_UNREGISTERED;
     broker->state_before_pending = HV_AGX_SCANOUT_UNREGISTERED;
     broker->result = HV_AGX_SCANOUT_RESULT_OK;
+    broker->pool_size = HV_AGX_SCANOUT_J313_POOL_SIZE;
+}
+
+bool hv_agx_scanout_broker_set_pool_size(struct hv_agx_scanout_broker *broker,
+                                         uint64_t bytes)
+{
+    if (!broker || broker->state != HV_AGX_SCANOUT_UNREGISTERED ||
+        !aligned(bytes) || bytes < HV_AGX_SCANOUT_J313_SURFACE_SIZE ||
+        bytes > HV_AGX_SCANOUT_J313_POOL_SIZE)
+        return false;
+    broker->pool_size = bytes;
+    return true;
 }
 
 void hv_agx_scanout_broker_init_v2(struct hv_agx_scanout_broker *broker,

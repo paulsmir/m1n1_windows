@@ -7,14 +7,23 @@
 #include <stdint.h>
 
 #ifdef AGX_LOCAL_RESERVE_V2
+/* M2-f2c (ABI v3): this hypervisor selects the reserve size and publishes it
+ * in the receipt; consumers derive segment 2 (bytes - private - backend) and
+ * the backend arena (the last 8 MiB) from it. */
 #define HV_AGX_LOCAL_BYTES UINT64_C(0x40000000)
 #define HV_AGX_LOCAL_ALIGNMENT UINT64_C(0x10000)
-#define HV_AGX_LOCAL_ABI_VERSION UINT32_C(2)
+#define HV_AGX_LOCAL_ABI_VERSION UINT32_C(3)
 #else
 #define HV_AGX_LOCAL_BYTES UINT64_C(0x4000000)
 #define HV_AGX_LOCAL_ALIGNMENT HV_AGX_LOCAL_BYTES
 #define HV_AGX_LOCAL_ABI_VERSION UINT32_C(1)
 #endif
+#define HV_AGX_LOCAL_PRIVATE_BYTES UINT64_C(0x4000000)
+#define HV_AGX_LOCAL_BACKEND_BYTES UINT64_C(0x800000)
+#define HV_AGX_LOCAL_MIN_SEGMENT_BYTES UINT64_C(0x4000000)
+#define HV_AGX_LOCAL_MIN_BYTES                                                 \
+    (HV_AGX_LOCAL_MIN_SEGMENT_BYTES + HV_AGX_LOCAL_PRIVATE_BYTES + HV_AGX_LOCAL_BACKEND_BYTES)
+#define HV_AGX_LOCAL_MAX_BYTES UINT64_C(0x40000000)
 #define HV_AGX_LOCAL_LEAF_BYTES UINT64_C(0x4000)
 #define HV_AGX_LOCAL_PHYSICAL_LIMIT (UINT64_C(1) << 40)
 #define HV_AGX_LOCAL_ABI_MAGIC UINT32_C(0x4c584741)

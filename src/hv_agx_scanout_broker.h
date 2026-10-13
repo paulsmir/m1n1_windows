@@ -28,6 +28,8 @@
 #define HV_AGX_SCANOUT_J313_HEIGHT 1600u
 #define HV_AGX_SCANOUT_J313_STRIDE 10240u
 #define HV_AGX_SCANOUT_J313_SURFACE_SIZE UINT64_C(0xfa0000)
+/* M2-f2c: the pool is segment 2 of the receipt-sized local reserve; this is
+ * its J313 maximum and the default until the reserve sets the exact size. */
 #define HV_AGX_SCANOUT_J313_POOL_SIZE UINT64_C(0x3b800000)
 #define HV_AGX_SCANOUT_ALIGNMENT UINT64_C(0x10000)
 #define HV_AGX_SCANOUT_FORMAT_BGRA8888 1u
@@ -128,6 +130,8 @@ struct hv_agx_scanout_broker {
     uint64_t pool_iova;
     uint64_t registered_pool_ipa;
     uint64_t registered_pool_size;
+    /* The only pool size REGISTER_POOL accepts. */
+    uint64_t pool_size;
     uint64_t staging_pool_ipa;
     uint64_t staging_pool_size;
     uint64_t staging_surface_offset;
@@ -143,6 +147,11 @@ struct hv_agx_scanout_broker {
 };
 
 void hv_agx_scanout_broker_init(struct hv_agx_scanout_broker *broker);
+/* Sets the pool size a guest must register (segment 2 of the local reserve):
+ * aligned, at least one surface, at most the J313 maximum, only while no pool
+ * is registered. */
+bool hv_agx_scanout_broker_set_pool_size(struct hv_agx_scanout_broker *broker,
+                                         uint64_t bytes);
 void hv_agx_scanout_broker_init_v2(struct hv_agx_scanout_broker *broker,
                                    bool latch_source_proven);
 bool hv_agx_scanout_broker_mmio(struct hv_agx_scanout_broker *broker, uint64_t offset,

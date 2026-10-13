@@ -302,6 +302,36 @@ static void test_register_rejects_invalid_mapping(void)
     assert(read64(&broker, HV_AGX_SCANOUT_REG_POOL_PA) == 0);
 }
 
+/* M2-f2c: the hypervisor sets the pool size from the receipt-sized reserve;
+ * only that size registers. */
+static void test_pool_size_follows_reserve(void)
+{
+    struct hv_agx_scanout_broker broker;
+    struct hv_agx_scanout_request request;
+
+    hv_agx_scanout_broker_init(&broker);
+    assert(broker.pool_size == HV_AGX_SCANOUT_J313_POOL_SIZE);
+    assert(!hv_agx_scanout_broker_set_pool_size(&broker,
+                                                HV_AGX_SCANOUT_J313_POOL_SIZE + 0x10000));
+    assert(!hv_agx_scanout_broker_set_pool_size(&broker, UINT64_C(0x13804000)));
+    assert(!hv_agx_scanout_broker_set_pool_size(&broker, UINT64_C(0x800000)));
+    assert(hv_agx_scanout_broker_set_pool_size(&broker, UINT64_C(0x13800000)));
+    /* A full-size registration no longer matches. */
+    stage_register(&broker, 1);
+    assert(read32(&broker, HV_AGX_SCANOUT_REG_RESULT) == HV_AGX_SCANOUT_RESULT_INVALID_POOL);
+
+    hv_agx_scanout_broker_init(&broker);
+    assert(hv_agx_scanout_broker_set_pool_size(&broker, UINT64_C(0x13800000)));
+    write64(&broker, HV_AGX_SCANOUT_REG_POOL_IPA, UINT64_C(0x10000000));
+    write64(&broker, HV_AGX_SCANOUT_REG_POOL_SIZE, UINT64_C(0x13800000));
+    write64(&broker, HV_AGX_SCANOUT_REG_REQUEST_SEQUENCE, 1);
+    write32(&broker, HV_AGX_SCANOUT_REG_COMMAND, HV_AGX_SCANOUT_CMD_REGISTER_POOL);
+    assert(hv_agx_scanout_broker_take_pending(&broker, &request));
+    assert(request.PoolSize == UINT64_C(0x13800000));
+    /* Once a registration is pending the size is fixed. */
+    assert(!hv_agx_scanout_broker_set_pool_size(&broker, HV_AGX_SCANOUT_J313_POOL_SIZE));
+}
+
 static void test_active_release_failure_preserves_ownership(void)
 {
     struct hv_agx_scanout_broker broker;
@@ -370,6 +400,7 @@ int main(void)
     test_v2_irq_injects_only_once_per_enabled_pending_edge();
     test_failed_present_preserves_active_and_release_fails_closed();
     test_register_rejects_invalid_mapping();
+    test_pool_size_follows_reserve();
     test_active_release_failure_preserves_ownership();
     test_release_without_quiesce_proof_fails_closed();
     return 0;

@@ -22,10 +22,13 @@ bool hv_agx_local_carveout_allows(uint64_t candidate, uint64_t base,
     return !overlaps(candidate, HV_AGX_LOCAL_BYTES, &range);
 }
 
+/* Scanout surfaces lie in segment 2, the part of the reserve before the
+ * private span and backend arena (M2-f2c; it was the reserve less 24 MiB). */
 bool hv_agx_local_scanout_allows(const struct hv_agx_local_receipt *receipt,
                                   uint64_t pa, uint64_t bytes)
 {
-    const uint64_t local_bytes = HV_AGX_LOCAL_BYTES - UINT64_C(0x1800000);
+    const uint64_t local_bytes =
+        receipt ? receipt->bytes - HV_AGX_LOCAL_PRIVATE_BYTES - HV_AGX_LOCAL_BACKEND_BYTES : 0;
     return receipt && receipt->bytes == HV_AGX_LOCAL_BYTES &&
            receipt->host_pa && receipt->host_pa == receipt->guest_ipa &&
            bytes && bytes <= local_bytes && pa >= receipt->host_pa &&
