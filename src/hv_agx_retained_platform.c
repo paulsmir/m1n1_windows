@@ -134,7 +134,17 @@ static bool gpuva_legacy_slot63(void *context)
 static const struct hv_agx_gpuva_v5_ops gpuva_ops = {
     NULL, gpuva_translate, gpuva_map_page, gpuva_read_slot,
     gpuva_write_slot, gpuva_sync, gpuva_invalidate, gpuva_prefix,
-    gpuva_legacy_slot63};
+    gpuva_legacy_slot63, NULL, 0};
+/* M2-f6: the broker table the hypervisor sized from guest RAM at start
+ * (hv_agx_retained_gpuva_storage); the built-in one while absent. */
+static void *gpuva_storage;
+static unsigned gpuva_storage_pages;
+
+void hv_agx_retained_gpuva_storage(void *storage, unsigned system_pages)
+{
+    gpuva_storage = storage;
+    gpuva_storage_pages = storage ? system_pages : 0u;
+}
 
 static bool gpuva_idle(void)
 {
@@ -311,8 +321,10 @@ static void execute(void *context, const AGX_RR_REQUEST *q, AGX_RR_RESPONSE *r)
                 enum hv_agx_gpuva_v5_result v5_status;
                 /* A new broker epoch starts with no mailbox page attached. */
                 gpuva_v5_wire.mailbox = NULL;
-                v5_status =
-                    hv_agx_gpuva_v5_init(&gpuva_v5,root_owner.Epoch,&gpuva_ops);
+                struct hv_agx_gpuva_v5_ops ops = gpuva_ops;
+                ops.storage = gpuva_storage;
+                ops.storage_system_backings = gpuva_storage_pages;
+                v5_status = hv_agx_gpuva_v5_init(&gpuva_v5,root_owner.Epoch,&ops);
                 uint64_t public_base = 0, public_bytes = 0;
                 if (v5_status == HV_AGX_GPUVA_V5_OK &&
                     hv_agx_local_public_span(&public_base,&public_bytes))

@@ -2,6 +2,9 @@
 #define HV_AGX_RETAINED_PLATFORM_H
 #include "types.h"
 bool hv_agx_retained_platform_init(u64 root, u64 length);
+/* M2-f6: the GPU broker's backing table for system_pages guest pages,
+ * allocated at hypervisor start (NULL keeps the built-in 2 GiB table). */
+void hv_agx_retained_gpuva_storage(void *storage, unsigned system_pages);
 bool hv_agx_retained_platform_mmio(u64 offset, u64 *value, bool write,
                                   unsigned width, bool powered);
 bool hv_agx_retained_platform_gpuva_v5(u64 offset, u64 *value, bool write,

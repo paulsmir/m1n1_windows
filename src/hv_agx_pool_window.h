@@ -37,6 +37,9 @@ struct hv_agx_pool_window {
     bool available;
     /* MAP_AT left holes: MAP_APPEND is refused until UNMAP_ALL. */
     bool sparse;
+    /* M2-f6: system pages of the GPU broker's backing table (REG_BROKER_PAGES);
+     * 0 while unpublished. */
+    uint64_t broker_pages;
 };
 
 /* Storage sizes for a window of capacity bytes over ram_bytes of RAM. */

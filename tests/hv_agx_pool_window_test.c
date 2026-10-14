@@ -200,6 +200,18 @@ static void test_mmio(void)
     assert(hv_agx_pool_window_mmio(&w, AGX_POOL_WINDOW_REG_IPA, &v, false, 3) && v == WIN_BASE);
     assert(hv_agx_pool_window_mmio(&w, AGX_POOL_WINDOW_REG_CAPACITY, &v, false, 3) &&
            v == WIN_BYTES);
+    /* M2-f6: no broker table size published yet: no BROKER status bit, 0. */
+    assert(hv_agx_pool_window_mmio(&w, AGX_POOL_WINDOW_REG_BROKER_PAGES, &v, false, 3) &&
+           v == 0);
+    w.broker_pages = 294912u;
+    assert(hv_agx_pool_window_mmio(&w, AGX_POOL_WINDOW_REG_STATUS, &v, false, 2) &&
+           v == (AGX_POOL_WINDOW_STATUS_AVAILABLE | AGX_POOL_WINDOW_STATUS_RANGES |
+                 AGX_POOL_WINDOW_STATUS_BROKER));
+    assert(hv_agx_pool_window_mmio(&w, AGX_POOL_WINDOW_REG_BROKER_PAGES, &v, false, 3) &&
+           v == 294912u);
+    assert(!hv_agx_pool_window_mmio(&w, AGX_POOL_WINDOW_REG_BROKER_PAGES, &v, true, 3));
+    assert(AGX_POOL_WINDOW_REG_BROKER_PAGES + 8u <= AGX_POOL_WINDOW_BYTES);
+    w.broker_pages = 0;
     /* Wrong widths and unknown offsets are not part of the ABI. */
     assert(!hv_agx_pool_window_mmio(&w, AGX_POOL_WINDOW_REG_IPA, &v, false, 2));
     assert(!hv_agx_pool_window_mmio(&w, AGX_POOL_WINDOW_REG_MAGIC, &v, false, 3));

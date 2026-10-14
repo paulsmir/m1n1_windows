@@ -53,13 +53,13 @@ static void local_leaf_ref(struct hv_agx_gpuva_v5 *b, uint64_t descriptor,
 /* M2-d backing index: records are found by PA and by IPA through two
  * linear-probing tables of record index + 1, kept gap-free by
  * backward-shift deletion, so every lookup is O(1) expected. */
-#define BACKING_SLOT_MASK (HV_AGX_GPUVA_V5_BACKING_SLOTS - 1u)
+#define BACKING_SLOT_MASK(b) ((1u << (b)->backing_slot_bits) - 1u)
 
-static uint32_t backing_hash(uint64_t key)
+static uint32_t backing_hash(const struct hv_agx_gpuva_v5 *b, uint64_t key)
 {
     return (uint32_t)(((key / HV_AGX_GPUVA_V5_PAGE) *
                        UINT64_C(0x9e3779b97f4a7c15)) >>
-                      (64u - HV_AGX_GPUVA_V5_BACKING_SLOT_BITS));
+                      (64u - b->backing_slot_bits));
 }
 
 static uint64_t backing_key(const struct hv_agx_gpuva_v5 *b, uint32_t ref,
@@ -72,13 +72,13 @@ static struct hv_agx_gpuva_v5_backing *backing_find(
     const struct hv_agx_gpuva_v5 *b, uint64_t key, bool by_ipa)
 {
     const uint32_t *index = by_ipa ? b->backing_by_ipa : b->backing_by_pa;
-    uint32_t slot = backing_hash(key), probes;
-    for (probes = 0; probes < HV_AGX_GPUVA_V5_BACKING_SLOTS; ++probes) {
+    uint32_t slot = backing_hash(b, key), probes;
+    for (probes = 0; probes <= BACKING_SLOT_MASK(b); ++probes) {
         uint32_t ref = index[slot];
         if (!ref) return NULL;
         if (backing_key(b, ref, by_ipa) == key)
             return (struct hv_agx_gpuva_v5_backing *)&b->backings[ref - 1u];
-        slot = (slot + 1u) & BACKING_SLOT_MASK;
+        slot = (slot + 1u) & BACKING_SLOT_MASK(b);
     }
     return NULL;
 }
@@ -87,8 +87,8 @@ static void backing_index_insert(struct hv_agx_gpuva_v5 *b, uint32_t ref,
                                  bool by_ipa)
 {
     uint32_t *index = by_ipa ? b->backing_by_ipa : b->backing_by_pa;
-    uint32_t slot = backing_hash(backing_key(b, ref, by_ipa));
-    while (index[slot]) slot = (slot + 1u) & BACKING_SLOT_MASK;
+    uint32_t slot = backing_hash(b, backing_key(b, ref, by_ipa));
+    while (index[slot]) slot = (slot + 1u) & BACKING_SLOT_MASK(b);
     index[slot] = ref;
 }
 
@@ -96,20 +96,20 @@ static void backing_index_erase(struct hv_agx_gpuva_v5 *b, uint32_t ref,
                                 bool by_ipa)
 {
     uint32_t *index = by_ipa ? b->backing_by_ipa : b->backing_by_pa;
-    uint32_t slot = backing_hash(backing_key(b, ref, by_ipa)), next;
-    while (index[slot] != ref) slot = (slot + 1u) & BACKING_SLOT_MASK;
+    uint32_t slot = backing_hash(b, backing_key(b, ref, by_ipa)), next;
+    while (index[slot] != ref) slot = (slot + 1u) & BACKING_SLOT_MASK(b);
     for (;;) {
         index[slot] = 0;
         next = slot;
         for (;;) {
             uint32_t moved, home;
-            next = (next + 1u) & BACKING_SLOT_MASK;
+            next = (next + 1u) & BACKING_SLOT_MASK(b);
             moved = index[next];
             if (!moved) return;
-            home = backing_hash(backing_key(b, moved, by_ipa));
+            home = backing_hash(b, backing_key(b, moved, by_ipa));
             /* An entry may fill the hole unless its home lies in (slot, next]. */
-            if (((next - home) & BACKING_SLOT_MASK) >=
-                ((next - slot) & BACKING_SLOT_MASK)) break;
+            if (((next - home) & BACKING_SLOT_MASK(b)) >=
+                ((next - slot) & BACKING_SLOT_MASK(b))) break;
         }
         index[slot] = index[next];
         slot = next;
@@ -322,6 +322,61 @@ rollback:
     return b->tainted ? HV_AGX_GPUVA_V5_TAINTED : HV_AGX_GPUVA_V5_TLB;
 }
 
+/* M2-f6: the storage layout for n system pages: records, the PA index, the
+ * IPA index (2^bits slots each, at least twice the records) and the free
+ * list. */
+static unsigned backing_slot_bits_for(unsigned records)
+{
+    unsigned bits = HV_AGX_GPUVA_V5_BACKING_SLOT_BITS;
+    while (bits < 31u && (UINT64_C(1) << bits) < 2ull * records) ++bits;
+    return bits;
+}
+
+size_t hv_agx_gpuva_v5_storage_bytes(unsigned system_backings)
+{
+    uint64_t records, slots;
+    if (!system_backings) return 0;
+    records = (uint64_t)system_backings + HV_AGX_GPUVA_V5_PRIVATE_BACKINGS;
+    if (records > UINT32_MAX / 4u) return 0;
+    slots = UINT64_C(1) << backing_slot_bits_for((unsigned)records);
+    return (size_t)(records * sizeof(struct hv_agx_gpuva_v5_backing) +
+                    2u * slots * sizeof(uint32_t) + records * sizeof(uint32_t));
+}
+
+static void backing_table_attach(struct hv_agx_gpuva_v5 *b, void *storage,
+                                 unsigned system_backings)
+{
+    if (storage && system_backings > HV_AGX_GPUVA_V5_BACKINGS &&
+        hv_agx_gpuva_v5_storage_bytes(system_backings)) {
+        unsigned records = system_backings + HV_AGX_GPUVA_V5_PRIVATE_BACKINGS;
+        unsigned bits = backing_slot_bits_for(records);
+        uint8_t *p = storage;
+        memset(storage, 0, hv_agx_gpuva_v5_storage_bytes(system_backings));
+        b->backings = (struct hv_agx_gpuva_v5_backing *)p;
+        p += (size_t)records * sizeof(struct hv_agx_gpuva_v5_backing);
+        b->backing_by_pa = (uint32_t *)p;
+        p += (size_t)(1u << bits) * sizeof(uint32_t);
+        b->backing_by_ipa = (uint32_t *)p;
+        p += (size_t)(1u << bits) * sizeof(uint32_t);
+        b->backing_free = (uint32_t *)p;
+        b->backing_records = records;
+        b->backing_slot_bits = bits;
+        return;
+    }
+    b->backings = b->builtin_backings;
+    b->backing_by_pa = b->builtin_by_pa;
+    b->backing_by_ipa = b->builtin_by_ipa;
+    b->backing_free = b->builtin_free;
+    b->backing_records = HV_AGX_GPUVA_V5_BACKING_RECORDS;
+    b->backing_slot_bits = HV_AGX_GPUVA_V5_BACKING_SLOT_BITS;
+}
+
+unsigned hv_agx_gpuva_v5_system_capacity(const struct hv_agx_gpuva_v5 *b)
+{
+    return b && b->backing_records > HV_AGX_GPUVA_V5_PRIVATE_BACKINGS
+               ? b->backing_records - HV_AGX_GPUVA_V5_PRIVATE_BACKINGS : 0u;
+}
+
 enum hv_agx_gpuva_v5_result hv_agx_gpuva_v5_init(
     struct hv_agx_gpuva_v5 *b, uint64_t epoch, const struct hv_agx_gpuva_v5_ops *ops)
 {
@@ -338,7 +393,8 @@ enum hv_agx_gpuva_v5_result hv_agx_gpuva_v5_init(
     b->epoch = epoch;
     b->context0_ttbr0 = low;
     b->context0_ttbr1 = high;
-    b->system_backing_limit = HV_AGX_GPUVA_V5_BACKINGS;
+    backing_table_attach(b, ops->storage, ops->storage_system_backings);
+    b->system_backing_limit = hv_agx_gpuva_v5_system_capacity(b);
     b->active = true;
     return HV_AGX_GPUVA_V5_OK;
 }
@@ -449,7 +505,7 @@ static enum hv_agx_gpuva_v5_result register_backing(
                      : b->system_backings >= b->system_backing_limit)
         return HV_AGX_GPUVA_V5_CAPACITY;
     if (b->backing_free_count) ref = b->backing_free[--b->backing_free_count];
-    else if (b->backing_high < HV_AGX_GPUVA_V5_BACKING_RECORDS)
+    else if (b->backing_high < b->backing_records)
         ref = ++b->backing_high;
     else return HV_AGX_GPUVA_V5_CAPACITY;
     record = &b->backings[ref - 1u];
@@ -838,7 +894,7 @@ enum hv_agx_gpuva_v5_result hv_agx_gpuva_v5_attach_mailbox(
 enum hv_agx_gpuva_v5_result hv_agx_gpuva_v5_configure_system_backings(
     struct hv_agx_gpuva_v5 *b, unsigned limit)
 {
-    if (!b || !b->active || !limit || limit > HV_AGX_GPUVA_V5_BACKINGS)
+    if (!b || !b->active || !limit || limit > hv_agx_gpuva_v5_system_capacity(b))
         return HV_AGX_GPUVA_V5_INVALID;
     if (limit < b->system_backings) return HV_AGX_GPUVA_V5_BUSY;
     b->system_backing_limit = limit;

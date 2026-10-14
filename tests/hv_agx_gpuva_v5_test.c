@@ -69,7 +69,9 @@ static bool invalidate(void *opaque, unsigned slot)
 static bool prefix(void *opaque) { return ((struct fixture *)opaque)->prefix; }
 static bool legacy_slot63(void *opaque)
 { return ((struct fixture *)opaque)->legacy_slot63; }
-static struct fixture *new_fixture(void)
+static struct fixture *new_fixture_with(void *storage, unsigned system_backings);
+static struct fixture *new_fixture(void) { return new_fixture_with(NULL, 0); }
+static struct fixture *new_fixture_with(void *storage, unsigned system_backings)
 {
     struct fixture *f = calloc(1, sizeof(*f));
     struct hv_agx_gpuva_v5_ops ops;
@@ -82,7 +84,9 @@ static struct fixture *new_fixture(void)
     f->prefix = true;
     ops = (struct hv_agx_gpuva_v5_ops){f,translate,map_page,read_slot,
                                       write_slot,sync_tables,invalidate,prefix,
-                                      legacy_slot63};
+                                      legacy_slot63,NULL,0};
+    ops.storage = storage;
+    ops.storage_system_backings = system_backings;
     assert(hv_agx_gpuva_v5_init(&f->broker, 7, &ops) == HV_AGX_GPUVA_V5_OK);
     assert(hv_agx_gpuva_v5_validate_envelope(&f->broker, 0, 1, 0) ==
            HV_AGX_GPUVA_V5_STALE);
@@ -474,6 +478,44 @@ static void mailbox_ownership(void)
            HV_AGX_GPUVA_V5_INVALID);
     free(f);
 }
+/* M2-f6: the built-in table (HV_AGX_GPUVA_V5_BACKINGS, 2 GiB) capped segment
+ * 3 at 1792 MiB on every Mac. Storage the hypervisor sizes from guest RAM
+ * holds more system pages, found by PA and IPA as before; the page past it
+ * is refused without mutation, and the configurable limit follows it. */
+static void external_storage_scales_system_backings(void)
+{
+    const unsigned pages = HV_AGX_GPUVA_V5_BACKINGS + 8192u;
+    const size_t bytes = hv_agx_gpuva_v5_storage_bytes(pages);
+    void *storage = malloc(bytes);
+    struct fixture *f;
+    const uint64_t last = P_DATA + (uint64_t)pages * HV_AGX_GPUVA_V5_PAGE;
+    assert(bytes > hv_agx_gpuva_v5_storage_bytes(HV_AGX_GPUVA_V5_BACKINGS));
+    assert(hv_agx_gpuva_v5_storage_bytes(0) == 0);
+    assert(storage);
+    memset(storage, 0xa5, bytes); /* init clears it */
+    f = new_fixture_with(storage, pages);
+    assert(hv_agx_gpuva_v5_system_capacity(&f->broker) == pages);
+    f->range_backing = true;
+    assert(hv_agx_gpuva_v5_create(&f->broker, 1, 1, P_ROOT, false) == HV_AGX_GPUVA_V5_OK);
+    for (unsigned page = 0; page < pages; ++page)
+        assert(hv_agx_gpuva_v5_register_shared_backing(&f->broker, 1, 1, 17,
+            P_DATA + (uint64_t)page * HV_AGX_GPUVA_V5_PAGE) == HV_AGX_GPUVA_V5_OK);
+    assert(hv_agx_gpuva_v5_live_backings(&f->broker) == pages);
+    assert(hv_agx_gpuva_v5_backing_by_pa(&f->broker, last - HV_AGX_GPUVA_V5_PAGE));
+    assert(hv_agx_gpuva_v5_register_shared_backing(&f->broker, 1, 1, 17, last) ==
+           HV_AGX_GPUVA_V5_CAPACITY);
+    assert(hv_agx_gpuva_v5_configure_system_backings(&f->broker, pages) ==
+           HV_AGX_GPUVA_V5_OK);
+    assert(hv_agx_gpuva_v5_configure_system_backings(&f->broker, pages + 1u) ==
+           HV_AGX_GPUVA_V5_INVALID);
+    free(f);
+    free(storage);
+    /* Without storage the built-in table keeps its capacity. */
+    f = new_fixture();
+    assert(hv_agx_gpuva_v5_system_capacity(&f->broker) == HV_AGX_GPUVA_V5_BACKINGS);
+    free(f);
+}
+
 int main(void)
 {
     independent_flush();
@@ -483,6 +525,7 @@ int main(void)
     shared_graph_grants();
     shared_reserve_capacity();
     system_backings_hold_uma_capacity();
+    external_storage_scales_system_backings();
     backing_index_survives_deletion();
     shared_backing_leaf_references();
     local_bitmap_ownership_and_eviction();

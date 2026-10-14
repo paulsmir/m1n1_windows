@@ -241,7 +241,9 @@ bool hv_agx_pool_window_mmio(struct hv_agx_pool_window *w, uint64_t offset,
             return true;
         case AGX_POOL_WINDOW_REG_STATUS:
             *value = w->available ? AGX_POOL_WINDOW_STATUS_AVAILABLE |
-                                        AGX_POOL_WINDOW_STATUS_RANGES
+                                        AGX_POOL_WINDOW_STATUS_RANGES |
+                                        (w->broker_pages ? AGX_POOL_WINDOW_STATUS_BROKER
+                                                         : 0u)
                                   : 0u;
             return true;
         case AGX_POOL_WINDOW_REG_RESULT:
@@ -282,6 +284,9 @@ bool hv_agx_pool_window_mmio(struct hv_agx_pool_window *w, uint64_t offset,
         return true;
     case AGX_POOL_WINDOW_REG_WINDOW_OFFSET:
         *value = w->window_offset;
+        return true;
+    case AGX_POOL_WINDOW_REG_BROKER_PAGES:
+        *value = w->available ? w->broker_pages : 0u;
         return true;
     default:
         return false;

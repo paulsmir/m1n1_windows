@@ -7,6 +7,7 @@
 #include "hv_agx_firmware_prefix.h"
 #include "hv_agx_local_reserve.h"
 #include "hv_agx_pool_window.h"
+#include "hv_agx_gpuva_v5.h"
 #include "hv_agx_retained_backing.h"
 #include "hv_launch_j313.h"
 #include "mcc.h"
@@ -43,6 +44,9 @@ static struct hv_agx_local_receipt local_reserve;
  * guest RAM end (0xc00000000 on 16 GB), below the vGIC (0xf00000000). */
 #define HV_AGX_POOL_WINDOW_IPA UINT64_C(0xd00000000)
 #define HV_AGX_POOL_WINDOW_CAPACITY UINT64_C(0x100000000)
+/* M2-f6: the GPU broker records every GPU-mapped system page: the pool window
+ * (segment 3) plus VidMm's aperture/system pages. */
+#define HV_AGX_BROKER_EXTRA_BYTES UINT64_C(0x20000000)
 static struct hv_agx_pool_window pool_window;
 
 static uint64_t pool_window_translate(void *context, uint64_t ipa)
@@ -108,6 +112,26 @@ static void pool_window_select(void)
     printf("HV: AGX pool window v%u IPA=0x%lx bytes=0x%lx broker+0x%x\n",
            AGX_POOL_WINDOW_VERSION, (u64)HV_AGX_POOL_WINDOW_IPA,
            (u64)HV_AGX_POOL_WINDOW_CAPACITY, AGX_POOL_WINDOW_OFFSET);
+    /* M2-f6: size the broker's backing table for the window and the other
+     * GPU-mapped system pages, at most the machine's RAM, instead of the
+     * built-in 2 GiB that capped segment 3 on every Mac. */
+    {
+        u64 wanted = (HV_AGX_POOL_WINDOW_CAPACITY + HV_AGX_BROKER_EXTRA_BYTES) /
+                     HV_AGX_GPUVA_V5_PAGE;
+        u64 ram_pages = ram_bytes / HV_AGX_GPUVA_V5_PAGE;
+        unsigned broker_pages = (unsigned)(wanted < ram_pages ? wanted : ram_pages);
+        size_t storage_bytes = hv_agx_gpuva_v5_storage_bytes(broker_pages);
+        void *storage = broker_pages > HV_AGX_GPUVA_V5_BACKINGS && storage_bytes
+                            ? memalign(HV_AGX_GPUVA_V5_PAGE, storage_bytes) : NULL;
+        if (storage) {
+            hv_agx_retained_gpuva_storage(storage, broker_pages);
+            pool_window.broker_pages = broker_pages;
+        } else {
+            pool_window.broker_pages = HV_AGX_GPUVA_V5_BACKINGS;
+        }
+        printf("HV: AGX GPU broker table %lu system pages (%lu bytes)\n",
+               (u64)pool_window.broker_pages, storage ? (u64)storage_bytes : 0ull);
+    }
 }
 
 bool hv_agx_local_public_span(uint64_t *base, uint64_t *bytes)

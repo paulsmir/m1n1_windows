@@ -1,6 +1,7 @@
 #ifndef HV_AGX_GPUVA_V5_H
 #define HV_AGX_GPUVA_V5_H
 
+#include <stddef.h>
 #include <stdint.h>
 #include <stdbool.h>
 
@@ -44,6 +45,12 @@ struct hv_agx_gpuva_v5_ops {
     bool (*prefix_unchanged)(void *);
     /* v4 uses fixed context63 until its owner is explicitly disabled. */
     bool (*legacy_slot63_active)(void *);
+    /* M2-f6: optional backing table for storage_system_backings system pages
+     * (hv_agx_gpuva_v5_storage_bytes bytes, 8-byte aligned, cleared by init),
+     * sized by the hypervisor from guest RAM. NULL or a count no larger than
+     * HV_AGX_GPUVA_V5_BACKINGS keeps the built-in table. */
+    void *storage;
+    unsigned storage_system_backings;
 };
 
 struct hv_agx_gpuva_v5_process {
@@ -77,12 +84,18 @@ struct hv_agx_gpuva_v5 {
     uint64_t epoch, context0_ttbr0, context0_ttbr1, next_token;
     struct hv_agx_gpuva_v5_process processes[HV_AGX_GPUVA_V5_PROCESSES];
     struct hv_agx_gpuva_v5_table tables[HV_AGX_GPUVA_V5_TABLES];
-    struct hv_agx_gpuva_v5_backing backings[HV_AGX_GPUVA_V5_BACKING_RECORDS];
+    /* The active backing table: the built-in arrays below or the storage
+     * given at init (M2-f6), backing_records records and 2^backing_slot_bits
+     * index slots. */
+    struct hv_agx_gpuva_v5_backing *backings;
     /* Record index + 1 by PA and by IPA (linear probing, 0 is empty). */
-    uint32_t backing_by_pa[HV_AGX_GPUVA_V5_BACKING_SLOTS];
-    uint32_t backing_by_ipa[HV_AGX_GPUVA_V5_BACKING_SLOTS];
-    uint32_t backing_free[HV_AGX_GPUVA_V5_BACKING_RECORDS];
+    uint32_t *backing_by_pa, *backing_by_ipa, *backing_free;
+    unsigned backing_records, backing_slot_bits;
     unsigned backing_free_count, backing_high;
+    struct hv_agx_gpuva_v5_backing builtin_backings[HV_AGX_GPUVA_V5_BACKING_RECORDS];
+    uint32_t builtin_by_pa[HV_AGX_GPUVA_V5_BACKING_SLOTS];
+    uint32_t builtin_by_ipa[HV_AGX_GPUVA_V5_BACKING_SLOTS];
+    uint32_t builtin_free[HV_AGX_GPUVA_V5_BACKING_RECORDS];
     unsigned system_backings, private_backings, system_backing_limit;
     unsigned owner_backings[HV_AGX_GPUVA_V5_PROCESSES];
     uint64_t local_base, local_bytes, private_bytes;
@@ -150,8 +163,13 @@ enum hv_agx_gpuva_v5_result hv_agx_gpuva_v5_destroy(
     struct hv_agx_gpuva_v5 *, uint64_t id, uint64_t generation);
 enum hv_agx_gpuva_v5_result hv_agx_gpuva_v5_attach_mailbox(
     struct hv_agx_gpuva_v5 *, uint64_t mailbox_ipa, uint64_t *mailbox_pa);
-/* Set the system-page limit (1..HV_AGX_GPUVA_V5_BACKINGS, not below the pages
- * registered now); the default is HV_AGX_GPUVA_V5_BACKINGS. */
+/* M2-f6: bytes of storage for a table of system_backings system pages (plus
+ * the private pages); 0 for 0. */
+size_t hv_agx_gpuva_v5_storage_bytes(unsigned system_backings);
+/* System pages the active table holds (the default limit). */
+unsigned hv_agx_gpuva_v5_system_capacity(const struct hv_agx_gpuva_v5 *);
+/* Set the system-page limit (1..the table's system capacity, not below the
+ * pages registered now); the default is the capacity. */
 enum hv_agx_gpuva_v5_result hv_agx_gpuva_v5_configure_system_backings(
     struct hv_agx_gpuva_v5 *, unsigned limit);
 /* Live (owner, page) registrations, and the record for a PA or an IPA. */
