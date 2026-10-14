@@ -32,9 +32,11 @@ struct hv_agx_pool_window {
     uint64_t *pages;
     /* One bit per guest RAM page (ram_bytes / page bits): page in the window. */
     uint64_t *present;
-    uint64_t source_ipa, source_bytes;
+    uint64_t source_ipa, source_bytes, window_offset;
     uint32_t result;
     bool available;
+    /* MAP_AT left holes: MAP_APPEND is refused until UNMAP_ALL. */
+    bool sparse;
 };
 
 /* Storage sizes for a window of capacity bytes over ram_bytes of RAM. */
@@ -53,6 +55,12 @@ enum AGX_POOL_WINDOW_RESULT hv_agx_pool_window_map_append(
     struct hv_agx_pool_window *window, uint64_t source_ipa, uint64_t bytes);
 enum AGX_POOL_WINDOW_RESULT hv_agx_pool_window_unmap_all(
     struct hv_agx_pool_window *window);
+/* M2-f3: map or unmap any page-aligned range of the window. */
+enum AGX_POOL_WINDOW_RESULT hv_agx_pool_window_map_at(
+    struct hv_agx_pool_window *window, uint64_t window_offset,
+    uint64_t source_ipa, uint64_t bytes);
+enum AGX_POOL_WINDOW_RESULT hv_agx_pool_window_unmap_range(
+    struct hv_agx_pool_window *window, uint64_t window_offset, uint64_t bytes);
 
 /* Register access at offset (relative to AGX_POOL_WINDOW_OFFSET); width 2 is
  * 32-bit, 3 is 64-bit. False for an access outside the ABI. */

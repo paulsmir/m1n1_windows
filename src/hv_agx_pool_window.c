@@ -57,23 +57,21 @@ bool hv_agx_pool_window_init(struct hv_agx_pool_window *w, uint64_t base,
     return true;
 }
 
-enum AGX_POOL_WINDOW_RESULT hv_agx_pool_window_map_append(
-    struct hv_agx_pool_window *w, uint64_t source_ipa, uint64_t bytes)
+/* Maps window pages [first, first + count) onto the source pages, all or
+ * nothing: every source page plain guest RAM, outside the window, not already
+ * in it and not held by the broker; every window page unmapped. */
+static enum AGX_POOL_WINDOW_RESULT map_pages(struct hv_agx_pool_window *w,
+                                             uint64_t first, uint64_t source_ipa,
+                                             uint64_t count)
 {
-    uint64_t first, count, i, j;
+    uint64_t i, j;
     enum AGX_POOL_WINDOW_RESULT result = AgxPoolWindowOk;
 
-    if (!w || !w->available)
-        return AgxPoolWindowState;
-    if (!bytes || ((source_ipa | bytes) & (PAGE - 1)) ||
-        source_ipa > UINT64_MAX - bytes)
-        return AgxPoolWindowInvalid;
-    if (bytes > w->capacity - w->mapped)
-        return AgxPoolWindowCapacity;
-    if (source_ipa < w->base + w->capacity && w->base < source_ipa + bytes)
+    if (source_ipa < w->base + w->capacity && w->base < source_ipa + count * PAGE)
         return AgxPoolWindowPage;
-    first = w->mapped / PAGE;
-    count = bytes / PAGE;
+    for (i = 0; i < count; ++i)
+        if (w->pages[first + i])
+            return AgxPoolWindowOccupied;
     for (i = 0; i < count; ++i) {
         uint64_t pa = w->ops.translate(w->ops.context, source_ipa + i * PAGE);
         if (!pa || (pa & (PAGE - 1)) || pa < w->ram_base ||
@@ -99,10 +97,10 @@ enum AGX_POOL_WINDOW_RESULT hv_agx_pool_window_map_append(
                 break;
         if (j == count) {
             w->ops.sync(w->ops.context, false);
-            w->mapped += bytes;
+            w->mapped += count * PAGE;
             return AgxPoolWindowOk;
         }
-        /* A stage-2 failure leaves no partial append behind. */
+        /* A stage-2 failure leaves no partial map behind. */
         while (j--)
             (void)w->ops.map(w->ops.context, w->base + (first + j) * PAGE, 0);
         w->ops.sync(w->ops.context, true);
@@ -116,31 +114,98 @@ enum AGX_POOL_WINDOW_RESULT hv_agx_pool_window_map_append(
     return result;
 }
 
-enum AGX_POOL_WINDOW_RESULT hv_agx_pool_window_unmap_all(
-    struct hv_agx_pool_window *w)
+/* Unmaps the mapped window pages among [first, first + count): refused when
+ * the broker holds one; with require_all, also when one is unmapped. */
+static enum AGX_POOL_WINDOW_RESULT unmap_pages(struct hv_agx_pool_window *w,
+                                               uint64_t first, uint64_t count,
+                                               bool require_all)
 {
-    uint64_t count, i;
+    uint64_t i, unmapped = 0;
     bool failed = false;
 
-    if (!w || !w->available)
-        return AgxPoolWindowState;
-    count = w->mapped / PAGE;
-    for (i = 0; i < count; ++i)
+    for (i = first; i < first + count; ++i) {
+        if (!w->pages[i]) {
+            if (require_all)
+                return AgxPoolWindowOccupied;
+            continue;
+        }
         if (w->ops.busy(w->ops.context, w->pages[i]))
             return AgxPoolWindowBusy;
-    for (i = 0; i < count; ++i)
-        if (!w->ops.map(w->ops.context, w->base + i * PAGE, 0))
-            failed = true;
-    if (count)
+    }
+    for (i = first; i < first + count; ++i)
+        if (w->pages[i]) {
+            if (!w->ops.map(w->ops.context, w->base + i * PAGE, 0))
+                failed = true;
+            ++unmapped;
+        }
+    if (unmapped)
         w->ops.sync(w->ops.context, true);
     if (failed)
         return AgxPoolWindowState;
-    for (i = 0; i < count; ++i) {
-        page_mark(w, w->pages[i], false);
-        w->pages[i] = 0;
-    }
-    w->mapped = 0;
+    for (i = first; i < first + count; ++i)
+        if (w->pages[i]) {
+            page_mark(w, w->pages[i], false);
+            w->pages[i] = 0;
+        }
+    w->mapped -= unmapped * PAGE;
     return AgxPoolWindowOk;
+}
+
+enum AGX_POOL_WINDOW_RESULT hv_agx_pool_window_map_append(
+    struct hv_agx_pool_window *w, uint64_t source_ipa, uint64_t bytes)
+{
+    if (!w || !w->available || w->sparse)
+        return AgxPoolWindowState;
+    if (!bytes || ((source_ipa | bytes) & (PAGE - 1)) ||
+        source_ipa > UINT64_MAX - bytes)
+        return AgxPoolWindowInvalid;
+    if (bytes > w->capacity - w->mapped)
+        return AgxPoolWindowCapacity;
+    return map_pages(w, w->mapped / PAGE, source_ipa, bytes / PAGE);
+}
+
+enum AGX_POOL_WINDOW_RESULT hv_agx_pool_window_map_at(
+    struct hv_agx_pool_window *w, uint64_t window_offset, uint64_t source_ipa,
+    uint64_t bytes)
+{
+    enum AGX_POOL_WINDOW_RESULT result;
+
+    if (!w || !w->available)
+        return AgxPoolWindowState;
+    if (!bytes || ((window_offset | source_ipa | bytes) & (PAGE - 1)) ||
+        source_ipa > UINT64_MAX - bytes)
+        return AgxPoolWindowInvalid;
+    if (window_offset > w->capacity || bytes > w->capacity - window_offset)
+        return AgxPoolWindowCapacity;
+    result = map_pages(w, window_offset / PAGE, source_ipa, bytes / PAGE);
+    if (result == AgxPoolWindowOk)
+        w->sparse = true;
+    return result;
+}
+
+enum AGX_POOL_WINDOW_RESULT hv_agx_pool_window_unmap_range(
+    struct hv_agx_pool_window *w, uint64_t window_offset, uint64_t bytes)
+{
+    if (!w || !w->available)
+        return AgxPoolWindowState;
+    if (!bytes || ((window_offset | bytes) & (PAGE - 1)))
+        return AgxPoolWindowInvalid;
+    if (window_offset > w->capacity || bytes > w->capacity - window_offset)
+        return AgxPoolWindowCapacity;
+    return unmap_pages(w, window_offset / PAGE, bytes / PAGE, true);
+}
+
+enum AGX_POOL_WINDOW_RESULT hv_agx_pool_window_unmap_all(
+    struct hv_agx_pool_window *w)
+{
+    enum AGX_POOL_WINDOW_RESULT result;
+
+    if (!w || !w->available)
+        return AgxPoolWindowState;
+    result = unmap_pages(w, 0, w->capacity / PAGE, false);
+    if (result == AgxPoolWindowOk)
+        w->sparse = false;
+    return result;
 }
 
 bool hv_agx_pool_window_mmio(struct hv_agx_pool_window *w, uint64_t offset,
@@ -157,6 +222,12 @@ bool hv_agx_pool_window_mmio(struct hv_agx_pool_window *w, uint64_t offset,
                                                           w->source_bytes);
             else if (*value == AGX_POOL_WINDOW_CMD_UNMAP_ALL)
                 w->result = hv_agx_pool_window_unmap_all(w);
+            else if (*value == AGX_POOL_WINDOW_CMD_MAP_AT)
+                w->result = hv_agx_pool_window_map_at(w, w->window_offset,
+                                                      w->source_ipa, w->source_bytes);
+            else if (*value == AGX_POOL_WINDOW_CMD_UNMAP_RANGE)
+                w->result = hv_agx_pool_window_unmap_range(w, w->window_offset,
+                                                           w->source_bytes);
             else
                 w->result = AgxPoolWindowInvalid;
             return true;
@@ -169,7 +240,9 @@ bool hv_agx_pool_window_mmio(struct hv_agx_pool_window *w, uint64_t offset,
             *value = AGX_POOL_WINDOW_VERSION;
             return true;
         case AGX_POOL_WINDOW_REG_STATUS:
-            *value = w->available ? AGX_POOL_WINDOW_STATUS_AVAILABLE : 0u;
+            *value = w->available ? AGX_POOL_WINDOW_STATUS_AVAILABLE |
+                                        AGX_POOL_WINDOW_STATUS_RANGES
+                                  : 0u;
             return true;
         case AGX_POOL_WINDOW_REG_RESULT:
             *value = w->result;
@@ -185,6 +258,8 @@ bool hv_agx_pool_window_mmio(struct hv_agx_pool_window *w, uint64_t offset,
             w->source_ipa = *value;
         else if (offset == AGX_POOL_WINDOW_REG_SOURCE_BYTES)
             w->source_bytes = *value;
+        else if (offset == AGX_POOL_WINDOW_REG_WINDOW_OFFSET)
+            w->window_offset = *value;
         else
             return false;
         return true;
@@ -204,6 +279,9 @@ bool hv_agx_pool_window_mmio(struct hv_agx_pool_window *w, uint64_t offset,
         return true;
     case AGX_POOL_WINDOW_REG_SOURCE_BYTES:
         *value = w->source_bytes;
+        return true;
+    case AGX_POOL_WINDOW_REG_WINDOW_OFFSET:
+        *value = w->window_offset;
         return true;
     default:
         return false;

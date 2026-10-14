@@ -196,7 +196,7 @@ static void test_mmio(void)
     assert(hv_agx_pool_window_mmio(&w, AGX_POOL_WINDOW_REG_VERSION, &v, false, 2) &&
            v == AGX_POOL_WINDOW_VERSION);
     assert(hv_agx_pool_window_mmio(&w, AGX_POOL_WINDOW_REG_STATUS, &v, false, 2) &&
-           v == AGX_POOL_WINDOW_STATUS_AVAILABLE);
+           v == (AGX_POOL_WINDOW_STATUS_AVAILABLE | AGX_POOL_WINDOW_STATUS_RANGES));
     assert(hv_agx_pool_window_mmio(&w, AGX_POOL_WINDOW_REG_IPA, &v, false, 3) && v == WIN_BASE);
     assert(hv_agx_pool_window_mmio(&w, AGX_POOL_WINDOW_REG_CAPACITY, &v, false, 3) &&
            v == WIN_BYTES);
@@ -230,6 +230,120 @@ static void test_mmio(void)
     assert(hv_agx_pool_window_mmio(&w, AGX_POOL_WINDOW_REG_MAPPED, &v, false, 3) && v == 0);
 }
 
+static uint64_t mmio_command(uint32_t command, uint64_t window_offset, uint64_t source_ipa,
+                             uint64_t bytes)
+{
+    uint64_t v = window_offset;
+    assert(hv_agx_pool_window_mmio(&w, AGX_POOL_WINDOW_REG_WINDOW_OFFSET, &v, true, 3));
+    v = source_ipa;
+    assert(hv_agx_pool_window_mmio(&w, AGX_POOL_WINDOW_REG_SOURCE_IPA, &v, true, 3));
+    v = bytes;
+    assert(hv_agx_pool_window_mmio(&w, AGX_POOL_WINDOW_REG_SOURCE_BYTES, &v, true, 3));
+    v = command;
+    assert(hv_agx_pool_window_mmio(&w, AGX_POOL_WINDOW_REG_COMMAND, &v, true, 2));
+    assert(hv_agx_pool_window_mmio(&w, AGX_POOL_WINDOW_REG_RESULT, &v, false, 2));
+    return v;
+}
+
+/* M2-f3: commit and decommit arbitrary window ranges (demand-driven segment 3). */
+static void test_map_at_and_unmap_range(void)
+{
+    reset();
+    /* Commit two ranges far apart; the hole between them stays invalid. */
+    assert(hv_agx_pool_window_map_at(&w, 0x100000, RAM_BASE + 0x40000, 0x10000) ==
+           AgxPoolWindowOk);
+    assert(hv_agx_pool_window_map_at(&w, 0x10000, 0x100000, 0x8000) == AgxPoolWindowOk);
+    assert(w.sparse && w.mapped == 0x18000 && mapped_entries() == 6);
+    assert(stage[0x100000 / PG] == RAM_BASE + 0x40000 && stage[0x10000 / PG + 1] ==
+           RAM_BASE + 0x8000000 + PG);
+    assert(stage[0] == 0 && stage[0x10000 / PG + 2] == 0);
+    /* A sparse window refuses appends until UNMAP_ALL. */
+    assert(hv_agx_pool_window_map_append(&w, RAM_BASE + 0x200000, PG) == AgxPoolWindowState);
+    unsigned calls = map_calls;
+    /* Mapping over a committed page, partially or exactly, is refused. */
+    assert(hv_agx_pool_window_map_at(&w, 0x10000 - PG, RAM_BASE + 0x200000, 0x8000) ==
+           AgxPoolWindowOccupied);
+    assert(hv_agx_pool_window_map_at(&w, 0x100000, RAM_BASE + 0x200000, PG) ==
+           AgxPoolWindowOccupied);
+    /* The source invariants hold for MAP_AT as for MAP_APPEND. */
+    assert(hv_agx_pool_window_map_at(&w, 0x200000, RAM_BASE + 0x4c000, PG) ==
+           AgxPoolWindowDuplicate);
+    busy_pa = RAM_BASE + 0x204000;
+    assert(hv_agx_pool_window_map_at(&w, 0x200000, RAM_BASE + 0x200000, 0x8000) ==
+           AgxPoolWindowBusy);
+    busy_pa = 0;
+    assert(hv_agx_pool_window_map_at(&w, 0x200000, WIN_BASE, PG) == AgxPoolWindowPage);
+    assert(hv_agx_pool_window_map_at(&w, 0x2000, RAM_BASE, PG) == AgxPoolWindowInvalid);
+    assert(hv_agx_pool_window_map_at(&w, WIN_BYTES - PG, RAM_BASE, 0x8000) ==
+           AgxPoolWindowCapacity);
+    assert(hv_agx_pool_window_map_at(&w, WIN_BYTES, RAM_BASE, PG) == AgxPoolWindowCapacity);
+    assert(map_calls == calls && w.mapped == 0x18000 && mapped_entries() == 6);
+    /* The last window page is committable. */
+    assert(hv_agx_pool_window_map_at(&w, WIN_BYTES - PG, RAM_BASE + 0x300000, PG) ==
+           AgxPoolWindowOk);
+    assert(stage[WIN_PAGES - 1] == RAM_BASE + 0x300000);
+
+    /* Decommit: a range with an uncommitted page or a broker-held page is refused. */
+    calls = map_calls;
+    assert(hv_agx_pool_window_unmap_range(&w, 0x10000, 0xc000) == AgxPoolWindowOccupied);
+    busy_pa = RAM_BASE + 0x44000;
+    assert(hv_agx_pool_window_unmap_range(&w, 0x100000, 0x10000) == AgxPoolWindowBusy);
+    busy_pa = 0;
+    assert(hv_agx_pool_window_unmap_range(&w, 0x100000, 0) == AgxPoolWindowInvalid);
+    assert(hv_agx_pool_window_unmap_range(&w, WIN_BYTES, PG) == AgxPoolWindowCapacity);
+    assert(map_calls == calls && mapped_entries() == 7);
+    /* A sub-range decommits alone and invalidates the stage-2 TLBs. */
+    unsigned invalidated = sync_invalidated;
+    assert(hv_agx_pool_window_unmap_range(&w, 0x104000, 0x8000) == AgxPoolWindowOk);
+    assert(sync_invalidated == invalidated + 1 && w.mapped == 0x14000 &&
+           mapped_entries() == 5);
+    assert(stage[0x100000 / PG] && !stage[0x104000 / PG] && !stage[0x108000 / PG] &&
+           stage[0x10c000 / PG]);
+    /* Its source pages are free again: they commit elsewhere in the window. */
+    assert(hv_agx_pool_window_map_at(&w, 0x300000, RAM_BASE + 0x44000, 0x8000) ==
+           AgxPoolWindowOk);
+    assert(stage[0x300000 / PG] == RAM_BASE + 0x44000);
+
+    /* UNMAP_ALL releases every committed page, not only a prefix. */
+    busy_pa = RAM_BASE + 0x300000; /* the last window page */
+    assert(hv_agx_pool_window_unmap_all(&w) == AgxPoolWindowBusy);
+    busy_pa = 0;
+    assert(hv_agx_pool_window_unmap_all(&w) == AgxPoolWindowOk);
+    assert(!w.sparse && w.mapped == 0 && mapped_entries() == 0);
+    /* Appends work again from the base; every source page is reusable. */
+    assert(hv_agx_pool_window_map_append(&w, RAM_BASE + 0x40000, 0x10000) == AgxPoolWindowOk);
+    assert(hv_agx_pool_window_map_append(&w, RAM_BASE + 0x300000, PG) == AgxPoolWindowOk);
+    assert(w.mapped == 0x14000 && stage[4] == RAM_BASE + 0x300000);
+}
+
+static void test_range_mmio(void)
+{
+    uint64_t v;
+    reset();
+    assert(mmio_command(AGX_POOL_WINDOW_CMD_MAP_AT, 0x40000, RAM_BASE + 0x80000, 0x8000) ==
+           AgxPoolWindowOk);
+    assert(stage[0x40000 / PG] == RAM_BASE + 0x80000 && stage[0x44000 / PG] ==
+           RAM_BASE + 0x84000);
+    assert(hv_agx_pool_window_mmio(&w, AGX_POOL_WINDOW_REG_WINDOW_OFFSET, &v, false, 3) &&
+           v == 0x40000);
+    assert(hv_agx_pool_window_mmio(&w, AGX_POOL_WINDOW_REG_MAPPED, &v, false, 3) &&
+           v == 0x8000);
+    /* WINDOW_OFFSET is a 64-bit register. */
+    assert(!hv_agx_pool_window_mmio(&w, AGX_POOL_WINDOW_REG_WINDOW_OFFSET, &v, true, 2));
+    assert(mmio_command(AGX_POOL_WINDOW_CMD_MAP_APPEND, 0, RAM_BASE, PG) ==
+           AgxPoolWindowState);
+    assert(mmio_command(AGX_POOL_WINDOW_CMD_UNMAP_RANGE, 0x40000, 0, 0xc000) ==
+           AgxPoolWindowOccupied);
+    assert(mmio_command(AGX_POOL_WINDOW_CMD_UNMAP_RANGE, 0x44000, 0, PG) == AgxPoolWindowOk);
+    assert(mmio_command(AGX_POOL_WINDOW_CMD_UNMAP_RANGE, 0x40000, 0, PG) == AgxPoolWindowOk);
+    assert(mapped_entries() == 0 && w.mapped == 0);
+    /* An empty sparse window still needs UNMAP_ALL before appends. */
+    assert(mmio_command(AGX_POOL_WINDOW_CMD_MAP_APPEND, 0, RAM_BASE, PG) ==
+           AgxPoolWindowState);
+    assert(mmio_command(AGX_POOL_WINDOW_CMD_UNMAP_ALL, 0, 0, 0) == AgxPoolWindowOk);
+    assert(mmio_command(AGX_POOL_WINDOW_CMD_MAP_APPEND, 0, RAM_BASE, PG) == AgxPoolWindowOk);
+}
+
 int main(void)
 {
     pages = calloc(1, hv_agx_pool_window_pages_bytes(WIN_BYTES));
@@ -241,6 +355,8 @@ int main(void)
     test_stage2_failure_rolls_back();
     test_unmap_all();
     test_mmio();
+    test_map_at_and_unmap_range();
+    test_range_mmio();
     free(pages);
     free(present);
     return 0;
