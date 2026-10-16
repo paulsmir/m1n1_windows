@@ -8,7 +8,12 @@
 #define HV_AGX_GPUVA_V5_VERSION 6u
 #define HV_AGX_GPUVA_V5_PAGE UINT64_C(0x4000)
 #define HV_AGX_GPUVA_V5_PROCESSES 128u
-#define HV_AGX_GPUVA_V5_TABLES 512u
+/* Page-table records shared by every process (CREATE takes one for the root).
+ * EXP1323: the FL 11_0 desktop of eleven GPU processes exhausted 512 and
+ * every later REGISTER_TABLE/CREATE answered CAPACITY; Asahi's UAT allocates
+ * page tables on demand without a global cap. 4096 records (40 bytes each)
+ * cover 4096 16-KiB tables. */
+#define HV_AGX_GPUVA_V5_TABLES 4096u
 /* M2-d: 16-KiB system pages a GPU leaf may map (2 GiB) and the 64-MiB
  * private local pool, one record per page found by PA or IPA in O(1). */
 #define HV_AGX_GPUVA_V5_BACKINGS 131072u

@@ -156,6 +156,7 @@ static bool gpuva_idle(void)
     return true;
 }
 
+static bool gpuva_capacity_reported;
 static void gpuva_execute(void *context, const AGX_GPUVA_V5_REQUEST *q,
                           AGX_GPUVA_V5_RESPONSE *r)
 {
@@ -263,6 +264,29 @@ done:
     if (request_powered &&
         hv_agx_gpuva_v5_verify(&gpuva_v5) == HV_AGX_GPUVA_V5_TAINTED)
         result = HV_AGX_GPUVA_V5_TAINTED;
+    if (result == HV_AGX_GPUVA_V5_CAPACITY && !gpuva_capacity_reported) {
+        /* EXP1323 receipt-only: the first CAPACITY of the boot with the live
+         * table records by level and by owner, once. */
+        unsigned live = 0, level[3] = {0, 0, 0}, per_owner[HV_AGX_GPUVA_V5_PROCESSES];
+        memset(per_owner, 0, sizeof(per_owner));
+        for (i = 0; i < HV_AGX_GPUVA_V5_TABLES; ++i)
+            if (gpuva_v5.tables[i].live) {
+                ++live;
+                if (gpuva_v5.tables[i].level < 3) ++level[gpuva_v5.tables[i].level];
+                if (gpuva_v5.tables[i].owner < HV_AGX_GPUVA_V5_PROCESSES)
+                    ++per_owner[gpuva_v5.tables[i].owner];
+            }
+        gpuva_capacity_reported = true;
+        printf("HV: GPUVA v5 CAPACITY cmd=%u pid=%lu tables live=%u/%u l0=%u l1=%u l2=%u\n",
+               q->Command, (unsigned long)q->ProcessId, live, HV_AGX_GPUVA_V5_TABLES,
+               level[0], level[1], level[2]);
+        for (i = 0; i < HV_AGX_GPUVA_V5_PROCESSES; ++i)
+            if (gpuva_v5.processes[i].live || per_owner[i])
+                printf("HV: GPUVA v5 owner %u id=%lu gen=%lu tables=%u backings=%lu\n", i,
+                       (unsigned long)gpuva_v5.processes[i].identity,
+                       (unsigned long)gpuva_v5.processes[i].generation, per_owner[i],
+                       (unsigned long)gpuva_v5.owner_backings[i]);
+    }
     r->Status = result;
     r->Epoch = gpuva_v5.epoch;
     for (i = 0; i < HV_AGX_GPUVA_V5_PROCESSES; ++i) {
