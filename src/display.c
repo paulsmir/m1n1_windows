@@ -704,6 +704,24 @@ void display_scanout_unmap(unsigned dart_index, u64 iova, u64 size)
     dart_unmap(dart, iova, size);
 }
 
+/* rc106: one vUART line per geometry change (a mode set), never per flip. */
+static void display_scanout_log_geometry(u32 width, u32 height, u32 stride,
+                                         const dcp_rect_t *target)
+{
+    static u32 last_w, last_h, last_stride;
+    static dcp_rect_t last_target;
+
+    if (width == last_w && height == last_h && stride == last_stride &&
+        !memcmp(target, &last_target, sizeof(*target)))
+        return;
+    last_w = width;
+    last_h = height;
+    last_stride = stride;
+    last_target = *target;
+    printf("display: scanout source %ux%u stride %u -> panel %ux%u at %u,%u\n",
+           width, height, stride, target->w, target->h, target->x, target->y);
+}
+
 bool display_scanout_present_begin(u64 surface_iova, u32 width, u32 height,
                                    u32 stride, bool rgba,
                                    const dcp_rect_t *destination, u64 *cookie)
@@ -716,6 +734,7 @@ bool display_scanout_present_begin(u64 surface_iova, u32 width, u32 height,
         !display_scanout_build_layer(surface_iova, width, height, stride, rgba,
                                      destination, &layer, &source, &target))
         return false;
+    display_scanout_log_geometry(width, height, stride, &target);
     if (dcp_iomfb_owner_active(dcp)) {
         struct dcp_iomfb_present_rect owner_destination = {
             .x = target.x, .y = target.y, .width = target.w, .height = target.h,
