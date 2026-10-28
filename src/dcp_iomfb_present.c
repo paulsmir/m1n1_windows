@@ -98,19 +98,40 @@ bool dcp_iomfb_present_build_start_v13_5(void *input, size_t input_size)
     wire->client_flag_2 = 1;
     return true;
 }
+static bool destination_valid(const struct dcp_iomfb_present_rect *rect)
+{
+    return rect->width && rect->height &&
+           rect->width <= DCP_IOMFB_J313_PANEL_WIDTH &&
+           rect->x <= DCP_IOMFB_J313_PANEL_WIDTH - rect->width &&
+           rect->height <= DCP_IOMFB_J313_PANEL_HEIGHT &&
+           rect->y <= DCP_IOMFB_J313_PANEL_HEIGHT - rect->height;
+}
+static bool destination_is_full_panel(const struct dcp_iomfb_present_rect *rect)
+{
+    return !rect->x && !rect->y && rect->width == DCP_IOMFB_J313_PANEL_WIDTH &&
+           rect->height == DCP_IOMFB_J313_PANEL_HEIGHT;
+}
 bool dcp_iomfb_present_build_v13_5(struct dcp_iomfb_present_request *request,
                                    uint64_t iova, uint32_t width,
                                    uint32_t height, uint32_t stride,
                                    uint32_t dcp_format,
-                                   bool clear_boot_surfaces)
+                                   bool clear_boot_surfaces,
+                                   const struct dcp_iomfb_present_rect *destination)
 {
     struct iomfb_submit_v13_5 *wire;
     struct iomfb_surface_base *surface;
+    struct dcp_iomfb_present_rect dest;
     uint64_t total = (uint64_t)height * stride;
     if (!request || !iova || !width || !height ||
         (uint64_t)stride < (uint64_t)width * 4 || (stride & 63) ||
         !total || total > UINT32_MAX ||
         (dcp_format != DCP_IOMFB_FORMAT_BGRA && dcp_format != DCP_IOMFB_FORMAT_RGBA))
+        return false;
+    if (destination)
+        dest = *destination;
+    else
+        dest = (struct dcp_iomfb_present_rect){0, 0, width, height};
+    if (!destination_valid(&dest))
         return false;
     memset(request, 0, sizeof(*request));
     wire = (struct iomfb_submit_v13_5 *)request->bytes;
@@ -119,10 +140,16 @@ bool dcp_iomfb_present_build_v13_5(struct dcp_iomfb_present_request *request,
     wire->swap.surface_ids[0] = 3;
     wire->swap.source[0] = (struct iomfb_rect){0, 0, width, height};
     wire->swap.surface_flags[0] = 1;
-    wire->swap.destination[0] = (struct iomfb_rect){0, 0, width, height};
-    wire->swap.swap_enabled = clear_boot_surfaces ?
+    wire->swap.destination[0] =
+        (struct iomfb_rect){dest.x, dest.y, dest.width, dest.height};
+    /* The first owner swap clears the boot surfaces (layers 0-2 enabled,
+     * black background).  rc106: a destination smaller than the panel keeps
+     * that form on every swap so the uncovered area stays black. */
+    wire->swap.swap_enabled =
+        (clear_boot_surfaces || !destination_is_full_panel(&dest)) ?
         (SET_BACKGROUND | 0x7u) : 1u;
     wire->swap.swap_completed = wire->swap.swap_enabled;
+    wire->swap.background_color = 0;
     wire->swap.backlight_unknown = 1;
     wire->swap.backlight_value = 0x58f058d0;
     wire->swap.backlight_power = 0x40;

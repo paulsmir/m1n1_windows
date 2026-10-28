@@ -614,12 +614,23 @@ static bool scanout_present_begin(void *opaque, uint64_t surface_iova,
                                   const struct hv_agx_scanout_request *request,
                                   uint64_t *cookie)
 {
+    dcp_rect_t destination;
+
     (void)opaque;
-    return request && display_scanout_present_begin(
-                          surface_iova, request->Width, request->Height,
-                          request->Stride,
-                          request->Format == HV_AGX_SCANOUT_FORMAT_RGBA8888,
-                          cookie);
+    if (!request)
+        return false;
+    /* rc106: the broker validated the rectangle against the J313 panel; the
+     * display layer checks it against the live panel again. */
+    destination = (dcp_rect_t){
+        .w = request->DestWidth,
+        .h = request->DestHeight,
+        .x = request->DestX,
+        .y = request->DestY,
+    };
+    return display_scanout_present_begin(
+        surface_iova, request->Width, request->Height, request->Stride,
+        request->Format == HV_AGX_SCANOUT_FORMAT_RGBA8888, &destination,
+        cookie);
 }
 
 #ifdef EXP806_SCANOUT_PATTERN

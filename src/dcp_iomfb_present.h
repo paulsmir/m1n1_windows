@@ -19,11 +19,22 @@ bool dcp_iomfb_present_build_start_v13_5(void *input, size_t input_size);
  * DCP_FORMAT_RGBA 'ABGR'). */
 #define DCP_IOMFB_FORMAT_BGRA 0x42475241u
 #define DCP_IOMFB_FORMAT_RGBA 0x52474241u
+/* rc106: the J313 panel the swap destination must lie inside. */
+#define DCP_IOMFB_J313_PANEL_WIDTH 2560u
+#define DCP_IOMFB_J313_PANEL_HEIGHT 1600u
+struct dcp_iomfb_present_rect {
+    uint32_t x, y, width, height;
+};
+/* destination: the panel rectangle DCP scales the width x height source into
+ * (swap destination[0]); NULL means {0, 0, width, height}.  A destination
+ * that is not the full panel sets a black background so the bars are black.
+ * Refused when empty or outside the panel. */
 bool dcp_iomfb_present_build_v13_5(struct dcp_iomfb_present_request *request,
                                    uint64_t surface_iova, uint32_t width,
                                    uint32_t height, uint32_t stride,
                                    uint32_t dcp_format,
-                                   bool clear_boot_surfaces);
+                                   bool clear_boot_surfaces,
+                                   const struct dcp_iomfb_present_rect *destination);
 bool dcp_iomfb_present_set_swap_id_v13_5(
     struct dcp_iomfb_present_request *request, uint32_t swap_id);
 bool dcp_iomfb_present_parse_start_v13_5(

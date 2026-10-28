@@ -400,7 +400,7 @@ static bool display_iomfb_swap_observer_run(void)
                                       cur_boot_args.video.width,
                                       cur_boot_args.video.height,
                                       cur_boot_args.video.stride,
-                                      DCP_IOMFB_FORMAT_BGRA);
+                                      DCP_IOMFB_FORMAT_BGRA, NULL);
     if (swap_id <= 0) {
         printf("display: one-swap observer rejected before A408\n");
         return false;
@@ -502,7 +502,7 @@ static u32 display_guest_owner_present_begin(void *opaque, u64 iova,
 
     (void)opaque;
     swap_id = dcp_iomfb_owner_present(dcp, iova, width, height, stride,
-                                      DCP_IOMFB_FORMAT_BGRA);
+                                      DCP_IOMFB_FORMAT_BGRA, NULL);
     return swap_id > 0 ? (u32)swap_id : 0;
 }
 
@@ -588,16 +588,40 @@ static void display_guest_unmap(void *opaque, u64 iova, u64 size)
     dart_unmap(dcp->dart_dcp, iova, size);
 }
 
+/* rc106: a caller-supplied destination must be non-empty and inside the
+ * panel; without one the source is aspect-fitted (the full panel for a
+ * native-size source). */
+static bool display_scanout_destination(u32 width, u32 height,
+                                        const dcp_rect_t *requested,
+                                        struct display_guest_rect *destination)
+{
+    u32 panel_w = cur_boot_args.video.width;
+    u32 panel_h = cur_boot_args.video.height;
+
+    if (!requested)
+        return display_guest_fit(width, height, panel_w, panel_h, destination);
+    if (!requested->w || !requested->h || requested->w > panel_w ||
+        requested->x > panel_w - requested->w || requested->h > panel_h ||
+        requested->y > panel_h - requested->h)
+        return false;
+    destination->width = requested->w;
+    destination->height = requested->h;
+    destination->x = requested->x;
+    destination->y = requested->y;
+    return true;
+}
+
 static bool display_scanout_build_layer(u64 iova, u32 width, u32 height,
-                                        u32 stride, bool rgba, dcp_layer_t *layer,
+                                        u32 stride, bool rgba,
+                                        const dcp_rect_t *requested,
+                                        dcp_layer_t *layer,
                                         dcp_rect_t *source, dcp_rect_t *target)
 {
     struct display_guest_rect destination;
 
     if (!layer || !source || !target || !iova || !width || !height ||
         (u64)stride < (u64)width * 4 ||
-        !display_guest_fit(width, height, cur_boot_args.video.width,
-                           cur_boot_args.video.height, &destination))
+        !display_scanout_destination(width, height, requested, &destination))
         return false;
     memset(layer, 0, sizeof(*layer));
     layer->planes[0].addr = iova;
@@ -681,7 +705,8 @@ void display_scanout_unmap(unsigned dart_index, u64 iova, u64 size)
 }
 
 bool display_scanout_present_begin(u64 surface_iova, u32 width, u32 height,
-                                   u32 stride, bool rgba, u64 *cookie)
+                                   u32 stride, bool rgba,
+                                   const dcp_rect_t *destination, u64 *cookie)
 {
     dcp_layer_t layer;
     dcp_rect_t source;
@@ -689,12 +714,16 @@ bool display_scanout_present_begin(u64 surface_iova, u32 width, u32 height,
 
     if (!cookie || scanout_swap_active || !display_scanout_ready() ||
         !display_scanout_build_layer(surface_iova, width, height, stride, rgba,
-                                     &layer, &source, &target))
+                                     destination, &layer, &source, &target))
         return false;
     if (dcp_iomfb_owner_active(dcp)) {
+        struct dcp_iomfb_present_rect owner_destination = {
+            .x = target.x, .y = target.y, .width = target.w, .height = target.h,
+        };
         int owner_swap_id = dcp_iomfb_owner_present(
             dcp, surface_iova, width, height, stride,
-            rgba ? DCP_IOMFB_FORMAT_RGBA : DCP_IOMFB_FORMAT_BGRA);
+            rgba ? DCP_IOMFB_FORMAT_RGBA : DCP_IOMFB_FORMAT_BGRA,
+            &owner_destination);
         if (owner_swap_id <= 0)
             return false;
         scanout_owner_swap_id = (u32)owner_swap_id;
@@ -766,13 +795,13 @@ bool display_scanout_quiesce_begin(u64 *cookie)
     if (!cookie || scanout_swap_active || !display_scanout_ready() || !fb_dva ||
         !display_scanout_build_layer(fb_dva, cur_boot_args.video.width,
                                      cur_boot_args.video.height,
-                                     cur_boot_args.video.stride, false,
+                                     cur_boot_args.video.stride, false, NULL,
                                      &layer, &source, &target))
         return false;
     if (dcp_iomfb_owner_active(dcp)) {
         int owner_swap_id = dcp_iomfb_owner_present(
             dcp, fb_dva, cur_boot_args.video.width, cur_boot_args.video.height,
-            cur_boot_args.video.stride, DCP_IOMFB_FORMAT_BGRA);
+            cur_boot_args.video.stride, DCP_IOMFB_FORMAT_BGRA, NULL);
         if (owner_swap_id <= 0)
             return false;
         scanout_owner_swap_id = (u32)owner_swap_id;
