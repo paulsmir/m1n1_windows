@@ -139,6 +139,11 @@ static bool fake_present_begin(void *opaque, uint64_t surface_iova,
 
     assert(request->Command == HV_AGX_SCANOUT_CMD_PRESENT);
     assert(fake->snapshot_calls == fake->present_begin_calls + 1);
+    /* rc106: the staged destination reaches the platform unchanged; these
+     * tests stage the native default, the full panel. */
+    assert(request->DestX == 0 && request->DestY == 0);
+    assert(request->DestWidth == HV_AGX_SCANOUT_J313_WIDTH);
+    assert(request->DestHeight == HV_AGX_SCANOUT_J313_HEIGHT);
     fake->present_begin_calls++;
     fake->presented_iova = surface_iova;
     *cookie = UINT64_C(0x1234);

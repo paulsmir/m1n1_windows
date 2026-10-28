@@ -79,6 +79,194 @@ static void test_identity_and_exact_mmio(void)
     assert(!hv_agx_scanout_broker_mmio(&broker, HV_AGX_SCANOUT_REG_MAGIC, &value, true, 2));
     assert(!hv_agx_scanout_broker_mmio(&broker, HV_AGX_SCANOUT_REG_MAGIC, &value, false, 3));
     assert(!hv_agx_scanout_broker_mmio(&broker, 0x7c, &value, false, 2));
+    /* rc106: the window ends after DEST_SIZE; the staging default is the
+     * full panel and v1 does not advertise scaling. */
+    assert(!(read32(&broker, HV_AGX_SCANOUT_REG_CAPABILITIES) &
+             HV_AGX_SCANOUT_CAP_SCALED_SOURCE));
+    assert(read32(&broker, HV_AGX_SCANOUT_REG_DEST_ORIGIN) == 0);
+    assert(read32(&broker, HV_AGX_SCANOUT_REG_DEST_SIZE) ==
+           (2560u | (1600u << 16)));
+    assert(!hv_agx_scanout_broker_mmio(&broker, 0xa8, &value, false, 2));
+    assert(!hv_agx_scanout_broker_mmio(&broker, 0xa8, &value, true, 2));
+    assert(!hv_agx_scanout_broker_mmio(&broker, 0xa0, &value, false, 3));
+}
+
+/* rc106: PRESENT with a smaller source and a panel destination. */
+static void stage_scaled_present(struct hv_agx_scanout_broker *broker,
+                                 uint64_t sequence, uint64_t offset,
+                                 uint32_t width, uint32_t height,
+                                 uint32_t stride, uint64_t size,
+                                 uint32_t dest_origin, uint32_t dest_size)
+{
+    write64(broker, HV_AGX_SCANOUT_REG_SURFACE_OFFSET, offset);
+    write64(broker, HV_AGX_SCANOUT_REG_SURFACE_SIZE, size);
+    write32(broker, HV_AGX_SCANOUT_REG_WIDTH, width);
+    write32(broker, HV_AGX_SCANOUT_REG_HEIGHT, height);
+    write32(broker, HV_AGX_SCANOUT_REG_STRIDE, stride);
+    write32(broker, HV_AGX_SCANOUT_REG_FORMAT, HV_AGX_SCANOUT_FORMAT_BGRA8888);
+    write32(broker, HV_AGX_SCANOUT_REG_DEST_ORIGIN, dest_origin);
+    write32(broker, HV_AGX_SCANOUT_REG_DEST_SIZE, dest_size);
+    write64(broker, HV_AGX_SCANOUT_REG_REQUEST_SEQUENCE, sequence);
+    write32(broker, HV_AGX_SCANOUT_REG_COMMAND, HV_AGX_SCANOUT_CMD_PRESENT);
+}
+
+static void register_ready(struct hv_agx_scanout_broker *broker)
+{
+    struct hv_agx_scanout_request request;
+
+    stage_register(broker, 1);
+    assert(hv_agx_scanout_broker_take_pending(broker, &request));
+    assert(hv_agx_scanout_broker_complete_register(
+        broker, 1, HV_AGX_SCANOUT_RESULT_OK, UINT64_C(0x880000000),
+        UINT64_C(0xf00000000)));
+    assert(read32(broker, HV_AGX_SCANOUT_REG_STATE) == HV_AGX_SCANOUT_READY);
+}
+
+static void test_v1_stays_native_only_and_ignores_destination(void)
+{
+    struct hv_agx_scanout_broker broker;
+    struct hv_agx_scanout_request request;
+
+    hv_agx_scanout_broker_init(&broker);
+    register_ready(&broker);
+    /* A non-native source is still refused without the cap. */
+    stage_scaled_present(&broker, 2, 0, 1920, 1080, 7680, 7680u * 1080u,
+                         0, 2560u | (1440u << 16));
+    assert(read32(&broker, HV_AGX_SCANOUT_REG_RESULT) ==
+           HV_AGX_SCANOUT_RESULT_INVALID_SURFACE);
+    assert(read32(&broker, HV_AGX_SCANOUT_REG_STATE) == HV_AGX_SCANOUT_READY);
+    /* A native present carries the full panel whatever was staged. */
+    stage_scaled_present(&broker, 3, 0, 2560, 1600, 10240,
+                         HV_AGX_SCANOUT_J313_SURFACE_SIZE,
+                         80u | (80u << 16), 1280u | (720u << 16));
+    assert(read32(&broker, HV_AGX_SCANOUT_REG_RESULT) == HV_AGX_SCANOUT_RESULT_OK);
+    assert(hv_agx_scanout_broker_take_pending(&broker, &request));
+    assert(request.Width == 2560 && request.Height == 1600 &&
+           request.Stride == 10240);
+    assert(request.DestX == 0 && request.DestY == 0);
+    assert(request.DestWidth == 2560 && request.DestHeight == 1600);
+}
+
+static void test_v2_scaled_source_destination_reaches_the_request(void)
+{
+    struct hv_agx_scanout_broker broker;
+    struct hv_agx_scanout_request request;
+
+    hv_agx_scanout_broker_init_v2(&broker, true);
+    assert(read32(&broker, HV_AGX_SCANOUT_REG_CAPABILITIES) &
+           HV_AGX_SCANOUT_CAP_SCALED_SOURCE);
+    assert(read32(&broker, HV_AGX_SCANOUT_REG_DEST_ORIGIN) == 0);
+    assert(read32(&broker, HV_AGX_SCANOUT_REG_DEST_SIZE) ==
+           (2560u | (1600u << 16)));
+    register_ready(&broker);
+
+    /* Native geometry with the default destination: the request is the
+     * same as before rc106. */
+    stage_present(&broker, 2, 0x10000);
+    assert(read32(&broker, HV_AGX_SCANOUT_REG_RESULT) == HV_AGX_SCANOUT_RESULT_OK);
+    assert(hv_agx_scanout_broker_take_pending(&broker, &request));
+    assert(request.Width == 2560 && request.Height == 1600 &&
+           request.Stride == 10240 &&
+           request.SurfaceSize == HV_AGX_SCANOUT_J313_SURFACE_SIZE);
+    assert(request.DestX == 0 && request.DestY == 0);
+    assert(request.DestWidth == 2560 && request.DestHeight == 1600);
+    assert(hv_agx_scanout_broker_complete_present(&broker, 2,
+                                                    HV_AGX_SCANOUT_RESULT_OK, 7));
+    assert(hv_agx_scanout_broker_mark_latched(&broker, 2));
+
+    /* 1920x1080 aspect-ratio-centered-max: 2560x1440 at (0, 80). */
+    stage_scaled_present(&broker, 3, 0x20000, 1920, 1080, 7680, 7680u * 1080u,
+                         0u | (80u << 16), 2560u | (1440u << 16));
+    assert(read32(&broker, HV_AGX_SCANOUT_REG_RESULT) == HV_AGX_SCANOUT_RESULT_OK);
+    assert(read32(&broker, HV_AGX_SCANOUT_REG_STATE) == HV_AGX_SCANOUT_PENDING);
+    assert(hv_agx_scanout_broker_take_pending(&broker, &request));
+    assert(request.Command == HV_AGX_SCANOUT_CMD_PRESENT);
+    assert(request.SurfaceOffset == 0x20000);
+    assert(request.SurfaceSize == 7680u * 1080u);
+    assert(request.Width == 1920 && request.Height == 1080 &&
+           request.Stride == 7680);
+    assert(request.DestX == 0 && request.DestY == 80);
+    assert(request.DestWidth == 2560 && request.DestHeight == 1440);
+    assert(hv_agx_scanout_broker_complete_present(&broker, 3,
+                                                    HV_AGX_SCANOUT_RESULT_OK, 8));
+    assert(hv_agx_scanout_broker_mark_latched(&broker, 3));
+
+    /* Centered 1280x720 at (640, 440); a padded stride is fine. */
+    stage_scaled_present(&broker, 4, 0x30000, 1280, 720, 5184, 5184u * 720u,
+                         640u | (440u << 16), 1280u | (720u << 16));
+    assert(read32(&broker, HV_AGX_SCANOUT_REG_RESULT) == HV_AGX_SCANOUT_RESULT_OK);
+    assert(hv_agx_scanout_broker_take_pending(&broker, &request));
+    assert(request.Stride == 5184 && request.DestX == 640 && request.DestY == 440);
+    assert(hv_agx_scanout_broker_complete_present(&broker, 4,
+                                                    HV_AGX_SCANOUT_RESULT_OK, 9));
+    assert(hv_agx_scanout_broker_mark_latched(&broker, 4));
+
+    /* The 800x600 corner: 2133x1600 at (213, 0) is inside the panel. */
+    stage_scaled_present(&broker, 5, 0x40000, 800, 600, 3200, 3200u * 600u,
+                         213u, 2133u | (1600u << 16));
+    assert(read32(&broker, HV_AGX_SCANOUT_REG_RESULT) == HV_AGX_SCANOUT_RESULT_OK);
+    assert(hv_agx_scanout_broker_take_pending(&broker, &request));
+    assert(hv_agx_scanout_broker_complete_present(&broker, 5,
+                                                    HV_AGX_SCANOUT_RESULT_OK, 10));
+    assert(hv_agx_scanout_broker_mark_latched(&broker, 5));
+}
+
+static void test_v2_scaled_source_refusals(void)
+{
+    struct hv_agx_scanout_broker broker;
+    struct hv_agx_scanout_request request;
+    uint64_t seq = 2;
+    static const struct {
+        uint32_t width, height, stride;
+        uint64_t size;
+        uint32_t dest_origin, dest_size;
+    } bad[] = {
+        /* destination leaves the panel */
+        {1920, 1080, 7680, 7680u * 1080u, 0u | (161u << 16), 2560u | (1440u << 16)},
+        {1920, 1080, 7680, 7680u * 1080u, 1u, 2560u | (1440u << 16)},
+        {2560, 1600, 10240, 0xfa0000u, 0u | (1u << 16), 2560u | (1600u << 16)},
+        {1920, 1080, 7680, 7680u * 1080u, 0u, 2561u | (1440u << 16)},
+        {1920, 1080, 7680, 7680u * 1080u, 0u, 2560u | (1601u << 16)},
+        /* empty destination */
+        {1920, 1080, 7680, 7680u * 1080u, 0u, 0u | (1440u << 16)},
+        {1920, 1080, 7680, 7680u * 1080u, 0u, 2560u},
+        /* source larger than the panel */
+        {2561, 1080, 10304, 10304u * 1080u, 0u, 2560u | (1600u << 16)},
+        {1920, 1601, 7680, 7680u * 1601u, 0u, 2560u | (1600u << 16)},
+        {0, 1080, 7680, 0, 0u, 2560u | (1600u << 16)},
+        {1920, 0, 7680, 0, 0u, 2560u | (1600u << 16)},
+        /* stride rules: short, not a multiple of 64 (1366x768) */
+        {1920, 1080, 7616, 7616u * 1080u, 0u, 2560u | (1600u << 16)},
+        {1366, 768, 5464, 5464u * 768u, 0u, 2560u | (1600u << 16)},
+        /* size must equal stride * height */
+        {1920, 1080, 7680, 7680u * 1080u + 64u, 0u, 2560u | (1600u << 16)},
+        {1920, 1080, 7680, 0xfa0000u, 0u, 2560u | (1600u << 16)},
+    };
+
+    hv_agx_scanout_broker_init_v2(&broker, true);
+    register_ready(&broker);
+    for (unsigned i = 0; i < sizeof(bad) / sizeof(bad[0]); i++) {
+        stage_scaled_present(&broker, seq, 0, bad[i].width, bad[i].height,
+                             bad[i].stride, bad[i].size, bad[i].dest_origin,
+                             bad[i].dest_size);
+        assert(read32(&broker, HV_AGX_SCANOUT_REG_RESULT) ==
+               HV_AGX_SCANOUT_RESULT_INVALID_SURFACE);
+        assert(read64(&broker, HV_AGX_SCANOUT_REG_RECEIPT_SEQUENCE) == seq);
+        assert(read32(&broker, HV_AGX_SCANOUT_REG_STATE) == HV_AGX_SCANOUT_READY);
+        assert(!hv_agx_scanout_broker_take_pending(&broker, &request));
+        seq++;
+    }
+    /* A surface that runs past the pool is still refused. */
+    stage_scaled_present(&broker, seq, HV_AGX_SCANOUT_J313_POOL_SIZE - 0x10000,
+                         1920, 1080, 7680, 7680u * 1080u, 0u | (80u << 16),
+                         2560u | (1440u << 16));
+    assert(read32(&broker, HV_AGX_SCANOUT_REG_RESULT) ==
+           HV_AGX_SCANOUT_RESULT_INVALID_SURFACE);
+    seq++;
+    /* The same geometry at a valid offset is accepted. */
+    stage_scaled_present(&broker, seq, 0, 1920, 1080, 7680, 7680u * 1080u,
+                         0u | (80u << 16), 2560u | (1440u << 16));
+    assert(read32(&broker, HV_AGX_SCANOUT_REG_RESULT) == HV_AGX_SCANOUT_RESULT_OK);
 }
 
 static void test_register_snapshot_and_completion(void)
@@ -425,6 +613,9 @@ int main(void)
 {
     test_rgba_present_format_reaches_the_request();
     test_identity_and_exact_mmio();
+    test_v1_stays_native_only_and_ignores_destination();
+    test_v2_scaled_source_destination_reaches_the_request();
+    test_v2_scaled_source_refusals();
     test_register_snapshot_and_completion();
     test_sequence_and_busy_rejection();
     test_surface_validation_and_latch_separation();

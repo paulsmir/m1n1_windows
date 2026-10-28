@@ -39,24 +39,70 @@ static bool sequence_fresh(const struct hv_agx_scanout_broker *broker, uint64_t 
     return sequence != 0 && sequence > broker->highest_sequence;
 }
 
+static bool format_valid(const struct hv_agx_scanout_broker *broker)
+{
+    return broker->staging_format == HV_AGX_SCANOUT_FORMAT_BGRA8888 ||
+           (broker->staging_format == HV_AGX_SCANOUT_FORMAT_RGBA8888 &&
+            (broker->capabilities & HV_AGX_SCANOUT_CAP_RGBA8888));
+}
+
+static bool scaled_source(const struct hv_agx_scanout_broker *broker)
+{
+    return (broker->capabilities & HV_AGX_SCANOUT_CAP_SCALED_SOURCE) != 0;
+}
+
+/* rc106: with CAP_SCALED_SOURCE the source may be any linear surface up to
+ * the panel (stride a multiple of 64 bytes, DCP's rule) and the destination
+ * any non-empty rectangle inside the panel. */
+static bool scaled_geometry_valid(const struct hv_agx_scanout_broker *broker)
+{
+    uint32_t width = broker->staging_width;
+    uint32_t height = broker->staging_height;
+    uint32_t stride = broker->staging_stride;
+    uint32_t dest_x = HV_AGX_SCANOUT_DEST_LOW(broker->staging_dest_origin);
+    uint32_t dest_y = HV_AGX_SCANOUT_DEST_HIGH(broker->staging_dest_origin);
+    uint32_t dest_w = HV_AGX_SCANOUT_DEST_LOW(broker->staging_dest_size);
+    uint32_t dest_h = HV_AGX_SCANOUT_DEST_HIGH(broker->staging_dest_size);
+
+    if (width == 0 || width > HV_AGX_SCANOUT_J313_WIDTH || height == 0 ||
+        height > HV_AGX_SCANOUT_J313_HEIGHT ||
+        (uint64_t)stride < (uint64_t)width * 4 || (stride & 63) != 0 ||
+        broker->staging_surface_size != (uint64_t)stride * height)
+        return false;
+    return dest_w != 0 && dest_h != 0 &&
+           dest_w <= HV_AGX_SCANOUT_J313_WIDTH &&
+           dest_x <= HV_AGX_SCANOUT_J313_WIDTH - dest_w &&
+           dest_h <= HV_AGX_SCANOUT_J313_HEIGHT &&
+           dest_y <= HV_AGX_SCANOUT_J313_HEIGHT - dest_h;
+}
+
+static bool native_geometry_valid(const struct hv_agx_scanout_broker *broker)
+{
+    return broker->staging_surface_size == HV_AGX_SCANOUT_J313_SURFACE_SIZE &&
+           broker->staging_width == HV_AGX_SCANOUT_J313_WIDTH &&
+           broker->staging_height == HV_AGX_SCANOUT_J313_HEIGHT &&
+           broker->staging_stride == HV_AGX_SCANOUT_J313_STRIDE;
+}
+
 static bool surface_valid(const struct hv_agx_scanout_broker *broker)
 {
     uint64_t offset = broker->staging_surface_offset;
     uint64_t size = broker->staging_surface_size;
 
     if (broker->registered_pool_size != broker->pool_size ||
-        (offset & (HV_AGX_SCANOUT_ALIGNMENT - 1)) != 0 ||
-        size != HV_AGX_SCANOUT_J313_SURFACE_SIZE ||
-        broker->staging_width != HV_AGX_SCANOUT_J313_WIDTH ||
-        broker->staging_height != HV_AGX_SCANOUT_J313_HEIGHT ||
-        broker->staging_stride != HV_AGX_SCANOUT_J313_STRIDE ||
-        (broker->staging_format != HV_AGX_SCANOUT_FORMAT_BGRA8888 &&
-         (broker->staging_format != HV_AGX_SCANOUT_FORMAT_RGBA8888 ||
-          !(broker->capabilities & HV_AGX_SCANOUT_CAP_RGBA8888))) ||
+        (offset & (HV_AGX_SCANOUT_ALIGNMENT - 1)) != 0 || !format_valid(broker) ||
+        !(scaled_source(broker) ? scaled_geometry_valid(broker)
+                                : native_geometry_valid(broker)) ||
         add_overflows(offset, size) ||
         offset + size > broker->registered_pool_size)
         return false;
     return true;
+}
+
+static void reset_destination(struct hv_agx_scanout_broker *broker)
+{
+    broker->staging_dest_origin = 0;
+    broker->staging_dest_size = HV_AGX_SCANOUT_J313_DEST_SIZE;
 }
 
 static bool submit(struct hv_agx_scanout_broker *broker, uint32_t command)
@@ -122,6 +168,17 @@ static bool submit(struct hv_agx_scanout_broker *broker, uint32_t command)
     broker->pending.Height = broker->staging_height;
     broker->pending.Stride = broker->staging_stride;
     broker->pending.Format = broker->staging_format;
+    if (scaled_source(broker)) {
+        broker->pending.DestX = HV_AGX_SCANOUT_DEST_LOW(broker->staging_dest_origin);
+        broker->pending.DestY = HV_AGX_SCANOUT_DEST_HIGH(broker->staging_dest_origin);
+        broker->pending.DestWidth = HV_AGX_SCANOUT_DEST_LOW(broker->staging_dest_size);
+        broker->pending.DestHeight = HV_AGX_SCANOUT_DEST_HIGH(broker->staging_dest_size);
+    } else {
+        broker->pending.DestX = 0;
+        broker->pending.DestY = 0;
+        broker->pending.DestWidth = HV_AGX_SCANOUT_J313_WIDTH;
+        broker->pending.DestHeight = HV_AGX_SCANOUT_J313_HEIGHT;
+    }
     broker->state_before_pending = broker->state;
     broker->state = command == HV_AGX_SCANOUT_CMD_RELEASE ? HV_AGX_SCANOUT_QUIESCING
                                                           : HV_AGX_SCANOUT_PENDING;
@@ -143,6 +200,7 @@ void hv_agx_scanout_broker_init(struct hv_agx_scanout_broker *broker)
     broker->state_before_pending = HV_AGX_SCANOUT_UNREGISTERED;
     broker->result = HV_AGX_SCANOUT_RESULT_OK;
     broker->pool_size = HV_AGX_SCANOUT_J313_POOL_SIZE;
+    reset_destination(broker);
 }
 
 bool hv_agx_scanout_broker_set_pool_size(struct hv_agx_scanout_broker *broker,
@@ -163,6 +221,10 @@ void hv_agx_scanout_broker_init_v2(struct hv_agx_scanout_broker *broker,
     if (!broker)
         return;
     broker->abi_version = HV_AGX_SCANOUT_ABI_VERSION_V2;
+    /* rc106: the v2 owner carries the swap destination rectangle (iomfb
+     * v13.5 destination[0], iBoot dst_rect), so it may scale a smaller source
+     * into the fixed panel. */
+    broker->capabilities |= HV_AGX_SCANOUT_CAP_SCALED_SOURCE;
     if (latch_source_proven)
         broker->capabilities |= HV_AGX_SCANOUT_V2_LATCH_CAPABILITIES;
 }
@@ -206,6 +268,12 @@ static bool read_u32(const struct hv_agx_scanout_broker *broker, uint64_t offset
         break;
     case HV_AGX_SCANOUT_REG_FORMAT:
         *value = broker->staging_format;
+        break;
+    case HV_AGX_SCANOUT_REG_DEST_ORIGIN:
+        *value = broker->staging_dest_origin;
+        break;
+    case HV_AGX_SCANOUT_REG_DEST_SIZE:
+        *value = broker->staging_dest_size;
         break;
     default:
         return false;
@@ -291,6 +359,12 @@ bool hv_agx_scanout_broker_mmio(struct hv_agx_scanout_broker *broker, uint64_t o
             return true;
         case HV_AGX_SCANOUT_REG_FORMAT:
             broker->staging_format = (uint32_t)*value;
+            return true;
+        case HV_AGX_SCANOUT_REG_DEST_ORIGIN:
+            broker->staging_dest_origin = (uint32_t)*value;
+            return true;
+        case HV_AGX_SCANOUT_REG_DEST_SIZE:
+            broker->staging_dest_size = (uint32_t)*value;
             return true;
         case HV_AGX_SCANOUT_REG_COMMAND:
             return submit(broker, (uint32_t)*value);

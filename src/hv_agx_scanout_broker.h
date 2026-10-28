@@ -7,7 +7,7 @@
 #include <stdint.h>
 
 #define HV_AGX_SCANOUT_MMIO_OFFSET UINT64_C(0x400)
-#define HV_AGX_SCANOUT_MMIO_SIZE UINT64_C(0xa0)
+#define HV_AGX_SCANOUT_MMIO_SIZE UINT64_C(0xa8)
 #define HV_AGX_SCANOUT_MAGIC UINT32_C(0x53584741) /* "AGXS" */
 #define HV_AGX_SCANOUT_ABI_VERSION_V1 1u
 #define HV_AGX_SCANOUT_ABI_VERSION_V2 2u
@@ -22,6 +22,10 @@
 #define HV_AGX_SCANOUT_CAP_REPEATED_PRESENT (1u << 4)
 #define HV_AGX_SCANOUT_CAP_LATCHED_RECEIPT (1u << 5)
 #define HV_AGX_SCANOUT_CAP_LATCHED_IRQ (1u << 6)
+/* rc106: PRESENT may carry a source smaller than the panel plus the panel
+ * rectangle DCP scales it into (REG_DEST_ORIGIN / REG_DEST_SIZE).  Without
+ * this bit the surface must be the exact native J313 geometry. */
+#define HV_AGX_SCANOUT_CAP_SCALED_SOURCE (1u << 8)
 #define HV_AGX_SCANOUT_V2_LATCH_CAPABILITIES                                  \
     (HV_AGX_SCANOUT_CAP_REPEATED_PRESENT |                                   \
      HV_AGX_SCANOUT_CAP_LATCHED_RECEIPT | HV_AGX_SCANOUT_CAP_LATCHED_IRQ)
@@ -68,7 +72,18 @@ enum hv_agx_scanout_register {
     HV_AGX_SCANOUT_REG_FORMAT = 0x8c,
     HV_AGX_SCANOUT_REG_REQUEST_SEQUENCE = 0x90,
     HV_AGX_SCANOUT_REG_COMMAND = 0x98,
+    /* CAP_SCALED_SOURCE only: X | Y << 16 and Width | Height << 16 of the
+     * panel rectangle the source is scaled into.  Reset to the full panel. */
+    HV_AGX_SCANOUT_REG_DEST_ORIGIN = 0xa0,
+    HV_AGX_SCANOUT_REG_DEST_SIZE = 0xa4,
 };
+#define HV_AGX_SCANOUT_DEST_PACK(low, high) \
+    (((uint32_t)(low) & 0xffffu) | ((uint32_t)(high) << 16))
+#define HV_AGX_SCANOUT_DEST_LOW(value) ((uint32_t)(value) & 0xffffu)
+#define HV_AGX_SCANOUT_DEST_HIGH(value) ((uint32_t)(value) >> 16)
+/* The destination a request carries without CAP_SCALED_SOURCE. */
+#define HV_AGX_SCANOUT_J313_DEST_SIZE \
+    HV_AGX_SCANOUT_DEST_PACK(HV_AGX_SCANOUT_J313_WIDTH, HV_AGX_SCANOUT_J313_HEIGHT)
 enum hv_agx_scanout_command {
     HV_AGX_SCANOUT_CMD_QUERY = 0,
     HV_AGX_SCANOUT_CMD_REGISTER_POOL = 1,
@@ -111,6 +126,12 @@ struct hv_agx_scanout_request {
     uint64_t PoolSize;
     uint64_t SurfaceOffset;
     uint64_t SurfaceSize;
+    /* Panel rectangle; the full panel unless CAP_SCALED_SOURCE admitted
+     * another one.  Source rectangle is always {0, 0, Width, Height}. */
+    uint32_t DestX;
+    uint32_t DestY;
+    uint32_t DestWidth;
+    uint32_t DestHeight;
 };
 
 struct hv_agx_scanout_broker {
@@ -143,6 +164,8 @@ struct hv_agx_scanout_broker {
     uint32_t staging_height;
     uint32_t staging_stride;
     uint32_t staging_format;
+    uint32_t staging_dest_origin;
+    uint32_t staging_dest_size;
     uint64_t staging_sequence;
     struct hv_agx_scanout_request pending;
     bool pending_taken;
