@@ -1,4 +1,10 @@
 #include "hv_agx_gpuva_v5_mmio.h"
+#ifdef AGX_GPUVA_PRIVATE_CACHED
+/* GC experiment: QUERY_CAPS (= ATTACH_MAILBOX + 1) reaches the broker. */
+#define GPUVA_V5_MMIO_LAST_COMMAND AGX_GPUVA_V5_QUERY_CAPS
+#else
+#define GPUVA_V5_MMIO_LAST_COMMAND AGX_GPUVA_V5_ATTACH_MAILBOX
+#endif
 #include <string.h>
 _Static_assert(sizeof(AGX_GPUVA_V5_REQUEST)==128, "v5 request ABI");
 _Static_assert(sizeof(AGX_GPUVA_V5_RESPONSE)==64, "v5 response ABI");
@@ -24,7 +30,7 @@ bool hv_agx_gpuva_v5_mmio(struct hv_agx_gpuva_v5_wire *s, uint64_t offset,
         if (q.Version == AGX_GPUVA_V5_VERSION && q.Bytes == sizeof(q) &&
             q.Sequence && q.Sequence > s->last_sequence &&
             q.Command >= AGX_GPUVA_V5_CREATE &&
-            q.Command <= AGX_GPUVA_V5_ATTACH_MAILBOX && execute) {
+            q.Command <= GPUVA_V5_MMIO_LAST_COMMAND && execute) {
             s->last_sequence = q.Sequence;
             execute(context, &q, &r);
         }

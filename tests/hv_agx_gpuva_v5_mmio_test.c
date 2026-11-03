@@ -1,4 +1,9 @@
 #include <assert.h>
+#ifdef AGX_GPUVA_PRIVATE_CACHED
+#define GC_QUERY_CAPS_WIRE 1 /* QUERY_CAPS = ATTACH_MAILBOX + 1 reaches the broker */
+#else
+#define GC_QUERY_CAPS_WIRE 0
+#endif
 #include <stdint.h>
 #include <string.h>
 #include "../src/hv_agx_gpuva_v5_mmio.h"
@@ -91,7 +96,7 @@ int main(void)
     write32(&s,AGX_GPUVA_V5_DOORBELL,AGX_GPUVA_V5_DOORBELL_MAILBOX);
     memcpy(&in_box,box+AGX_GPUVA_V5_MAILBOX_RESPONSE,sizeof(in_box));
     assert(executed==4 && in_box.Receipt==5 && in_box.Status!=0);
-    q.Command=AGX_GPUVA_V5_ATTACH_MAILBOX+1; q.Sequence=6;
+    q.Command=AGX_GPUVA_V5_ATTACH_MAILBOX+1+GC_QUERY_CAPS_WIRE; q.Sequence=6;
     memcpy(box,&q,sizeof(q));
     write32(&s,AGX_GPUVA_V5_DOORBELL,AGX_GPUVA_V5_DOORBELL_MAILBOX);
     memcpy(&in_box,box+AGX_GPUVA_V5_MAILBOX_RESPONSE,sizeof(in_box));
