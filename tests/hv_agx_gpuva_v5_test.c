@@ -4,6 +4,11 @@
 #include <string.h>
 #include "../src/hv_agx_gpuva_v5.h"
 #include "apple_agx_gpuva_broker_v5.h"
+#ifdef AGX_GPUVA_PRIVATE_CACHED
+#define GC_QUERY_CAPS_ACCEPTED 1 /* QUERY_CAPS = ATTACH_MAILBOX + 1 is valid there */
+#else
+#define GC_QUERY_CAPS_ACCEPTED 0
+#endif
 
 #define P_ROOT UINT64_C(0x10000000)
 #define P_L1   UINT64_C(0x10004000)
@@ -444,7 +449,7 @@ static void mailbox_ownership(void)
     assert(hv_agx_gpuva_v5_validate_envelope(&f->broker, 7,
            AGX_GPUVA_V5_ATTACH_MAILBOX, 1) == HV_AGX_GPUVA_V5_INVALID);
     assert(hv_agx_gpuva_v5_validate_envelope(&f->broker, 7,
-           AGX_GPUVA_V5_ATTACH_MAILBOX + 1, 0) == HV_AGX_GPUVA_V5_INVALID);
+           AGX_GPUVA_V5_ATTACH_MAILBOX + 1 + GC_QUERY_CAPS_ACCEPTED, 0) == HV_AGX_GPUVA_V5_INVALID);
     /* A live table or backing page can never become the response page. */
     assert(hv_agx_gpuva_v5_attach_mailbox(&f->broker, P_L2, &pa) ==
            HV_AGX_GPUVA_V5_OWNERSHIP && pa == 1);
@@ -527,9 +532,47 @@ static void closed_broker_lookup_is_empty(void)
     free(closed);
 }
 
+/* GC: a build with AGX_GPUVA_PRIVATE_CACHED publishes a leaf with update
+ * flag bit 4 as GPU-private cached (MEMATTR 0) and accepts it as the prior
+ * descriptor; every other build refuses the bit at the envelope. */
+static void private_cached_leaf(void)
+{
+    struct fixture *f = new_fixture();
+    uint64_t logical[4] = {P_DATA,P_DATA+0x1000,P_DATA+0x2000,P_DATA+0x3000};
+#ifdef AGX_GPUVA_PRIVATE_CACHED
+    assert(hv_agx_gpuva_v5_validate_envelope(&f->broker, 7,
+        AGX_GPUVA_V5_UPDATE_LEAF, 15u | AGX_GPUVA_V5_LEAF_PRIVATE_CACHED) == HV_AGX_GPUVA_V5_OK);
+    assert(hv_agx_gpuva_v5_validate_envelope(&f->broker, 7,
+        AGX_GPUVA_V5_UPDATE_LEAF, AGX_GPUVA_V5_LEAF_PRIVATE_CACHED) == HV_AGX_GPUVA_V5_INVALID);
+    assert(hv_agx_gpuva_v5_validate_envelope(&f->broker, 7,
+        AGX_GPUVA_V5_QUERY_CAPS, 0) == HV_AGX_GPUVA_V5_OK);
+    prepare(f, 1, P_ROOT, P_L1, P_L2, P_DATA, false);
+    unsigned l2 = 0;
+    while (l2 < HV_AGX_GPUVA_V5_TABLES && !(f->broker.tables[l2].live && f->broker.tables[l2].ipa == P_L2)) ++l2;
+    assert(l2 < HV_AGX_GPUVA_V5_TABLES);
+    uint64_t shared = f->broker.tables[l2].entries[8];
+    assert(((shared >> 2) & 7u) == 2u);
+    assert(hv_agx_gpuva_v5_update_leaf(&f->broker,1,1,P_L2,8,logical,17,
+        15u | AGX_GPUVA_V5_LEAF_PRIVATE_CACHED,15,15)==HV_AGX_GPUVA_V5_OK);
+    uint64_t cached = f->broker.tables[l2].entries[8];
+    assert(((cached >> 2) & 7u) == 0u && (cached & ~(7ULL << 2)) == (shared & ~(7ULL << 2)));
+    /* back to coherent from a cached prior descriptor */
+    assert(hv_agx_gpuva_v5_update_leaf(&f->broker,1,1,P_L2,8,logical,17,15,15,15)==HV_AGX_GPUVA_V5_OK);
+    assert(f->broker.tables[l2].entries[8] == shared);
+#else
+    (void)logical;
+    assert(hv_agx_gpuva_v5_validate_envelope(&f->broker, 7,
+        AGX_GPUVA_V5_UPDATE_LEAF, 15u | AGX_GPUVA_V5_LEAF_PRIVATE_CACHED) == HV_AGX_GPUVA_V5_INVALID);
+    assert(hv_agx_gpuva_v5_validate_envelope(&f->broker, 7,
+        AGX_GPUVA_V5_QUERY_CAPS, 0) == HV_AGX_GPUVA_V5_INVALID);
+#endif
+    free(f);
+}
+
 int main(void)
 {
     closed_broker_lookup_is_empty();
+    private_cached_leaf();
     independent_flush();
     guest_backing_validation();
     destroy_order_with_live_tables();

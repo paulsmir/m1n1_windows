@@ -212,12 +212,22 @@ enum hv_agx_gpuva_v5_result hv_agx_gpuva_v5_validate_envelope(
 {
     if (!b || !b->active || b->tainted) return HV_AGX_GPUVA_V5_TAINTED;
     if (epoch != b->epoch) return HV_AGX_GPUVA_V5_STALE;
+#ifdef AGX_GPUVA_PRIVATE_CACHED
+    /* GC experiment: QUERY_CAPS answers PRIVATE_CACHED; UPDATE_LEAF takes
+     * AGX_GPUVA_V5_LEAF_PRIVATE_CACHED above the four-bit update mask. */
+    const unsigned leaf_flags_max = 15u | AGX_GPUVA_V5_LEAF_PRIVATE_CACHED;
+    if (command == AGX_GPUVA_V5_QUERY_CAPS)
+        return flags ? HV_AGX_GPUVA_V5_INVALID : HV_AGX_GPUVA_V5_OK;
+#else
+    const unsigned leaf_flags_max = 15u;
+#endif
     if (command < AGX_GPUVA_V5_CREATE ||
         command > AGX_GPUVA_V5_ATTACH_MAILBOX)
         return HV_AGX_GPUVA_V5_INVALID;
     if (command == AGX_GPUVA_V5_CREATE ? flags > 1u :
         command == AGX_GPUVA_V5_UPDATE_LEAF ?
-            (!flags || flags > 15u) : flags != 0u)
+            (!(flags & 15u) || flags > leaf_flags_max ||
+             (flags & ~(15u | AGX_GPUVA_V5_LEAF_PRIVATE_CACHED))) : flags != 0u)
         return HV_AGX_GPUVA_V5_INVALID;
     return HV_AGX_GPUVA_V5_OK;
 }
@@ -640,8 +650,12 @@ enum hv_agx_gpuva_v5_result hv_agx_gpuva_v5_update_leaf(
 {
     int owner, table;
     uint64_t pa = 0, descriptor = 0, before, ipa[4] = {0};
-    unsigned long long encoded = 0, ro = 0, rw = 0;
+    unsigned long long encoded = 0, ro = 0, rw = 0, pro = 0, prw = 0;
     unsigned i, local_page, final_valid = 0, final_write = 0;
+    /* GC: bit 4 selects the GPU-private cached encoding (validated by the
+     * envelope; always clear in builds without AGX_GPUVA_PRIVATE_CACHED). */
+    const unsigned cached = update_mask & AGX_GPUVA_V5_LEAF_PRIVATE_CACHED;
+    update_mask &= 15u;
     struct hv_agx_gpuva_v5_backing *record;
     enum hv_agx_gpuva_v5_result result = check(b);
     if (result) return result;
@@ -659,7 +673,12 @@ enum hv_agx_gpuva_v5_result hv_agx_gpuva_v5_update_leaf(
                 AppleAgxUatGpuSharedReadOnly, &ro) != AppleAgxUatResultOk ||
             AppleAgxUatEncodePageDescriptor(1u, pa,
                 AppleAgxUatGpuSharedReadWrite, &rw) != AppleAgxUatResultOk ||
-            (before != ro && before != rw)) return HV_AGX_GPUVA_V5_OWNERSHIP;
+            AppleAgxUatEncodePageDescriptor(1u, pa,
+                AppleAgxUatGpuPrivateReadOnly, &pro) != AppleAgxUatResultOk ||
+            AppleAgxUatEncodePageDescriptor(1u, pa,
+                AppleAgxUatGpuPrivateReadWrite, &prw) != AppleAgxUatResultOk ||
+            (before != ro && before != rw && before != pro && before != prw))
+            return HV_AGX_GPUVA_V5_OWNERSHIP;
         /* Local-reserve pages are tracked only by the grant bitmap; the
          * backing table never holds one (register_backing returns first). */
         record = local_index(b, pa, &local_page) ? NULL :
@@ -676,7 +695,7 @@ enum hv_agx_gpuva_v5_result hv_agx_gpuva_v5_update_leaf(
                 ipa[part] = record->ipa + part * UINT64_C(0x1000);
         }
         final_valid = 15u;
-        final_write = before == rw ? 15u : 0u;
+        final_write = before == rw || before == prw ? 15u : 0u;
     }
     for (i = 0; i < 4; ++i) if (update_mask & (1u << i)) {
         ipa[i] = (valid_mask & (1u << i)) ? logical_ipa[i] : 0;
@@ -705,8 +724,10 @@ enum hv_agx_gpuva_v5_result hv_agx_gpuva_v5_update_leaf(
              !local_granted(b, (unsigned)owner, local_page)))
             return HV_AGX_GPUVA_V5_OWNERSHIP;
         if (AppleAgxUatEncodePageDescriptor(1u, pa,
-              final_write ? AppleAgxUatGpuSharedReadWrite :
-                            AppleAgxUatGpuSharedReadOnly,
+              cached ? (final_write ? AppleAgxUatGpuPrivateReadWrite :
+                                      AppleAgxUatGpuPrivateReadOnly) :
+                       (final_write ? AppleAgxUatGpuSharedReadWrite :
+                                      AppleAgxUatGpuSharedReadOnly),
               &encoded) != AppleAgxUatResultOk) return HV_AGX_GPUVA_V5_INVALID;
         descriptor = encoded;
     }

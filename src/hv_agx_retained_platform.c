@@ -207,6 +207,14 @@ static void gpuva_execute(void *context, const AGX_GPUVA_V5_REQUEST *q,
         &gpuva_v5, q->Epoch, q->Command, q->Flags);
     if (result != HV_AGX_GPUVA_V5_OK) goto done;
     switch (q->Command) {
+#ifdef AGX_GPUVA_PRIVATE_CACHED
+    case AGX_GPUVA_V5_QUERY_CAPS:
+        /* GC experiment: the only capability of this build. */
+        r->Reserved[0] = AGX_GPUVA_V5_CAP_PRIVATE_CACHED;
+        r->Reserved[1] = AGX_GPUVA_V5_LIVE_ABI;
+        result = HV_AGX_GPUVA_V5_OK;
+        break;
+#endif
     case AGX_GPUVA_V5_CREATE:
         result = hv_agx_gpuva_v5_create(&gpuva_v5,q->ProcessId,
             q->ProcessGeneration,q->TableIpa,q->Flags != 0);
