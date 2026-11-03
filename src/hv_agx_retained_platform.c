@@ -241,6 +241,16 @@ static void gpuva_execute(void *context, const AGX_GPUVA_V5_REQUEST *q,
         result = hv_agx_gpuva_v5_update_leaf(&gpuva_v5,q->ProcessId,
             q->ProcessGeneration,q->TableIpa,q->Index,logical,
             q->AllocationGeneration,q->Flags,q->ValidMask,q->WritableMask);
+#ifdef AGX_GPUVA_PRIVATE_CACHED
+        /* GC receipt: the first cached publication, then every 65536th. */
+        if (result == HV_AGX_GPUVA_V5_OK &&
+            (q->Flags & AGX_GPUVA_V5_LEAF_PRIVATE_CACHED)) {
+            static uint64_t gc_cached_leaves;
+            if ((gc_cached_leaves++ & 0xffffu) == 0)
+                printf("GPUVA-GC: private cached leaves %llu\n",
+                       (unsigned long long)gc_cached_leaves);
+        }
+#endif
         break;
     }
     case AGX_GPUVA_V5_RELOCATE_ROOT:
