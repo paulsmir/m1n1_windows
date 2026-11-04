@@ -81,6 +81,9 @@ void hv_exit_guest(void) __attribute__((noreturn));
 
 static u64 stolen_time = 0;
 static u64 exc_entry_time;
+/* Broker-lock diagnostic: CNTPCT ticks the current BHL owner waited for bhl
+ * in hv_exc_entry(). Written and read only while holding bhl. */
+u64 hv_exc_bhl_wait_ticks;
 
 static u64 hv_guest_ipa_pa_translate(u64 ipa, void *opaque)
 {
@@ -1814,9 +1817,11 @@ static void hv_exc_entry(void)
         sysop("msr daifclr, 4");
 
     __atomic_and_fetch(&hv_cpus_in_guest, ~BIT(smp_id()), __ATOMIC_ACQUIRE);
+    u64 bhl_request = mrs(CNTPCT_EL0);
     spin_lock(&bhl);
     hv_wdt_breadcrumb('X');
     exc_entry_time = mrs(CNTPCT_EL0);
+    hv_exc_bhl_wait_ticks = exc_entry_time - bhl_request;
     /* disable PMU counters in the hypervisor */
     u64 pmcr0 = mrs(SYS_IMP_APL_PMCR0);
     PERCPU(exc_entry_pmcr0_cnt) = pmcr0 & PMCR0_CNT_MASK;

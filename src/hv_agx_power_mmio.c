@@ -40,6 +40,203 @@ static DECLARE_SPINLOCK(service_lock);
 static bool resources_mapped;
 static struct hv_agx_local_receipt local_reserve;
 
+/*
+ * Broker-lock diagnostic (receipt only, no behaviour change).
+ *
+ * Every broker_lock user is one class.  For each class the hypervisor keeps
+ * the count, total and maximum lock-wait and lock-hold time in CNTPCT ticks
+ * and the BHL wait of the trapping exception (hv_exc_entry), resets them after
+ * each report and prints one "HV: BROKERLOCK" line at most every
+ * BROKERLOCK_REPORT_SECONDS when a count changed.  Every wait (lock or BHL)
+ * longer than 100 us also enters a small ring with the waiting class and the
+ * class that held the lock when the waiter arrived; the entries added since
+ * the previous report follow on one "HV: BROKERLOCK-LONG" line.
+ *
+ * Writers: MMIO classes run under bhl; the scanout service runs outside bhl
+ * but updates only its own class under broker_lock and never waits
+ * (try-lock), so it never writes the ring.  The reporter runs under bhl and
+ * snapshots/resets the counters under broker_lock.
+ */
+enum broker_class {
+    BROKER_CLASS_V5,
+    BROKER_CLASS_SCANOUT,
+    BROKER_CLASS_POOL,
+    BROKER_CLASS_POWER,
+    BROKER_CLASS_HWDATA,
+    BROKER_CLASS_FWIO,
+    BROKER_CLASS_RR,
+    BROKER_CLASS_FOLLOW,
+    BROKER_CLASS_SERVICE,
+    BROKER_CLASS_LOCAL,
+    BROKER_CLASS_COUNT,
+};
+static const char *const broker_class_names[BROKER_CLASS_COUNT] = {
+    "v5", "scanout", "pool", "power", "hwdata", "fwio", "rr", "follow", "service",
+    "local",
+};
+enum broker_lock_id { BROKER_LOCK_BROKER, BROKER_LOCK_V5, BROKER_LOCK_BHL };
+static const char *const broker_lock_names[] = {"broker", "v5", "bhl"};
+
+struct broker_lock_stat {
+    u64 count, wait_total, wait_max, hold_total, hold_max, bhl_total, bhl_max;
+};
+struct broker_long_wait {
+    u64 when;
+    u64 wait;
+    u8 waiter, holder, lock;
+};
+#define BROKERLOCK_REPORT_SECONDS 10
+#define BROKERLOCK_RING 8
+#define BROKERLOCK_NONE 0xff
+static struct broker_lock_stat broker_lock_stats[BROKER_CLASS_COUNT];
+static struct broker_long_wait broker_long_waits[BROKERLOCK_RING];
+static u64 broker_long_wait_total, broker_long_wait_reported;
+static u64 broker_lock_report_at, broker_lock_report_last, broker_lock_ticks_100us;
+static int broker_lock_holder = BROKERLOCK_NONE;
+extern u64 hv_exc_bhl_wait_ticks;
+
+struct broker_lock_ticket {
+    int cls;
+    u64 acquired;
+    u64 wait;
+    u64 bhl;
+};
+
+static u64 broker_lock_long_threshold(void)
+{
+    if (!broker_lock_ticks_100us) {
+        u64 frequency = mrs(CNTFRQ_EL0);
+        broker_lock_ticks_100us = frequency ? frequency / 10000 : 2400;
+    }
+    return broker_lock_ticks_100us;
+}
+
+static void broker_lock_note_long(int waiter, int holder, unsigned lock, u64 when, u64 wait)
+{
+    struct broker_long_wait *entry =
+        &broker_long_waits[broker_long_wait_total % BROKERLOCK_RING];
+    entry->when = when;
+    entry->wait = wait;
+    entry->waiter = (u8)waiter;
+    entry->holder = (u8)holder;
+    entry->lock = (u8)lock;
+    ++broker_long_wait_total;
+}
+
+/* Timed spin_lock: records the wait and the class that held the lock when
+ * this class arrived.  Callers of the MMIO classes hold bhl. */
+static u64 broker_lock_timed(spinlock_t *lock, int *holder, unsigned lock_id, int cls)
+{
+    int arrival_holder = __atomic_load_n(holder, __ATOMIC_RELAXED);
+    u64 requested = get_ticks(), acquired, wait;
+    spin_lock(lock);
+    acquired = get_ticks();
+    __atomic_store_n(holder, cls, __ATOMIC_RELAXED);
+    wait = acquired - requested;
+    if (wait > broker_lock_long_threshold())
+        broker_lock_note_long(cls, arrival_holder, lock_id, acquired, wait);
+    return wait;
+}
+
+static void broker_lock_enter(struct broker_lock_ticket *ticket, int cls)
+{
+    ticket->cls = cls;
+    ticket->bhl = cls == BROKER_CLASS_SERVICE || cls == BROKER_CLASS_FOLLOW
+                      ? 0 : hv_exc_bhl_wait_ticks;
+    if (ticket->bhl > broker_lock_long_threshold())
+        broker_lock_note_long(cls, BROKERLOCK_NONE, BROKER_LOCK_BHL, get_ticks(),
+                              ticket->bhl);
+    ticket->wait = broker_lock_timed(&broker_lock, &broker_lock_holder,
+                                     BROKER_LOCK_BROKER, cls);
+    ticket->acquired = get_ticks();
+}
+
+static void broker_lock_account(const struct broker_lock_ticket *ticket)
+{
+    struct broker_lock_stat *stat = &broker_lock_stats[ticket->cls];
+    u64 hold = get_ticks() - ticket->acquired;
+    ++stat->count;
+    stat->wait_total += ticket->wait;
+    if (ticket->wait > stat->wait_max) stat->wait_max = ticket->wait;
+    stat->hold_total += hold;
+    if (hold > stat->hold_max) stat->hold_max = hold;
+    stat->bhl_total += ticket->bhl;
+    if (ticket->bhl > stat->bhl_max) stat->bhl_max = ticket->bhl;
+}
+
+static void broker_lock_exit(const struct broker_lock_ticket *ticket)
+{
+    broker_lock_account(ticket);
+    __atomic_store_n(&broker_lock_holder, BROKERLOCK_NONE, __ATOMIC_RELAXED);
+    spin_unlock(&broker_lock);
+}
+
+/* Called without any broker lock held, under bhl, after an MMIO class. */
+static void broker_lock_report(void)
+{
+    struct broker_lock_stat snapshot[BROKER_CLASS_COUNT];
+    struct broker_long_wait ring[BROKERLOCK_RING];
+    char line[1024];
+    u64 now = get_ticks(), frequency = mrs(CNTFRQ_EL0), total = 0, first, long_total;
+    size_t used = 0;
+    unsigned i;
+
+    if (!frequency) frequency = 24000000;
+    if (now < broker_lock_report_at)
+        return;
+    broker_lock_report_at = now + BROKERLOCK_REPORT_SECONDS * frequency;
+    spin_lock(&broker_lock);
+    memcpy(snapshot, broker_lock_stats, sizeof(snapshot));
+    memset(broker_lock_stats, 0, sizeof(broker_lock_stats));
+    memcpy(ring, broker_long_waits, sizeof(ring));
+    long_total = broker_long_wait_total;
+    spin_unlock(&broker_lock);
+    for (i = 0; i < BROKER_CLASS_COUNT; ++i)
+        total += snapshot[i].count;
+    if (!total && long_total == broker_long_wait_reported)
+        return;
+    used += snprintf(line + used, sizeof(line) - used,
+                     "HV: BROKERLOCK split=%u dt_ms=%lu",
+#ifdef AGX_BROKER_LOCK_SPLIT
+                     1u,
+#else
+                     0u,
+#endif
+                     broker_lock_report_last
+                         ? ticks_to_msecs(now - broker_lock_report_last) : (u64)0);
+    for (i = 0; i < BROKER_CLASS_COUNT && used < sizeof(line); ++i) {
+        const struct broker_lock_stat *stat = &snapshot[i];
+        if (!stat->count) continue;
+        used += snprintf(line + used, sizeof(line) - used,
+                         " %s=%lu/w%lu,%lu/h%lu,%lu/b%lu,%lu",
+                         broker_class_names[i], stat->count,
+                         ticks_to_usecs(stat->wait_total), ticks_to_usecs(stat->wait_max),
+                         ticks_to_usecs(stat->hold_total), ticks_to_usecs(stat->hold_max),
+                         ticks_to_usecs(stat->bhl_total), ticks_to_usecs(stat->bhl_max));
+    }
+    printf("%s\n", line);
+    broker_lock_report_last = now;
+    if (long_total == broker_long_wait_reported)
+        return;
+    first = long_total - broker_long_wait_reported > BROKERLOCK_RING
+                ? long_total - BROKERLOCK_RING : broker_long_wait_reported;
+    used = (size_t)snprintf(line, sizeof(line), "HV: BROKERLOCK-LONG total=%lu new=%lu",
+                            long_total, long_total - broker_long_wait_reported);
+    for (; first < long_total && used < sizeof(line); ++first) {
+        const struct broker_long_wait *entry = &ring[first % BROKERLOCK_RING];
+        used += snprintf(line + used, sizeof(line) - used, " %lu:%s<-%s@%s:%lu",
+                         ticks_to_msecs(entry->when),
+                         entry->waiter < BROKER_CLASS_COUNT
+                             ? broker_class_names[entry->waiter] : "?",
+                         entry->holder < BROKER_CLASS_COUNT
+                             ? broker_class_names[entry->holder] : "none",
+                         entry->lock < 3 ? broker_lock_names[entry->lock] : "?",
+                         ticks_to_usecs(entry->wait));
+    }
+    broker_long_wait_reported = long_total;
+    printf("%s\n", line);
+}
+
 /* M2-f2: the AGX pool window (segment 3's CPU base) on J313: above any J313
  * guest RAM end (0xc00000000 on 16 GB), below the vGIC (0xf00000000). */
 #define HV_AGX_POOL_WINDOW_IPA UINT64_C(0xd00000000)
@@ -157,12 +354,13 @@ static u32 local_reserve_read_logged;
 static void scanout_pool_follow_reserve(void)
 {
     uint64_t base, bytes;
+    struct broker_lock_ticket ticket;
     if (!hv_agx_local_public_span(&base, &bytes))
         return;
-    spin_lock(&broker_lock);
+    broker_lock_enter(&ticket, BROKER_CLASS_FOLLOW);
     if (!hv_agx_scanout_broker_set_pool_size(&scanout_broker, bytes))
         printf("HV: AGX scanout pool size 0x%lx refused\n", bytes);
-    spin_unlock(&broker_lock);
+    broker_lock_exit(&ticket);
 }
 static u64 firmware_root_base, firmware_root_length;
 
@@ -548,9 +746,10 @@ static const struct hv_agx_scanout_platform_ops scanout_ops = {
     .quiesce_poll = scanout_quiesce_poll,
 };
 
-static bool handle_agx_power_broker(struct exc_info *ctx, u64 addr, u64 *value, bool write,
-                                    int width)
+static bool handle_agx_power_broker_locked(struct exc_info *ctx, u64 addr, u64 *value,
+                                           bool write, int width)
 {
+    struct broker_lock_ticket ticket;
     u64 offset;
     bool handled;
 
@@ -567,10 +766,10 @@ static bool handle_agx_power_broker(struct exc_info *ctx, u64 addr, u64 *value, 
             offset <= HV_AGX_LOCAL_REG_BYTES + 4 && !(offset & 3)) {
             u32 bit = 1u << (((offset - HV_AGX_LOCAL_REG_GUEST_IPA) / 4) +
                              (width == 3 ? 8 : 0));
-            spin_lock(&broker_lock);
+            broker_lock_enter(&ticket, BROKER_CLASS_LOCAL);
             log_read = !(local_reserve_read_logged & bit);
             local_reserve_read_logged |= bit;
-            spin_unlock(&broker_lock);
+            broker_lock_exit(&ticket);
         }
         handled = hv_agx_local_receipt_mmio(&local_reserve, offset, write,
                                              (unsigned)width, value);
@@ -587,45 +786,45 @@ static bool handle_agx_power_broker(struct exc_info *ctx, u64 addr, u64 *value, 
     if (offset >= AGX_POOL_WINDOW_OFFSET &&
         offset < AGX_POOL_WINDOW_OFFSET + AGX_POOL_WINDOW_BYTES) {
         u64 command = write ? *value : 0;
-        spin_lock(&broker_lock);
+        broker_lock_enter(&ticket, BROKER_CLASS_POOL);
         handled = hv_agx_pool_window_mmio(&pool_window, offset - AGX_POOL_WINDOW_OFFSET,
                                           value, write, (unsigned)width);
         if (handled && write && offset - AGX_POOL_WINDOW_OFFSET == AGX_POOL_WINDOW_REG_COMMAND &&
             (pool_window.result != AgxPoolWindowOk || command == AGX_POOL_WINDOW_CMD_UNMAP_ALL))
             printf("HV: AGX pool window cmd=%lu result=%u mapped=0x%lx\n", command,
                    pool_window.result, pool_window.mapped);
-        spin_unlock(&broker_lock);
+        broker_lock_exit(&ticket);
         return handled;
     }
     if (offset >= AGX_HWDATA_RECEIPT_OFFSET &&
         offset < AGX_HWDATA_RECEIPT_OFFSET+AGX_HWDATA_RECEIPT_BYTES) {
-        spin_lock(&broker_lock);
+        broker_lock_enter(&ticket, BROKER_CLASS_HWDATA);
         handled = hv_agx_retained_platform_profile(offset-AGX_HWDATA_RECEIPT_OFFSET,
                     value,write,(unsigned)width,broker.state == HV_AGX_POWER_ON);
-        spin_unlock(&broker_lock);
+        broker_lock_exit(&ticket);
         return handled;
     }
     if (offset >= AGX_FW_IO_OFFSET && offset < AGX_FW_IO_OFFSET+AGX_FW_IO_BYTES) {
-        spin_lock(&broker_lock);
+        broker_lock_enter(&ticket, BROKER_CLASS_FWIO);
         handled = hv_agx_retained_platform_io(offset-AGX_FW_IO_OFFSET,value,
                     write,(unsigned)width,broker.state == HV_AGX_POWER_ON);
-        spin_unlock(&broker_lock);
+        broker_lock_exit(&ticket);
         return handled;
     }
     if (offset >= AGX_RR_OFFSET && offset < AGX_RR_OFFSET + AGX_RR_WINDOW) {
-        spin_lock(&broker_lock);
+        broker_lock_enter(&ticket, BROKER_CLASS_RR);
         handled = hv_agx_retained_platform_mmio(offset - AGX_RR_OFFSET, value,
                     write, (unsigned)width, broker.state == HV_AGX_POWER_ON);
-        spin_unlock(&broker_lock);
+        broker_lock_exit(&ticket);
         return handled;
     }
     if (offset >= AGX_GPUVA_V5_OFFSET &&
         offset < AGX_GPUVA_V5_OFFSET + AGX_GPUVA_V5_WINDOW) {
-        spin_lock(&broker_lock);
+        broker_lock_enter(&ticket, BROKER_CLASS_V5);
         handled = hv_agx_retained_platform_gpuva_v5(
             offset - AGX_GPUVA_V5_OFFSET, value, write, (unsigned)width,
             broker.state == HV_AGX_POWER_ON);
-        spin_unlock(&broker_lock);
+        broker_lock_exit(&ticket);
         return handled;
     }
     if (offset >= AGX_FW_PREFIX_OFFSET && offset < AGX_FW_PREFIX_OFFSET + AGX_FW_PREFIX_SIZE) {
@@ -637,11 +836,11 @@ static bool handle_agx_power_broker(struct exc_info *ctx, u64 addr, u64 *value, 
     }
     if (offset >= HV_AGX_SCANOUT_MMIO_OFFSET &&
         offset < HV_AGX_SCANOUT_MMIO_OFFSET + HV_AGX_SCANOUT_MMIO_SIZE) {
-        spin_lock(&broker_lock);
+        broker_lock_enter(&ticket, BROKER_CLASS_SCANOUT);
         handled = hv_agx_scanout_broker_mmio(
             &scanout_broker, offset - HV_AGX_SCANOUT_MMIO_OFFSET, value, write,
             (unsigned)width);
-        spin_unlock(&broker_lock);
+        broker_lock_exit(&ticket);
         return handled;
     }
     if (offset >= HV_AGX_CONFIG_MMIO_OFFSET &&
@@ -653,11 +852,11 @@ static bool handle_agx_power_broker(struct exc_info *ctx, u64 addr, u64 *value, 
             value, write, (unsigned)width);
     }
 
-    spin_lock(&broker_lock);
+    broker_lock_enter(&ticket, BROKER_CLASS_POWER);
     if (write && offset == HV_AGX_POWER_REG_COMMAND && width == 2 &&
         *value == HV_AGX_POWER_CMD_OFF && !hv_agx_retained_can_power_off()) {
         broker.result = HV_AGX_POWER_RESULT_BUSY;
-        spin_unlock(&broker_lock);
+        broker_lock_exit(&ticket);
         return true;
     }
     handled = hv_agx_power_broker_mmio(&broker, offset, value,
@@ -669,7 +868,15 @@ static bool handle_agx_power_broker(struct exc_info *ctx, u64 addr, u64 *value, 
         printf("HV: AGX power receipt seq=%lu cmd=%lu state=%u result=%u\n",
                snapshot.receipt_sequence, *value, snapshot.state, snapshot.result);
     }
-    spin_unlock(&broker_lock);
+    broker_lock_exit(&ticket);
+    return handled;
+}
+
+static bool handle_agx_power_broker(struct exc_info *ctx, u64 addr, u64 *value, bool write,
+                                    int width)
+{
+    bool handled = handle_agx_power_broker_locked(ctx, addr, value, write, width);
+    broker_lock_report();
     return handled;
 }
 
@@ -760,12 +967,14 @@ void hv_agx_scanout_service_run_once(void)
     if (!resources_mapped || !spin_try_lock(&service_lock))
         return;
     if (spin_try_lock(&broker_lock)) {
+        struct broker_lock_ticket ticket = {BROKER_CLASS_SERVICE, get_ticks(), 0, 0};
+        __atomic_store_n(&broker_lock_holder, BROKER_CLASS_SERVICE, __ATOMIC_RELAXED);
         (void)hv_agx_scanout_service_step(&scanout_service, &scanout_broker);
         if (hv_vgic3_irq_enabled(HV_AGX_SCANOUT_GUEST_VINTID) &&
             hv_vgic3_get_free_lr() >= 0)
             inject_scanout =
                 hv_agx_scanout_broker_take_irq_edge(&scanout_broker);
-        spin_unlock(&broker_lock);
+        broker_lock_exit(&ticket);
     }
     if (inject_scanout)
         hv_vgic3_inject_irq(
