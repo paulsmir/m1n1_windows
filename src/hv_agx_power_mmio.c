@@ -37,6 +37,42 @@ static struct hv_agx_config_snapshot config_snapshot;
 static bool config_snapshot_valid;
 static DECLARE_SPINLOCK(broker_lock);
 static DECLARE_SPINLOCK(service_lock);
+
+/*
+ * AGX_BROKER_LOCK_SPLIT: the GPUVA v5 broker window takes v5_lock instead of
+ * broker_lock.
+ *
+ * v5_lock protects the state hv_agx_retained_platform.c shares with the v5
+ * broker: gpuva_v5, gpuva_v5_wire, request_powered, root_owner (v5 reads
+ * Active and calls hv_agx_retained_prefix_unchanged(), which writes
+ * PrefixUnchanged/Tainted), the slot table at HV_AGX_G2_GPU_BASE, and the
+ * stage-2 entries v5 translates through hv_ipa_to_pa().  Every class that
+ * touches any of it holds broker_lock AND v5_lock:
+ *   rr     - PREPARE/ACTIVATE/MAP/UNMAP/CLOSE write root_owner and slot 0,
+ *            ACTIVATE re-initialises gpuva_v5/_wire, CLOSE reads gpuva_idle()
+ *            and clears gpuva_v5;
+ *   pool   - pool_window_busy() reads v5 backings/tables/mailbox and the
+ *            busy check plus the stage-2 (un)map must be atomic against a v5
+ *            backing registration through the same window IPA;
+ *   hwdata, fwio - hv_agx_retained_io_manifest() -> check_tables() writes
+ *            root_owner through hv_agx_retained_prefix_unchanged().
+ * The v5 class holds v5_lock only.  scanout, service, follow, local and
+ * power hold broker_lock only: they never touch v5 state (power reads
+ * root_owner.Prepared/Active, written only under broker_lock by rr).  The v5
+ * class reads broker.state without broker_lock: the power broker refuses OFF
+ * while the retained root is Prepared or Active, PREPARE/ACTIVATE require
+ * the ON state and v5 acts only while root_owner.Active, so the state it can
+ * observe while doing work is constantly HV_AGX_POWER_ON.
+ *
+ * Lock order (never taken in reverse anywhere):
+ *   bhl -> broker_lock -> v5_lock          (trapped MMIO classes)
+ *   bhl -> v5_lock                         (v5 class)
+ *   service_lock -> broker_lock (try-lock) (scanout service, outside bhl)
+ * No path holding v5_lock takes broker_lock, service_lock or bhl.
+ */
+#ifdef AGX_BROKER_LOCK_SPLIT
+static DECLARE_SPINLOCK(v5_lock);
+#endif
 static bool resources_mapped;
 static struct hv_agx_local_receipt local_reserve;
 
@@ -93,10 +129,24 @@ static struct broker_long_wait broker_long_waits[BROKERLOCK_RING];
 static u64 broker_long_wait_total, broker_long_wait_reported;
 static u64 broker_lock_report_at, broker_lock_report_last, broker_lock_ticks_100us;
 static int broker_lock_holder = BROKERLOCK_NONE;
+#ifdef AGX_BROKER_LOCK_SPLIT
+static int v5_lock_holder = BROKERLOCK_NONE;
+#endif
 extern u64 hv_exc_bhl_wait_ticks;
+
+#define BROKER_LOCKS_BROKER 1u
+#define BROKER_LOCKS_V5 2u
+#ifdef AGX_BROKER_LOCK_SPLIT
+#define BROKER_LOCKS_V5_CLASS BROKER_LOCKS_V5
+#define BROKER_LOCKS_SHARED (BROKER_LOCKS_BROKER | BROKER_LOCKS_V5)
+#else
+#define BROKER_LOCKS_V5_CLASS BROKER_LOCKS_BROKER
+#define BROKER_LOCKS_SHARED BROKER_LOCKS_BROKER
+#endif
 
 struct broker_lock_ticket {
     int cls;
+    unsigned locks;
     u64 acquired;
     u64 wait;
     u64 bhl;
@@ -138,17 +188,31 @@ static u64 broker_lock_timed(spinlock_t *lock, int *holder, unsigned lock_id, in
     return wait;
 }
 
-static void broker_lock_enter(struct broker_lock_ticket *ticket, int cls)
+/* Takes the locks in the documented order: broker_lock, then v5_lock. */
+static void broker_locks_enter(struct broker_lock_ticket *ticket, int cls, unsigned locks)
 {
     ticket->cls = cls;
+    ticket->locks = locks;
+    ticket->wait = 0;
     ticket->bhl = cls == BROKER_CLASS_SERVICE || cls == BROKER_CLASS_FOLLOW
                       ? 0 : hv_exc_bhl_wait_ticks;
     if (ticket->bhl > broker_lock_long_threshold())
         broker_lock_note_long(cls, BROKERLOCK_NONE, BROKER_LOCK_BHL, get_ticks(),
                               ticket->bhl);
-    ticket->wait = broker_lock_timed(&broker_lock, &broker_lock_holder,
-                                     BROKER_LOCK_BROKER, cls);
+    if (locks & BROKER_LOCKS_BROKER)
+        ticket->wait += broker_lock_timed(&broker_lock, &broker_lock_holder,
+                                          BROKER_LOCK_BROKER, cls);
+#ifdef AGX_BROKER_LOCK_SPLIT
+    if (locks & BROKER_LOCKS_V5)
+        ticket->wait += broker_lock_timed(&v5_lock, &v5_lock_holder,
+                                          BROKER_LOCK_V5, cls);
+#endif
     ticket->acquired = get_ticks();
+}
+
+static void broker_lock_enter(struct broker_lock_ticket *ticket, int cls)
+{
+    broker_locks_enter(ticket, cls, BROKER_LOCKS_BROKER);
 }
 
 static void broker_lock_account(const struct broker_lock_ticket *ticket)
@@ -164,11 +228,20 @@ static void broker_lock_account(const struct broker_lock_ticket *ticket)
     if (ticket->bhl > stat->bhl_max) stat->bhl_max = ticket->bhl;
 }
 
+/* Releases in reverse order: v5_lock, then broker_lock. */
 static void broker_lock_exit(const struct broker_lock_ticket *ticket)
 {
     broker_lock_account(ticket);
-    __atomic_store_n(&broker_lock_holder, BROKERLOCK_NONE, __ATOMIC_RELAXED);
-    spin_unlock(&broker_lock);
+#ifdef AGX_BROKER_LOCK_SPLIT
+    if (ticket->locks & BROKER_LOCKS_V5) {
+        __atomic_store_n(&v5_lock_holder, BROKERLOCK_NONE, __ATOMIC_RELAXED);
+        spin_unlock(&v5_lock);
+    }
+#endif
+    if (ticket->locks & BROKER_LOCKS_BROKER) {
+        __atomic_store_n(&broker_lock_holder, BROKERLOCK_NONE, __ATOMIC_RELAXED);
+        spin_unlock(&broker_lock);
+    }
 }
 
 /* Called without any broker lock held, under bhl, after an MMIO class. */
@@ -185,6 +258,8 @@ static void broker_lock_report(void)
     if (now < broker_lock_report_at)
         return;
     broker_lock_report_at = now + BROKERLOCK_REPORT_SECONDS * frequency;
+    /* The service updates its class under broker_lock outside bhl; every
+     * other writer (including v5 under v5_lock) runs under bhl like us. */
     spin_lock(&broker_lock);
     memcpy(snapshot, broker_lock_stats, sizeof(snapshot));
     memset(broker_lock_stats, 0, sizeof(broker_lock_stats));
@@ -786,7 +861,7 @@ static bool handle_agx_power_broker_locked(struct exc_info *ctx, u64 addr, u64 *
     if (offset >= AGX_POOL_WINDOW_OFFSET &&
         offset < AGX_POOL_WINDOW_OFFSET + AGX_POOL_WINDOW_BYTES) {
         u64 command = write ? *value : 0;
-        broker_lock_enter(&ticket, BROKER_CLASS_POOL);
+        broker_locks_enter(&ticket, BROKER_CLASS_POOL, BROKER_LOCKS_SHARED);
         handled = hv_agx_pool_window_mmio(&pool_window, offset - AGX_POOL_WINDOW_OFFSET,
                                           value, write, (unsigned)width);
         if (handled && write && offset - AGX_POOL_WINDOW_OFFSET == AGX_POOL_WINDOW_REG_COMMAND &&
@@ -798,21 +873,21 @@ static bool handle_agx_power_broker_locked(struct exc_info *ctx, u64 addr, u64 *
     }
     if (offset >= AGX_HWDATA_RECEIPT_OFFSET &&
         offset < AGX_HWDATA_RECEIPT_OFFSET+AGX_HWDATA_RECEIPT_BYTES) {
-        broker_lock_enter(&ticket, BROKER_CLASS_HWDATA);
+        broker_locks_enter(&ticket, BROKER_CLASS_HWDATA, BROKER_LOCKS_SHARED);
         handled = hv_agx_retained_platform_profile(offset-AGX_HWDATA_RECEIPT_OFFSET,
                     value,write,(unsigned)width,broker.state == HV_AGX_POWER_ON);
         broker_lock_exit(&ticket);
         return handled;
     }
     if (offset >= AGX_FW_IO_OFFSET && offset < AGX_FW_IO_OFFSET+AGX_FW_IO_BYTES) {
-        broker_lock_enter(&ticket, BROKER_CLASS_FWIO);
+        broker_locks_enter(&ticket, BROKER_CLASS_FWIO, BROKER_LOCKS_SHARED);
         handled = hv_agx_retained_platform_io(offset-AGX_FW_IO_OFFSET,value,
                     write,(unsigned)width,broker.state == HV_AGX_POWER_ON);
         broker_lock_exit(&ticket);
         return handled;
     }
     if (offset >= AGX_RR_OFFSET && offset < AGX_RR_OFFSET + AGX_RR_WINDOW) {
-        broker_lock_enter(&ticket, BROKER_CLASS_RR);
+        broker_locks_enter(&ticket, BROKER_CLASS_RR, BROKER_LOCKS_SHARED);
         handled = hv_agx_retained_platform_mmio(offset - AGX_RR_OFFSET, value,
                     write, (unsigned)width, broker.state == HV_AGX_POWER_ON);
         broker_lock_exit(&ticket);
@@ -820,10 +895,10 @@ static bool handle_agx_power_broker_locked(struct exc_info *ctx, u64 addr, u64 *
     }
     if (offset >= AGX_GPUVA_V5_OFFSET &&
         offset < AGX_GPUVA_V5_OFFSET + AGX_GPUVA_V5_WINDOW) {
-        broker_lock_enter(&ticket, BROKER_CLASS_V5);
+        broker_locks_enter(&ticket, BROKER_CLASS_V5, BROKER_LOCKS_V5_CLASS);
         handled = hv_agx_retained_platform_gpuva_v5(
             offset - AGX_GPUVA_V5_OFFSET, value, write, (unsigned)width,
-            broker.state == HV_AGX_POWER_ON);
+            __atomic_load_n(&broker.state, __ATOMIC_RELAXED) == HV_AGX_POWER_ON);
         broker_lock_exit(&ticket);
         return handled;
     }
@@ -967,7 +1042,8 @@ void hv_agx_scanout_service_run_once(void)
     if (!resources_mapped || !spin_try_lock(&service_lock))
         return;
     if (spin_try_lock(&broker_lock)) {
-        struct broker_lock_ticket ticket = {BROKER_CLASS_SERVICE, get_ticks(), 0, 0};
+        struct broker_lock_ticket ticket = {BROKER_CLASS_SERVICE, BROKER_LOCKS_BROKER,
+                                            get_ticks(), 0, 0};
         __atomic_store_n(&broker_lock_holder, BROKER_CLASS_SERVICE, __ATOMIC_RELAXED);
         (void)hv_agx_scanout_service_step(&scanout_service, &scanout_broker);
         if (hv_vgic3_irq_enabled(HV_AGX_SCANOUT_GUEST_VINTID) &&

@@ -18,6 +18,11 @@
 #include <malloc.h>
 #include <string.h>
 
+/* Locking: callers in hv_agx_power_mmio.c serialise every entry point.
+ * Without AGX_BROKER_LOCK_SPLIT that is broker_lock; with it, the GPUVA v5
+ * window holds v5_lock and the RR, FW-IO, Hwdata and pool-window callers hold
+ * broker_lock then v5_lock, because all of them read or write the state
+ * below (root_owner, gpuva_v5, gpuva_v5_wire, request_powered, GPU slots). */
 static struct hv_agx_retained_root root_owner;
 static struct hv_agx_retained_mmio wire;
 static struct hv_agx_gpuva_v5 gpuva_v5;
@@ -547,7 +552,8 @@ bool hv_agx_retained_gpu_region(struct exc_info *ctx, u64 addr, u64 *value,
 
 /* M2-f2 pool window: a window page aliases plain guest RAM a GPU backing could
  * use, and leaves the window only while no broker backing, table or mailbox
- * holds its PA. Callers hold broker_lock. */
+ * holds its PA. Callers hold broker_lock (and v5_lock with
+ * AGX_BROKER_LOCK_SPLIT; see hv_agx_power_mmio.c for the lock contract). */
 u64 hv_agx_retained_platform_ram_page(u64 ipa)
 {
     return translate_guest(NULL, ipa);
