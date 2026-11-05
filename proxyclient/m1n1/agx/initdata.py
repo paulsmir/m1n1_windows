@@ -467,6 +467,61 @@ CHIP_INFO = {
         tiling_control = 0x180340,
     ),
 }
+def populate_hwdata(sgx, chip_info, hwdata_a, hwdata_b):
+    """Apply the native performance tables to constructed HwdataA/B objects."""
+    hwdata = hwdata_b
+    k = 1.02 #?
+    count = sgx.perf_state_count
+    table_count = sgx.perf_state_table_count
+    base_pstate = sgx.getprop("gpu-perf-base-pstate", 3)
+    base_freq = sgx.perf_states[base_pstate].freq
+    max_freq = sgx.perf_states[count - 1].freq
+    for i in range(count):
+        ps = sgx.perf_states[i]
+        hwdata.frequencies[i] = ps.freq // 1000000
+
+        volt = [ps.volt] * 8
+        for j in range(1, table_count):
+            volt[j] = sgx.perf_states[count * j + i].volt
+        sram_volt = [max(chip_info.min_sram_volt, i) for i in volt]
+
+        hwdata.voltages[i] = volt
+        hwdata.voltages_sram[i] = sram_volt
+
+        hwdata_a.unk_74[i] = k
+        hwdata.unk_9b4[i] = k
+        hwdata.rel_max_powers[i] = chip_info.rel_max_powers[i]
+        hwdata.rel_boost_freqs[i] = max(0, int((ps.freq - base_freq) / (max_freq - base_freq) * 100))
+
+    cs_pstates = sgx.getprop("cs-perf-states", None)
+    if cs_pstates:
+        hwdata.cs_max_pstate = cs_pstates.count - 1
+        hwdata.cs_frequencies = [(ps.freq // 1000000)
+                                 for ps in cs_pstates.states[0]] + [0] * (16 - cs_pstates.count)
+        hwdata.cs_voltages = [[(ps.volt // 1000), 0]
+                              for ps in cs_pstates.states[0]] + [[0, 0]] * (16 - cs_pstates.count)
+        hwdata.cs_voltages_sram = [[max(i[0], cs_pstates.min_sram_volt[0] // 1000) if i[0] else 0, 0] for i in hwdata.cs_voltages]
+    else:
+        hwdata.cs_max_pstate = 0
+        hwdata.cs_frequencies = [0] * 16
+        hwdata.cs_voltages = [[0, 0]] * 16
+        hwdata.cs_voltages_sram = [[0, 0]] * 16
+
+    afr_pstates = sgx.getprop("afr-perf-states", None)
+    if afr_pstates:
+        hwdata.afr_max_pstate = afr_pstates.count - 1
+        hwdata.afr_frequencies = [(ps.freq // 1000000)
+                                 for ps in afr_pstates.states[0]] + [0] * (8 - afr_pstates.count)
+        hwdata.afr_voltages = [[(ps.volt // 1000), 0]
+                              for ps in afr_pstates.states[0]] + [[0, 0]] * (8 - afr_pstates.count)
+        hwdata.afr_voltages_sram = [[max(i[0], afr_pstates.min_sram_volt[0] // 1000) if i[0] else 0, 0] for i in hwdata.afr_voltages]
+    else:
+        hwdata.afr_max_pstate = 0
+        hwdata.afr_frequencies = [0] * 8
+        hwdata.afr_voltages = [[0, 0]] * 8
+        hwdata.afr_voltages_sram = [[0, 0]] * 8
+
+
 def build_initdata(agx):
     sgx = agx.u.adt["/arm-io/sgx"]
     chosen = agx.u.adt["/chosen"]
@@ -517,56 +572,7 @@ def build_initdata(agx):
     else:
         hwdata.sgx_sram_ptr = 0
 
-    k = 1.02 #?
-    count = sgx.perf_state_count
-    table_count = sgx.perf_state_table_count
-    base_pstate = sgx.getprop("gpu-perf-base-pstate", 3)
-    base_freq = sgx.perf_states[base_pstate].freq
-    max_freq = sgx.perf_states[count - 1].freq
-    for i in range(count):
-        ps = sgx.perf_states[i]
-        hwdata.frequencies[i] = ps.freq // 1000000
-
-        volt = [ps.volt] * 8
-        for j in range(1, table_count):
-            volt[j] = sgx.perf_states[count * j + i].volt
-        sram_volt = [max(chip_info.min_sram_volt, i) for i in volt]
-
-        hwdata.voltages[i] = volt
-        hwdata.voltages_sram[i] = sram_volt
-
-        regionB.hwdata_a.unk_74[i] = k
-        hwdata.unk_9b4[i] = k
-        hwdata.rel_max_powers[i] = chip_info.rel_max_powers[i]
-        hwdata.rel_boost_freqs[i] = max(0, int((ps.freq - base_freq) / (max_freq - base_freq) * 100))
-
-    cs_pstates = sgx.getprop("cs-perf-states", None)
-    if cs_pstates:
-        hwdata.cs_max_pstate = cs_pstates.count - 1
-        hwdata.cs_frequencies = [(ps.freq // 1000000)
-                                 for ps in cs_pstates.states[0]] + [0] * (16 - cs_pstates.count)
-        hwdata.cs_voltages = [[(ps.volt // 1000), 0]
-                              for ps in cs_pstates.states[0]] + [[0, 0]] * (16 - cs_pstates.count)
-        hwdata.cs_voltages_sram = [[max(i[0], cs_pstates.min_sram_volt[0] // 1000) if i[0] else 0, 0] for i in hwdata.cs_voltages]
-    else:
-        hwdata.cs_max_pstate = 0
-        hwdata.cs_frequencies = [0] * 16
-        hwdata.cs_voltages = [[0, 0]] * 16
-        hwdata.cs_voltages_sram = [[0, 0]] * 16
-
-    afr_pstates = sgx.getprop("afr-perf-states", None)
-    if afr_pstates:
-        hwdata.afr_max_pstate = afr_pstates.count - 1
-        hwdata.afr_frequencies = [(ps.freq // 1000000)
-                                 for ps in afr_pstates.states[0]] + [0] * (8 - afr_pstates.count)
-        hwdata.afr_voltages = [[(ps.volt // 1000), 0]
-                              for ps in afr_pstates.states[0]] + [[0, 0]] * (8 - afr_pstates.count)
-        hwdata.afr_voltages_sram = [[max(i[0], afr_pstates.min_sram_volt[0] // 1000) if i[0] else 0, 0] for i in hwdata.afr_voltages]
-    else:
-        hwdata.afr_max_pstate = 0
-        hwdata.afr_frequencies = [0] * 8
-        hwdata.afr_voltages = [[0, 0]] * 8
-        hwdata.afr_voltages_sram = [[0, 0]] * 8
+    populate_hwdata(sgx, chip_info, regionB.hwdata_a, hwdata)
 
     regionB.hwdata_a.push()
 
