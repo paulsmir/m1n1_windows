@@ -209,7 +209,19 @@ static bool broker_mmio(struct exc_info*ctx,u64 addr,u64*value,bool write,int wi
         runtime.active_tag=ANS_QUEUE_DEPTH;
         /* Receipt-only (ANS002): control operations are rare; data-path submit/reap are
          * never logged. Capped so a looping guest cannot flood the UART. */
-        static unsigned control_logs;
+        static unsigned control_logs,data_logs;
+        if((request.operation==ANS_OP_AUTHORIZE_SUBMIT || request.operation==ANS_OP_REAP_COMPLETION) &&
+           data_logs<64) {
+            /* ANS004: the first data-path operations decide whether native DMA works. */
+            data_logs++;
+            u32 cqe_dw3=(u32)runtime.response.cqe[12]|((u32)runtime.response.cqe[13]<<8)|
+                        ((u32)runtime.response.cqe[14]<<16)|((u32)runtime.response.cqe[15]<<24);
+            printf("HV ANS data op=%u seq=%lu q=%u tag=%u sqe_op=0x%x len=%u result=%u cqe_dw3=0x%x prp_fail=%lu\n",
+                   (unsigned)request.operation,(unsigned long)request.sequence,(unsigned)request.queue,
+                   (unsigned)request.tag,(unsigned)request.sqe[0],(unsigned)request.transfer_length,
+                   (unsigned)runtime.response.result,cqe_dw3,
+                   (unsigned long)runtime.service.telemetry.prp_translation_failures);
+        }
         if(request.operation!=ANS_OP_AUTHORIZE_SUBMIT && request.operation!=ANS_OP_REAP_COMPLETION &&
            control_logs<64) {
             control_logs++;
