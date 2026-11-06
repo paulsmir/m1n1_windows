@@ -210,12 +210,17 @@ static bool broker_mmio(struct exc_info*ctx,u64 addr,u64*value,bool write,int wi
         /* Receipt-only (ANS002): control operations are rare; data-path submit/reap are
          * never logged. Capped so a looping guest cannot flood the UART. */
         static unsigned control_logs,data_logs;
-        if((request.operation==ANS_OP_AUTHORIZE_SUBMIT || request.operation==ANS_OP_REAP_COMPLETION) &&
-           data_logs<64) {
-            /* ANS004: the first data-path operations decide whether native DMA works. */
-            data_logs++;
-            u32 cqe_dw3=(u32)runtime.response.cqe[12]|((u32)runtime.response.cqe[13]<<8)|
-                        ((u32)runtime.response.cqe[14]<<16)|((u32)runtime.response.cqe[15]<<24);
+        static unsigned fail_logs;
+        u32 cqe_dw3=(u32)runtime.response.cqe[12]|((u32)runtime.response.cqe[13]<<8)|
+                    ((u32)runtime.response.cqe[14]<<16)|((u32)runtime.response.cqe[15]<<24);
+        bool data_op=request.operation==ANS_OP_AUTHORIZE_SUBMIT || request.operation==ANS_OP_REAP_COMPLETION;
+        /* ANS006: an error status is bits 31:17 of CQE DW3. Log the first 16 data operations and
+         * up to 48 failing ones (result!=0 or CQE status!=0) so late errors are not hidden. */
+        bool failed=runtime.response.result!=0 || (request.operation==ANS_OP_REAP_COMPLETION && (cqe_dw3>>17));
+        static unsigned big_logs;
+        bool big=request.operation==ANS_OP_AUTHORIZE_SUBMIT && request.transfer_length>16384 && big_logs<16;
+        if(data_op && (data_logs<16 || big || (failed && fail_logs<48))) {
+            if(data_logs<16)data_logs++; else if(failed)fail_logs++; else big_logs++;
             printf("HV ANS data op=%u seq=%lu q=%u tag=%u sqe_op=0x%x len=%u result=%u cqe_dw3=0x%x prp_fail=%lu\n",
                    (unsigned)request.operation,(unsigned long)request.sequence,(unsigned)request.queue,
                    (unsigned)request.tag,(unsigned)request.sqe[0],(unsigned)request.transfer_length,
