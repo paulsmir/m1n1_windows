@@ -221,11 +221,12 @@ static bool broker_mmio(struct exc_info*ctx,u64 addr,u64*value,bool write,int wi
         bool big=request.operation==ANS_OP_AUTHORIZE_SUBMIT && request.transfer_length>16384 && big_logs<16;
         if(data_op && (data_logs<16 || big || (failed && fail_logs<48))) {
             if(data_logs<16)data_logs++; else if(failed)fail_logs++; else big_logs++;
-            printf("HV ANS data op=%u seq=%lu q=%u tag=%u sqe_op=0x%x len=%u result=%u cqe_dw3=0x%x prp_fail=%lu\n",
+            printf("HV ANS data op=%u seq=%lu q=%u tag=%u sqe_op=0x%x len=%u result=%u cqe_dw3=0x%x prp_fail=%lu tcb_stat_nz=%lu\n",
                    (unsigned)request.operation,(unsigned long)request.sequence,(unsigned)request.queue,
                    (unsigned)request.tag,(unsigned)request.sqe[0],(unsigned)request.transfer_length,
                    (unsigned)runtime.response.result,cqe_dw3,
-                   (unsigned long)runtime.service.telemetry.prp_translation_failures);
+                   (unsigned long)runtime.service.telemetry.prp_translation_failures,
+                   (unsigned long)nvme_native_tcb_inval_failures());
         }
         if(request.operation!=ANS_OP_AUTHORIZE_SUBMIT && request.operation!=ANS_OP_REAP_COMPLETION &&
            control_logs<64) {

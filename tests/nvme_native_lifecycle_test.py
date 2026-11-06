@@ -140,7 +140,9 @@ int main(void) {
  assert(nvme_native_poll(77,0,&cqe)==ANS_Q_OK);
  assert(last_status_address==nvme_base+0x28120);
  assert(nvme_native_tcb_inval_failures()==0);
- tcb_status=5;assert(!queue_invalidate(NULL,0));assert(nvme_native_tcb_inval_failures()==1);
+ /* ANS006: like Asahi apple.c apple_nvmmu_inval, a nonzero TCB status is advisory (counted),
+  * never fatal: treating it as a queue fault broke sustained native I/O on J313. */
+ tcb_status=5;assert(queue_invalidate(NULL,0));assert(nvme_native_tcb_inval_failures()==1);
  assert(nvme_native_tcb_inval_failures()==1); /* reads do not mutate telemetry */
  tcb_status=0;assert(queue_invalidate(NULL,0)&&nvme_native_tcb_inval_failures()==1);
  assert(nvme_stop_bounded(1000,&stage)&&stage==NVME_STAGE_STOPPED&&live_allocations==9);

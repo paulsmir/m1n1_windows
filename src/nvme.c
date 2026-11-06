@@ -242,10 +242,14 @@ static bool queue_invalidate(void *ctx, unsigned tag)
     UNUSED(ctx);
     write32(nvme_base + NVMMU_TCB_INVAL, tag);
     if (nvme_native_mode) {
+        /* Asahi apple.c apple_nvmmu_inval reads this status and only warns. On J313 a nonzero
+         * status occurs intermittently under normal I/O; treating it as a queue fault turned
+         * sustained native reads into I/O errors / lost completions (ANS004-R1, ANS006-R2/R3).
+         * Keep it advisory: count it (telemetry) and continue. */
         u32 status = read32(nvme_base + NVMMU_TCB_STAT_NATIVE);
         if (status && native_tcb_inval_failures != UINT64_MAX)
             native_tcb_inval_failures++;
-        return status == 0;
+        return true;
     }
     if (read32(nvme_base + NVMMU_TCB_STAT) && !nvme_bounded_submission)
         printf("nvme: NVMMU invalidation for tag %d failed\n", tag);
