@@ -55,6 +55,16 @@ static bool policy_valid(const struct ans_memory_context *c)
      * is not evidence of its absence. Explicit zero sizes are permitted. */
     return seen == ((1u << (HV_CONTRACT_REGION_DART_TABLES + 1)) - 1);
 }
+/* Launch-layout labels inside GUEST_RAM (load_raw pad, guest ADT/TrustCache copy, boot args,
+ * firmware image) describe pre-guest placement only. Native ANS DMA starts after the EBS
+ * ownership handoff, when the guest CPU already owns these pages through stage-2 and Windows
+ * reuses them (ANS006-R6/R8 denials at 0x8509c9000.., 0x851310000). EL2-owned, iBoot carveout,
+ * private, framebuffer, RAM-disk and DART-table memory remain excluded. */
+static bool guest_owned_after_handoff(uint32_t kind)
+{
+    return kind == HV_CONTRACT_REGION_HEAP || kind == HV_CONTRACT_REGION_FIRMWARE ||
+           kind == HV_CONTRACT_REGION_ADT || kind == HV_CONTRACT_REGION_BOOT_ARGS;
+}
 static bool backing_allowed(const struct ans_memory_context *c, uint64_t pa, uint64_t n)
 {
     const struct hv_contract_snapshot *s = c->launch;
@@ -67,7 +77,7 @@ static bool backing_allowed(const struct ans_memory_context *c, uint64_t pa, uin
         if (r->kind == HV_CONTRACT_REGION_GUEST_RAM) {
             owner = contains(r->base, r->size, pa, n);
         } else if (r->kind != HV_CONTRACT_REGION_LOW_MEMORY &&
-                   !(r->kind == HV_CONTRACT_REGION_HEAP && c->heap_sealed_below_guest) &&
+                   !(c->heap_sealed_below_guest && guest_owned_after_handoff(r->kind)) &&
                    overlaps(r->base, r->size, pa, n)) {
             return false;
         }
