@@ -46,6 +46,8 @@ bool nvme_native_queue_backing(unsigned queue, u64 *sq_pa, u64 *cq_pa);
 u64 nvme_native_generation(void);
 /* Read-only EL2-lifetime count, saturating, only nonzero native TCB status reads. */
 u64 nvme_native_tcb_inval_failures(void);
+/* Lock-free peek: a posted, unconsumed CQE on the native admin or I/O queue. */
+bool nvme_native_cq_pending(void);
 /* Caller first freezes recovery admission, drains and proves actual Flush.
  * This function independently refuses outstanding engine tags. It performs no
  * flush or queue deletion. Success means SHST done, RDY clear, RTKit AP/IOP

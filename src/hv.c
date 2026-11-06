@@ -2,6 +2,7 @@
 
 #include "hv.h"
 #include "hv_tick_policy.h"
+#include "hv_ans_platform.h"
 #include "hv_runtime_diag.h"
 #include "hv_wfx_policy.h"
 #include "assert.h"
@@ -1373,6 +1374,7 @@ void hv_tick(struct exc_info *ctx)
             hv_exc_proxy(ctx, START_HV, HV_USER_INTERRUPT, NULL);
     }
     hv_vuart_poll();
+    hv_ans_tick();
     hv_fb_stream_tick(&hv_framebuffer_stream);
 }
 

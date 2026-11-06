@@ -108,6 +108,17 @@ int ans_queue_poll(struct ans_queue_engine *e, uint64_t generation, unsigned que
     return ANS_Q_OK;
 }
 
+bool ans_queue_peek(const struct ans_queue_engine *e, unsigned queue)
+{
+    if (!e || !e->generation || e->faulted || queue >= ANS_HW_QUEUES)
+        return false;
+    const struct ans_hw_queue *q = &e->queues[queue];
+    if (!q->cqes)
+        return false;
+    const volatile struct nvme_completion *entry = &q->cqes[q->head];
+    return (entry->status & 1) == q->phase;
+}
+
 void ans_queue_fault(struct ans_queue_engine *e)
 {
     if (e)

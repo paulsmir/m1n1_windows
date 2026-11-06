@@ -72,6 +72,8 @@ int ans_queue_submit(struct ans_queue_engine *e, uint64_t generation, unsigned q
  * invalidation and CQ ack. Bad/duplicate/wrong-CQ completions fault and pin tags.
  * CQ has no generation: reset receipt MUST exclude all late pre-reset DMA.
  */
+/* True when queue has a posted, unconsumed CQE at head. Never consumes or faults. */
+bool ans_queue_peek(const struct ans_queue_engine *e, unsigned queue);
 int ans_queue_poll(struct ans_queue_engine *e, uint64_t generation, unsigned queue,
                    struct nvme_completion *out);
 void ans_queue_fault(struct ans_queue_engine *e);

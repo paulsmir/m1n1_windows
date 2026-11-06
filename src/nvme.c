@@ -668,6 +668,13 @@ out:
     return ok;
 }
 
+bool nvme_native_cq_pending(void)
+{
+    if (!nvme_native_mode || !nvme_initialized)
+        return false;
+    return ans_queue_peek(&queue_engine, ANS_HW_ADMIN) || ans_queue_peek(&queue_engine, ANS_HW_IO);
+}
+
 u64 nvme_native_tcb_inval_failures(void)
 {
     /* EL2-lifetime cumulative, saturating; stopped retirement does not erase it. */

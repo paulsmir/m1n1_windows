@@ -85,8 +85,25 @@ static int complete(unsigned q, unsigned tag, unsigned status)
     }
     return ret;
 }
+static void peek(void)
+{
+    /* ANS006-R7: EL2 must see a posted, unconsumed CQE without consuming it, so a lost
+     * completion interrupt can be re-signalled; peek never advances head/phase. */
+    setup(false);
+    assert(!ans_queue_peek(&e, 1) && !ans_queue_peek(&e, 0) && !ans_queue_peek(&e, 2));
+    assert(put(1, 5) == ANS_Q_OK);
+    assert(!ans_queue_peek(&e, 1));
+    cq[1][e.queues[1].head] = (struct nvme_completion){.tag=5, .status=e.queues[1].phase};
+    unsigned head = e.queues[1].head, phase = e.queues[1].phase;
+    assert(ans_queue_peek(&e, 1) && ans_queue_peek(&e, 1));
+    assert(e.queues[1].head == head && e.queues[1].phase == phase && (e.outstanding >> 5 & 1));
+    assert(!ans_queue_peek(&e, 0));
+    struct nvme_completion out;
+    assert(ans_queue_poll(&e, e.generation, 1, &out) == ANS_Q_OK && !ans_queue_peek(&e, 1));
+}
 int main(void)
 {
+    peek();
     /* Invariant: a shared tag can never identify two outstanding DMA requests. */
     setup(false);
     assert(put(0, 2) == ANS_Q_INVALID);

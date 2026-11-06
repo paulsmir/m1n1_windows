@@ -5,6 +5,7 @@
 #include "hv_ans_pins.h"
 #include "hv.h"
 #include "hv_irq_routes.h"
+#include "hv_vgic.h"
 #include "hv_launch_j313.h"
 #include "heapblock.h"
 #include "hv_autonomous_layout.generated.h"
@@ -356,6 +357,26 @@ bool hv_ans_try_handle_dabort(struct exc_info*ctx,bool*matched)
     if(matched)*matched=true;
     bool result=hv_handle_dabort(ctx);
     spin_unlock(&ans_mapping_lock);spin_unlock(&ans_lock);return result;
+}
+/* Lost-completion recovery (cf. Asahi apple.c timeout path, which polls the CQ). A posted CQE
+ * that nobody consumes for >= 10 ms while commands are outstanding means the guest never saw
+ * its interrupt; inject the ANS vINTID again. Lock-free and read-only on the CQ: the guest ISR
+ * still consumes through the broker PENDING read under ans_lock. */
+void hv_ans_tick(void)
+{
+    static u64 first_seen;
+    static unsigned kick_logs;
+    if(!runtime.mapped||!runtime.service.broker.queues_registered||
+       runtime.service.submitted==runtime.service.completed||!nvme_native_cq_pending()){
+        first_seen=0;return;
+    }
+    u64 now=get_ticks();
+    if(!first_seen){first_seen=now;return;}
+    if(ticks_to_usecs(now-first_seen)<10000)return;
+    first_seen=0;
+    if(kick_logs<16){kick_logs++;printf("HV ANS kick: posted CQE unconsumed >=10ms, re-signal vINTID %u (submitted=%lu completed=%lu)\n",
+        (unsigned)ANS_GUEST_GSIV,(unsigned long)runtime.service.submitted,(unsigned long)runtime.service.completed);}
+    hv_vgic3_inject_irq(ANS_GUEST_GSIV,hv_vgic3_get_priority(ANS_GUEST_GSIV),false,true,false,0);
 }
 void hv_ans_note_physical_irq(u32 irq)
 {
