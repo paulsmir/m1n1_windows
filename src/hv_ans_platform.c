@@ -187,6 +187,72 @@ static void release(void*ctx,unsigned tag)
     UNUSED(ctx);if(tag>=ANS_QUEUE_DEPTH)return;
     ans_pin_release(&runtime.pins,tag);memset(shadow_words[tag],0,sizeof(shadow_words[tag]));
 }
+
+/* ANS007 receipt-only performance attribution. Never changes broker behaviour: every hook only
+ * reads the generic timer and updates these private counters; one summary line per 5 s of I/O. */
+static struct {
+    u64 t_submit[ANS_QUEUE_DEPTH],t_pending[ANS_QUEUE_DEPTH];
+    u64 last_irq,last_print,idle_start,busy_start;
+    unsigned inflight;
+    u64 n,bytes,len[5],qd[6],traps,svc,svc_max,hw,hw_max,hw_n,isr,isr_max,reap,reap_max,reap_n,idle,busy,noirq;
+    unsigned lines;
+} perf;
+static u64 perf_us(u64 t){return ticks_to_usecs(t);}
+static void perf_max(u64*m,u64 v){if(v>*m)*m=v;}
+static void perf_doorbell(const struct ans_broker_request*r,const struct ans_broker_response*x,u64 t0)
+{
+    u64 now=get_ticks(),svc=now-t0;unsigned tag=r->tag;
+    if(x->result!=0||tag>=ANS_QUEUE_DEPTH)return;
+    if(r->operation==ANS_OP_AUTHORIZE_SUBMIT&&r->queue==1){
+        if(!perf.inflight&&perf.idle_start){perf.idle+=t0-perf.idle_start;perf.idle_start=0;}
+        if(!perf.inflight)perf.busy_start=t0;
+        perf.inflight++;perf.t_submit[tag]=now;perf.t_pending[tag]=0;
+        perf.n++;perf.bytes+=r->transfer_length;perf.svc+=svc;perf_max(&perf.svc_max,svc);
+        u32 l=r->transfer_length;perf.len[l<=4096?0:l<=16384?1:l<=65536?2:l<131072?3:4]++;
+        unsigned d=perf.inflight;perf.qd[d<=1?0:d==2?1:d<=4?2:d<=8?3:d<=16?4:5]++;
+    } else if(r->operation==ANS_OP_REAP_COMPLETION&&r->queue==1&&perf.t_submit[tag]){
+        if(perf.t_pending[tag]){u64 v=t0-perf.t_pending[tag];perf.reap+=v;perf_max(&perf.reap_max,v);perf.reap_n++;}
+        perf.t_submit[tag]=perf.t_pending[tag]=0;
+        if(perf.inflight&&!--perf.inflight){perf.idle_start=now;if(perf.busy_start)perf.busy+=now-perf.busy_start;perf.busy_start=0;}
+    }
+}
+static void perf_drained(u64 before,u64 after)
+{
+    u64 now=get_ticks(),fresh=after&~before;
+    u64 irq=__atomic_load_n(&perf.last_irq,__ATOMIC_RELAXED);
+    for(unsigned tag=ANS_ADMIN_TAGS;tag<ANS_QUEUE_DEPTH;tag++){
+        if(!(fresh&(1ULL<<tag))||!perf.t_submit[tag])continue;
+        perf.t_pending[tag]=now;
+        if(irq>perf.t_submit[tag]&&irq<=now){
+            u64 h=irq-perf.t_submit[tag],i=now-irq;
+            perf.hw+=h;perf_max(&perf.hw_max,h);perf.isr+=i;perf_max(&perf.isr_max,i);perf.hw_n++;
+        } else perf.noirq++;
+    }
+}
+static void perf_tick(void)
+{
+    u64 now=get_ticks();
+    if(!perf.last_print){perf.last_print=now;return;}
+    if(perf_us(now-perf.last_print)<5000000)return;
+    perf.last_print=now;
+    if(!perf.n||perf.lines>=400){return;}
+    perf.lines++;
+    u64 busy=perf.busy+(perf.busy_start?now-perf.busy_start:0),idle=perf.idle+(perf.idle_start?now-perf.idle_start:0);
+    printf("HV ANS perf n=%lu KiB=%lu len=%lu/%lu/%lu/%lu/%lu qd=%lu/%lu/%lu/%lu/%lu/%lu svc_us=%lu/%lu hw_us=%lu/%lu isr_us=%lu/%lu reap_us=%lu/%lu noirq=%lu busy_ms=%lu idle_ms=%lu traps=%lu\n",
+        (unsigned long)perf.n,(unsigned long)(perf.bytes>>10),
+        (unsigned long)perf.len[0],(unsigned long)perf.len[1],(unsigned long)perf.len[2],(unsigned long)perf.len[3],(unsigned long)perf.len[4],
+        (unsigned long)perf.qd[0],(unsigned long)perf.qd[1],(unsigned long)perf.qd[2],(unsigned long)perf.qd[3],(unsigned long)perf.qd[4],(unsigned long)perf.qd[5],
+        (unsigned long)perf_us(perf.svc/perf.n),(unsigned long)perf_us(perf.svc_max),
+        (unsigned long)(perf.hw_n?perf_us(perf.hw/perf.hw_n):0),(unsigned long)perf_us(perf.hw_max),
+        (unsigned long)(perf.hw_n?perf_us(perf.isr/perf.hw_n):0),(unsigned long)perf_us(perf.isr_max),
+        (unsigned long)(perf.reap_n?perf_us(perf.reap/perf.reap_n):0),(unsigned long)perf_us(perf.reap_max),
+        (unsigned long)perf.noirq,(unsigned long)(perf_us(busy)/1000),(unsigned long)(perf_us(idle)/1000),(unsigned long)perf.traps);
+    perf.n=perf.bytes=perf.traps=perf.svc=perf.svc_max=perf.hw=perf.hw_max=perf.hw_n=0;
+    perf.isr=perf.isr_max=perf.reap=perf.reap_max=perf.reap_n=perf.idle=perf.busy=perf.noirq=0;
+    memset(perf.len,0,sizeof(perf.len));memset(perf.qd,0,sizeof(perf.qd));
+    if(perf.busy_start)perf.busy_start=now;
+    if(perf.idle_start)perf.idle_start=now;
+}
 static bool inside(u64 off,u64 bytes,u64 base,u64 size)
 { return off>=base && bytes<=size && off-base<=size-bytes; }
 
@@ -194,6 +260,7 @@ static bool broker_mmio(struct exc_info*ctx,u64 addr,u64*value,bool write,int wi
 {
     UNUSED(ctx);
     u64 off=addr-ANS_BROKER_BASE;
+    perf.traps++;
     if(width<0||width>4)hv_quarantine_guest();
     if(width==4){if(!write)memset(value,0,16);runtime.request_words=0;return true;}
     u64 bytes=1ULL<<width;
@@ -224,7 +291,9 @@ static bool broker_mmio(struct exc_info*ctx,u64 addr,u64*value,bool write,int wi
         }
         runtime.request_words=0;
         runtime.active_tag=request.tag;
+        u64 perf_t0=get_ticks();
         ans_service_execute(&runtime.service,&request,&runtime.response);
+        perf_doorbell(&request,&runtime.response,perf_t0);
         runtime.active_tag=ANS_QUEUE_DEPTH;
         /* Receipt-only (ANS002): control operations are rare; data-path submit/reap are
          * never logged. Capped so a looping guest cannot flood the UART. */
@@ -278,7 +347,9 @@ static bool broker_mmio(struct exc_info*ctx,u64 addr,u64*value,bool write,int wi
     else if(inside(off,bytes,ANS_HANDOFF_RECEIPT_OFFSET,sizeof(runtime.service.handoff))){source=&runtime.service.handoff;base=ANS_HANDOFF_RECEIPT_OFFSET;}
     else if(inside(off,bytes,ANS_PENDING_OFFSET,8)) {
         if(off==ANS_PENDING_OFFSET) {
+            u64 perf_before=runtime.service.pending;
             if(runtime.service.broker.queues_registered)ans_service_drain(&runtime.service);
+            perf_drained(perf_before,runtime.service.pending);
             runtime.pending_snapshot=runtime.service.pending;
         }
         source=&runtime.pending_snapshot;base=ANS_PENDING_OFFSET;
@@ -366,6 +437,8 @@ void hv_ans_tick(void)
 {
     static u64 first_seen;
     static unsigned kick_logs;
+    /* Counters are written under ans_lock by broker MMIO on any vCPU; never block the tick. */
+    if(runtime.mapped&&spin_try_lock(&ans_lock)){perf_tick();spin_unlock(&ans_lock);}
     if(!runtime.mapped||!runtime.service.broker.queues_registered||
        runtime.service.submitted==runtime.service.completed||!nvme_native_cq_pending()){
         first_seen=0;return;
@@ -385,5 +458,6 @@ void hv_ans_note_physical_irq(u32 irq)
         u64 count=__atomic_load_n(&runtime.physical_irqs,__ATOMIC_RELAXED);
         while(count!=UINT64_MAX && !__atomic_compare_exchange_n(&runtime.physical_irqs,&count,
             count+1,false,__ATOMIC_RELAXED,__ATOMIC_RELAXED)) {}
+        __atomic_store_n(&perf.last_irq,get_ticks(),__ATOMIC_RELAXED);
     }
 }

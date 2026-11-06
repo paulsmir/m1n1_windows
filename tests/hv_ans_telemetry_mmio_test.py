@@ -31,6 +31,12 @@ static struct {
 static unsigned getter_calls;
 static u64 nvme_native_tcb_inval_failures(void) { getter_calls++;return 7; }
 static void hv_quarantine_guest(void) { abort(); }
+/* ANS007 receipt-only perf hooks: observation only, never part of the MMIO contract. */
+static struct { u64 traps; } perf;
+static u64 get_ticks(void) { return 0; }
+static void perf_doorbell(const struct ans_broker_request*r,const struct ans_broker_response*x,u64 t)
+{ (void)r;(void)x;(void)t; }
+static void perf_drained(u64 before,u64 after) { (void)before;(void)after; }
 '''
 test = r'''
 int main(void) {
