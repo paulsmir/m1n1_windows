@@ -58,6 +58,7 @@ hv_launch_snapshot_test
 hv_launch_preflight_test
 hv_launch_golden_j313_test
 ans_queue_test
+heapblock_ceiling_test
 hv_nvme_queue_test
 hv_nvme_fast_path_test
 hv_fiq_fast_path_test
@@ -288,6 +289,8 @@ for name in "$@"; do
             ;;
         ans_queue_test)
             sources="$sources src/ans_queue.c"
+            ;;
+        heapblock_ceiling_test)
             ;;
         hv_nvme_queue_test)
             definitions="-DVNVME_HOST_TEST"
