@@ -31,6 +31,7 @@ struct ans_service {
     void *ctx;
     void *memory_ctx;
     uint64_t namespace_blocks, pending;
+    struct ans_write_window write_window;
     uint64_t submitted, completed, reaped, rejected;
     uint32_t last_stage;
     struct ans_telemetry telemetry;
@@ -39,9 +40,13 @@ struct ans_service {
     uint8_t opcode[ANS_QUEUE_DEPTH];
     struct ans_handoff_receipt handoff;
 };
-/* Never reinitialize a live instance. RO qualification is fixed in this V1. */
+/* Never reinitialize a live instance. Read-only unless a write window is set. */
 bool ans_service_init(struct ans_service *, const struct ans_service_ops *, void *,
                       const struct ans_memory_ops *, void *, uint64_t namespace_blocks);
+/* ANS008: fix the WRITE LBA window once, before handoff (host launcher, pre-guest).
+ * Rejects count==0, a range outside the namespace, a second call, or any call after
+ * handoff started. Success replaces READ_ONLY with WRITE_WINDOW in the features. */
+bool ans_service_set_write_window(struct ans_service *, uint64_t first, uint64_t count);
 void ans_service_handoff(struct ans_service *, uint64_t sequence);
 void ans_service_execute(struct ans_service *, const struct ans_broker_request *,
                          struct ans_broker_response *);

@@ -32,6 +32,24 @@ int main(void){
  struct fake f={0}; struct ans_service s;
  struct ans_service_ops ops={freeze,drain,flush,stop,retire,hide,boot,backing,submit,poll,shadow,release};
  struct ans_memory_ops mem={translate,readmeta};
+ /* ANS008 write window: one-shot, launch-time only, valid inside the namespace. */
+ {struct fake g={0};struct ans_service w;
+  assert(ans_service_init(&w,&ops,&g,&mem,&g,1000));
+  assert(w.broker.header.features==ANS_FEATURE_READ_ONLY && !w.write_window.count);
+  assert(!ans_service_set_write_window(&w,0,0));
+  assert(!ans_service_set_write_window(&w,1000,1));
+  assert(!ans_service_set_write_window(&w,990,11));
+  assert(!ans_service_set_write_window(&w,UINT64_MAX,2));
+  assert(w.broker.header.features==ANS_FEATURE_READ_ONLY && !w.write_window.count);
+  assert(ans_service_set_write_window(&w,990,10));
+  assert(w.write_window.first==990 && w.write_window.count==10);
+  assert(w.broker.header.features==ANS_FEATURE_WRITE_WINDOW);
+  assert(!ans_service_set_write_window(&w,0,1) && w.write_window.first==990);
+  struct ans_service late;struct fake h={0};
+  assert(ans_service_init(&late,&ops,&h,&mem,&h,1000));
+  ans_service_handoff(&late,1);
+  assert(!ans_service_set_write_window(&late,0,1) && !late.write_window.count &&
+         late.broker.header.features==ANS_FEATURE_READ_ONLY);}
  assert(ans_service_init(&s,&ops,&f,&mem,&f,1000));
  req=(struct ans_broker_request){.abi_major=ANS_ABI_MAJOR,.size=sizeof(req)};
  command(&s,ANS_OP_CLAIM);assert(resp.result==ANS_RESULT_BAD_STATE && !f.boots);
@@ -89,7 +107,17 @@ int main(void){
  command(&s,ANS_OP_AUTHORIZE_SUBMIT);assert(resp.result!=0 && s.telemetry.prp_translation_failures==1);
  s=saved;f=saved_f;req=saved_req;c.prp1=0x4000;
  c.opcode=1;memcpy(req.sqe,&c,64);req.direction=ANS_DMA_TO_DEVICE;req.transfer_length=4096;
- command(&s,ANS_OP_AUTHORIZE_SUBMIT);assert(resp.result==ANS_RESULT_DENIED);
+ command(&s,ANS_OP_AUTHORIZE_SUBMIT);assert(resp.result==ANS_RESULT_DENIED && !s.telemetry.writes);
+ {struct ans_service ws=saved;struct fake wf=saved_f;struct ans_broker_request wr=req;
+  /* Outside the launch window: DENIED before the doorbell. */
+  ws.write_window=(struct ans_write_window){1,4};unsigned before=wf.submits;
+  ans_service_execute(&ws,&wr,&resp);assert(resp.result==ANS_RESULT_DENIED && wf.submits==before);
+  /* Inside the window: submitted TO_DEVICE through the translated PRP, counted on success. */
+  ws.write_window=(struct ans_write_window){0,1};
+  ws.ctx=&wf;wr.sequence++;ans_service_execute(&ws,&wr,&resp);
+  assert(resp.result==0 && wf.submits==before+1 && wf.last.opcode==1 && wf.last.prp1==0x100004000ULL);
+  completion(&ws,&wf,2);
+  assert(ws.telemetry.writes==1 && ws.telemetry.bytes_written==4096);}
  memset(req.sqe,0,64);req.tag=0;req.queue=0;req.direction=0;req.transfer_length=0;
  command(&s,ANS_OP_QUIESCE);assert(resp.result==0);
  f.fail_stop=true;command(&s,ANS_OP_RESET);assert(resp.result==ANS_RESULT_IO_ERROR && resp.generation==1);

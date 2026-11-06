@@ -32,6 +32,12 @@ int ans_broker_reap(struct ans_broker *b, uint16_t queue, uint16_t tag, uint8_t 
 int ans_broker_quiesce(struct ans_broker *b);
 int ans_broker_reset(struct ans_broker *b, bool dma_stopped);
 int ans_broker_release(struct ans_broker *b, bool dma_stopped);
+/* ANS008: LBA range [first, first+count) that NVMe WRITE may target. It is fixed by
+ * the host launcher before guest entry and never guest-settable. NULL or count==0
+ * keeps the broker read-only; a wrapping window or one past the namespace denies
+ * every WRITE. READ and FLUSH are never window-restricted. */
+struct ans_write_window { uint64_t first, count; };
 int ans_broker_validate_io(const uint8_t sqe[64], uint16_t tag, uint32_t length,
-                           uint32_t direction, uint64_t namespace_blocks, bool read_only);
+                           uint32_t direction, uint64_t namespace_blocks,
+                           const struct ans_write_window *write_window);
 #endif

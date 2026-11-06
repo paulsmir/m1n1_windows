@@ -59,6 +59,17 @@ bool ans_service_init(struct ans_service *s,const struct ans_service_ops *o,void
     return true;
 }
 
+bool ans_service_set_write_window(struct ans_service *s,uint64_t first,uint64_t count)
+{
+    if(!s||s->handoff_started||s->write_window.count||s->broker.owner!=ANS_OWNER_RECOVERY||
+       !count||first>=s->namespace_blocks||count>s->namespace_blocks-first)
+        return false;
+    s->write_window=(struct ans_write_window){first,count};
+    s->broker.header.features=(s->broker.header.features&~(uint32_t)ANS_FEATURE_READ_ONLY)|
+                              ANS_FEATURE_WRITE_WINDOW;
+    return true;
+}
+
 void ans_service_handoff(struct ans_service *s,uint64_t sequence)
 {
     if(!s||!sequence)return;
@@ -170,7 +181,7 @@ static int authorize(struct ans_service*s,const struct ans_broker_request*r)
     if(r->queue==0)rc=admin_command(s,r,&c,&direction);
     else {
         if(!s->io_sq)return ANS_RESULT_BAD_STATE;
-        rc=ans_broker_validate_io(r->sqe,r->tag,r->transfer_length,r->direction,s->namespace_blocks,true);
+        rc=ans_broker_validate_io(r->sqe,r->tag,r->transfer_length,r->direction,s->namespace_blocks,&s->write_window);
     }
     if(rc)return rc;
     rc=ans_broker_prepare(&s->broker,r->queue,r->tag);

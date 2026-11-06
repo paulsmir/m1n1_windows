@@ -67,20 +67,45 @@ int main(void) {
     assert(b.owner==ANS_OWNER_NONE);
     assert(ans_broker_claim(&b)==0); /* second stopped lifetime */
     uint8_t sqe[64]={2}; sqe[4]=1; sqe[2]=2;
-    assert(ans_broker_validate_io(sqe,2,4096,ANS_DMA_FROM_DEVICE,100,true)==0);
-    sqe[2]=0; assert(ans_broker_validate_io(sqe,2,4096,1,100,true)==ANS_RESULT_BAD_TAG);
-    sqe[2]=63; assert(ans_broker_validate_io(sqe,2,4096,1,100,true)==ANS_RESULT_BAD_TAG);
-    assert(ans_broker_validate_io(sqe,63,4096,1,100,true)==0);
-    sqe[2]=64; assert(ans_broker_validate_io(sqe,64,4096,1,100,true)==ANS_RESULT_BAD_TAG);
-    sqe[2]=255; assert(ans_broker_validate_io(sqe,255,4096,1,100,true)==ANS_RESULT_BAD_TAG);
+    const struct ans_write_window none={0,0}, win={10,8}, wrap={UINT64_MAX-1,4}, past={96,8};
+    assert(ans_broker_validate_io(sqe,2,4096,ANS_DMA_FROM_DEVICE,100,NULL)==0);
+    sqe[2]=0; assert(ans_broker_validate_io(sqe,2,4096,1,100,NULL)==ANS_RESULT_BAD_TAG);
+    sqe[2]=63; assert(ans_broker_validate_io(sqe,2,4096,1,100,NULL)==ANS_RESULT_BAD_TAG);
+    assert(ans_broker_validate_io(sqe,63,4096,1,100,NULL)==0);
+    sqe[2]=64; assert(ans_broker_validate_io(sqe,64,4096,1,100,NULL)==ANS_RESULT_BAD_TAG);
+    sqe[2]=255; assert(ans_broker_validate_io(sqe,255,4096,1,100,NULL)==ANS_RESULT_BAD_TAG);
     sqe[2]=2;
-    sqe[0]=0; assert(ans_broker_validate_io(sqe,2,0,ANS_DMA_NONE,100,true)==0);
+    /* READ is never window-restricted. */
+    sqe[40]=50; assert(ans_broker_validate_io(sqe,2,4096,ANS_DMA_FROM_DEVICE,100,&win)==0);
+    sqe[40]=0;
+    sqe[0]=0; assert(ans_broker_validate_io(sqe,2,0,ANS_DMA_NONE,100,NULL)==0);
+    assert(ans_broker_validate_io(sqe,2,0,ANS_DMA_NONE,100,&win)==0);
     sqe[0]=1;
-    assert(ans_broker_validate_io(sqe,2,4096,ANS_DMA_TO_DEVICE,100,true)==ANS_RESULT_DENIED);
-    assert(ans_broker_validate_io(sqe,2,4096,ANS_DMA_TO_DEVICE,100,false)==0);
-    assert(ans_broker_validate_io(sqe,2,4096,ANS_DMA_FROM_DEVICE,100,false)==ANS_RESULT_BAD_COMMAND);
-    assert(ans_broker_validate_io(sqe,2,0,ANS_DMA_TO_DEVICE,100,false)==ANS_RESULT_BAD_COMMAND);
+    /* No window (NULL or empty): WRITE is denied before any doorbell. */
+    sqe[40]=10;
+    assert(ans_broker_validate_io(sqe,2,4096,ANS_DMA_TO_DEVICE,100,NULL)==ANS_RESULT_DENIED);
+    assert(ans_broker_validate_io(sqe,2,4096,ANS_DMA_TO_DEVICE,100,&none)==ANS_RESULT_DENIED);
+    /* Inside the window: first, last, and a full-window transfer. */
+    assert(ans_broker_validate_io(sqe,2,4096,ANS_DMA_TO_DEVICE,100,&win)==0);
+    sqe[40]=17; assert(ans_broker_validate_io(sqe,2,4096,ANS_DMA_TO_DEVICE,100,&win)==0);
+    sqe[40]=10; sqe[48]=7; assert(ans_broker_validate_io(sqe,2,8*4096,ANS_DMA_TO_DEVICE,100,&win)==0);
+    /* Straddling either edge or fully outside: DENIED. */
+    sqe[40]=17; sqe[48]=1; assert(ans_broker_validate_io(sqe,2,8192,ANS_DMA_TO_DEVICE,100,&win)==ANS_RESULT_DENIED);
+    sqe[40]=9; assert(ans_broker_validate_io(sqe,2,8192,ANS_DMA_TO_DEVICE,100,&win)==ANS_RESULT_DENIED);
+    sqe[48]=0;
+    sqe[40]=9; assert(ans_broker_validate_io(sqe,2,4096,ANS_DMA_TO_DEVICE,100,&win)==ANS_RESULT_DENIED);
+    sqe[40]=18; assert(ans_broker_validate_io(sqe,2,4096,ANS_DMA_TO_DEVICE,100,&win)==ANS_RESULT_DENIED);
+    sqe[40]=0; assert(ans_broker_validate_io(sqe,2,4096,ANS_DMA_TO_DEVICE,100,&win)==ANS_RESULT_DENIED);
+    /* A wrapping window or one past the namespace is invalid and denies everything. */
+    memset(sqe+40,0xff,8); sqe[40]=0xfe;
+    assert(ans_broker_validate_io(sqe,2,4096,ANS_DMA_TO_DEVICE,UINT64_MAX,&wrap)==ANS_RESULT_DENIED);
+    memset(sqe+40,0,8); sqe[40]=96;
+    assert(ans_broker_validate_io(sqe,2,4096,ANS_DMA_TO_DEVICE,100,&past)==ANS_RESULT_DENIED);
+    /* Format errors still win over the window decision. */
+    sqe[40]=10;
+    assert(ans_broker_validate_io(sqe,2,4096,ANS_DMA_FROM_DEVICE,100,&win)==ANS_RESULT_BAD_COMMAND);
+    assert(ans_broker_validate_io(sqe,2,0,ANS_DMA_TO_DEVICE,100,&win)==ANS_RESULT_BAD_COMMAND);
     sqe[40]=100;
-    assert(ans_broker_validate_io(sqe,2,4096,ANS_DMA_TO_DEVICE,100,false)==ANS_RESULT_BAD_COMMAND);
-    puts("ANS ownership/tag/sequence/readonly tests PASS");
+    assert(ans_broker_validate_io(sqe,2,4096,ANS_DMA_TO_DEVICE,100,&win)==ANS_RESULT_BAD_COMMAND);
+    puts("ANS ownership/tag/sequence/write-window tests PASS");
 }

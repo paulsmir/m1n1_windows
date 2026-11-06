@@ -161,7 +161,8 @@ static uint64_t le(const uint8_t *p, size_t n)
 }
 
 int ans_broker_validate_io(const uint8_t sqe[64], uint16_t tag, uint32_t length,
-                           uint32_t direction, uint64_t blocks, bool read_only)
+                           uint32_t direction, uint64_t blocks,
+                           const struct ans_write_window *w)
 {
     if (!sqe) return ANS_RESULT_BAD_COMMAND;
     if (tag_check(1,tag) || le(sqe+2,2)!=tag) return ANS_RESULT_BAD_TAG;
@@ -173,7 +174,6 @@ int ans_broker_validate_io(const uint8_t sqe[64], uint16_t tag, uint32_t length,
                 ANS_RESULT_OK : ANS_RESULT_BAD_COMMAND;
     }
     if (sqe[0] != 1 && sqe[0] != 2) return ANS_RESULT_BAD_COMMAND;
-    if (sqe[0]==1 && read_only) return ANS_RESULT_DENIED;
     uint32_t expected = sqe[0]==1 ? ANS_DMA_TO_DEVICE : ANS_DMA_FROM_DEVICE;
     uint64_t count=le(sqe+48,2)+1, lba=le(sqe+40,8);
     /* V1 permits NLB and FUA only. Protection, LR and reserved flags fail closed. */
@@ -182,5 +182,8 @@ int ans_broker_validate_io(const uint8_t sqe[64], uint16_t tag, uint32_t length,
     if (direction != expected || !length || length>ANS_MAX_TRANSFER ||
         count*4096!=length || lba>=blocks || count>blocks-lba)
         return ANS_RESULT_BAD_COMMAND;
+    if (sqe[0]==1 && (!w || !w->count || w->first>=blocks || w->count>blocks-w->first ||
+                      lba<w->first || lba-w->first>=w->count || count>w->count-(lba-w->first)))
+        return ANS_RESULT_DENIED;
     return ANS_RESULT_OK;
 }

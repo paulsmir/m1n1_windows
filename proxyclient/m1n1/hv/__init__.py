@@ -1890,6 +1890,14 @@ class HV(Reloadable):
         if not self.p.hv_map_ans_broker(base, size, contract["interrupt"]["guest_gsiv"],
                                       contract["broker"]["abi_major"]):
             raise RuntimeError("ANS native broker/ADT/ownership preflight failed")
+        # ANS008: optional one-shot WRITE LBA window "first:count", fixed before guest
+        # entry. Absent means the broker stays read-only (all WRITEs DENIED).
+        window = os.environ.get("WOM1_ANS_WRITE_WINDOW", "")
+        if window:
+            first, count = (int(v, 0) for v in window.split(":"))
+            if not self.p.hv_ans_write_window(first, count, contract["broker"]["abi_major"]):
+                raise RuntimeError("ANS write window rejected by EL2")
+            print(f"HV: ANS write window lba {first} count {count}")
         # C has validated live ADT bases and the source-defined ASC mailbox
         # offset. Preserve every private hook, including mailbox outside reg0.
         for name in ("controller", "coprocessor", "sart", "mailbox"):

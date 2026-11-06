@@ -415,6 +415,15 @@ bool hv_map_ans_broker(u64 base,u64 size,u32 irq,u32 abi_major)
     runtime.mapped=true;return true;
 }
 
+bool hv_ans_write_window(u64 first,u64 count,u32 abi_major)
+{
+    if(abi_major!=ANS_ABI_MAJOR||!runtime.mapped||hv_guest_has_started())ANS_REJECT("write window state");
+    if(!ans_service_set_write_window(&runtime.service,first,count))ANS_REJECT("write window range");
+    printf("HV ANS write window: lba %lu count %lu (namespace %lu blocks)\n",(unsigned long)first,
+           (unsigned long)count,(unsigned long)runtime.service.namespace_blocks);
+    return true;
+}
+
 bool hv_ans_try_handle_dabort(struct exc_info*ctx,bool*matched)
 {
     if(matched)*matched=false;

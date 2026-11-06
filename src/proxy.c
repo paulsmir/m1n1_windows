@@ -547,6 +547,9 @@ int proxy_process(ProxyRequest *request, ProxyReply *reply)
         case P_HV_MAP_ANS_BROKER:
             reply->retval = hv_map_ans_broker(request->args[0], request->args[1], request->args[2], request->args[3]);
             break;
+        case P_HV_ANS_WRITE_WINDOW:
+            reply->retval = hv_ans_write_window(request->args[0], request->args[1], request->args[2]);
+            break;
         case P_HV_MAP_AGX_POWER:
             reply->retval = hv_agx_g2_resources_map();
             break;
