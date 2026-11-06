@@ -10,6 +10,7 @@ body = source[source.index('static bool inside('):source.index('static bool priv
 harness = r'''
 #include "hv_ans_service.h"
 #include <assert.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 typedef uint64_t u64;
