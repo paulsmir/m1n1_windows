@@ -247,36 +247,51 @@ static bool broker_mmio(struct exc_info*ctx,u64 addr,u64*value,bool write,int wi
 static bool private_mmio(struct exc_info*ctx,u64 addr,u64*value,bool write,int width)
 { UNUSED(ctx);UNUSED(addr);UNUSED(width);if(!write)*value=0;return true; }
 
+#define ANS_REJECT(why) do{printf("HV ANS broker preflight rejected: %s\n",(why));return false;}while(0)
+/* Live J313 ADT /arm-io/ans reg windows (reg0 = ASC incl. mailbox, reg3 = NVMe). */
+#define ANS_J313_ADT_COPROCESSOR_SIZE 0x6c000ULL
+#define ANS_J313_ADT_CONTROLLER_SIZE 0x60000ULL
+_Static_assert(ANS_J313_ADT_COPROCESSOR_SIZE>=ANS_EXPECTED_COPROCESSOR_SIZE&&
+               ANS_EXPECTED_MAILBOX_BASE+ANS_EXPECTED_MAILBOX_SIZE<=ANS_EXPECTED_COPROCESSOR_BASE+ANS_J313_ADT_COPROCESSOR_SIZE,
+               "ADT ASC window must contain the DT ASC and mailbox windows");
+_Static_assert(ANS_J313_ADT_CONTROLLER_SIZE>=ANS_EXPECTED_CONTROLLER_SIZE,"ADT NVMe window must contain the DT window");
 bool hv_map_ans_broker(u64 base,u64 size,u32 irq,u32 abi_major)
 {
-    if(base!=ANS_BROKER_BASE||size!=ANS_BROKER_SIZE||irq!=ANS_GUEST_GSIV||abi_major!=ANS_ABI_MAJOR)return false;
-    if(runtime.mapped||hv_guest_has_started()||chip_id!=T8103)return false;
+    if(base!=ANS_BROKER_BASE||size!=ANS_BROKER_SIZE||irq!=ANS_GUEST_GSIV||abi_major!=ANS_ABI_MAJOR)ANS_REJECT("broker ABI arguments");
+    if(runtime.mapped||hv_guest_has_started()||chip_id!=T8103)ANS_REJECT("state or chip");
     int ap[8],sp[8];
     int ans=adt_path_offset_trace(adt,"/arm-io/ans",ap);
-    if(ans<0||adt_path_offset_trace(adt,"/arm-io/sart-ans",sp)<0)return false;
+    if(ans<0||adt_path_offset_trace(adt,"/arm-io/sart-ans",sp)<0)ANS_REJECT("ADT nodes");
     u64 controller,controller_size,asc,asc_size,sart,sart_size;
     if(adt_get_reg(adt,ap,"reg",3,&controller,&controller_size)<0||
        adt_get_reg(adt,ap,"reg",0,&asc,&asc_size)<0||adt_get_reg(adt,sp,"reg",0,&sart,&sart_size)<0)
+        ANS_REJECT("ADT reg read");
+    /* Bases are the source-derived T8103 values. Sizes are the live J313 ADT reg
+     * windows (ANSDART001-R3 adt.bin); they contain the smaller DT protocol windows
+     * and are hidden from the guest in full by the hooks below. ANS001-R3 attempt 4
+     * proved that the DT sizes never match the ADT. No device access in this gate. */
+    if(controller!=ANS_EXPECTED_CONTROLLER_BASE||controller_size!=ANS_J313_ADT_CONTROLLER_SIZE||asc!=ANS_EXPECTED_COPROCESSOR_BASE||
+       asc_size!=ANS_J313_ADT_COPROCESSOR_SIZE||sart!=ANS_EXPECTED_SART_BASE||sart_size!=ANS_EXPECTED_SART_SIZE){
+        printf("HV ANS broker preflight: ADT reg mismatch ctrl %lx+%lx asc %lx+%lx sart %lx+%lx\n",
+               (unsigned long)controller,(unsigned long)controller_size,(unsigned long)asc,(unsigned long)asc_size,
+               (unsigned long)sart,(unsigned long)sart_size);
         return false;
-    /* Source-derived T8103 expectations, checked against actual ADT at launch;
-     * no device register access or controller mutation is used for this gate. */
-    if(controller!=ANS_EXPECTED_CONTROLLER_BASE||controller_size!=ANS_EXPECTED_CONTROLLER_SIZE||asc!=ANS_EXPECTED_COPROCESSOR_BASE||
-       asc_size!=ANS_EXPECTED_COPROCESSOR_SIZE||sart!=ANS_EXPECTED_SART_BASE||sart_size!=ANS_EXPECTED_SART_SIZE)return false;
-    if(asc+0x8000!=ANS_EXPECTED_MAILBOX_BASE)return false;
+    }
+    if(asc+0x8000!=ANS_EXPECTED_MAILBOX_BASE)ANS_REJECT("mailbox base");
     u32 len=0;const u32*irqs=adt_getprop(adt,ans,"interrupts",&len);unsigned matches=0;
-    if(!irqs||!len||len>256||len%4)return false;
+    if(!irqs||!len||len>256||len%4)ANS_REJECT("ADT interrupts");
     for(unsigned i=0;i<len/4;i++)if(irqs[i]==ANS_EXPECTED_PHYSICAL_IRQ)matches++;
-    if(matches!=1)return false;
+    if(matches!=1)ANS_REJECT("physical IRQ not unique");
     u64 blocks;
-    if(!hv_nvme_recovery_geometry(&blocks))return false;
+    if(!hv_nvme_recovery_geometry(&blocks))ANS_REJECT("recovery geometry");
     struct ans_service_ops ops={freeze,drain,flush,stop,retire,hide,boot,backing,submit,poll,shadow,release};
     struct ans_memory_ops mem={translate,read_metadata};
-    if(!ans_service_init(&runtime.service,&ops,NULL,&mem,NULL,blocks))return false;
+    if(!ans_service_init(&runtime.service,&ops,NULL,&mem,NULL,blocks))ANS_REJECT("service init");
     runtime.active_tag=ANS_QUEUE_DEPTH;runtime.physical_irq=ANS_EXPECTED_PHYSICAL_IRQ;
-    if(!hv_irq_route_register(runtime.physical_irq,ANS_GUEST_GSIV,true))return false;
+    if(!hv_irq_route_register(runtime.physical_irq,ANS_GUEST_GSIV,true))ANS_REJECT("IRQ route");
     if(hv_map_hook(controller,private_mmio,controller_size)||hv_map_hook(asc,private_mmio,asc_size)||
        hv_map_hook(sart,private_mmio,sart_size)||
-       hv_map_hook(ANS_EXPECTED_MAILBOX_BASE,private_mmio,ANS_EXPECTED_MAILBOX_SIZE)||hv_map_hook(ANS_BROKER_BASE,broker_mmio,ANS_BROKER_SIZE))return false;
+       hv_map_hook(ANS_EXPECTED_MAILBOX_BASE,private_mmio,ANS_EXPECTED_MAILBOX_SIZE)||hv_map_hook(ANS_BROKER_BASE,broker_mmio,ANS_BROKER_SIZE))ANS_REJECT("MMIO hooks");
     runtime.service.broker.header.features|=ANS_FEATURE_TELEMETRY;
     runtime.mapped=true;return true;
 }

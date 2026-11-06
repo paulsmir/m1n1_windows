@@ -1896,6 +1896,13 @@ class HV(Reloadable):
             region = contract["physical_resources_expected_from_pinned_dt"][name]
             self.add_tracer(irange(int(region["base"], 0), int(region["size"], 0)),
                             "ANS-PRIVATE", TraceMode.RESERVED)
+        # The live ADT windows are larger than the DT protocol windows (reg0 0x6c000,
+        # reg3 0x60000 on J313) and C hooked them in full; keep every hooked page
+        # out of the broad /arm-io pass-through replay as well.
+        ans = self.adt["/arm-io/ans"]
+        for index in (0, 3):
+            adt_base, adt_size = ans.get_reg(index)
+            self.add_tracer(irange(adt_base, adt_size), "ANS-PRIVATE", TraceMode.RESERVED)
         self.add_tracer(irange(base, size), "ANS-BROKER", TraceMode.RESERVED)
 
     def map_agx_power_broker(self):
