@@ -148,6 +148,20 @@ static void ownership(void)
         assert(allowed(0x100000, 0x800, ANS_DMA_FROM_DEVICE) == RAM);
         assert(allowed(0x100801, 4, ANS_DMA_TO_DEVICE) == RAM + 0x801);
     }
+    /* ANS006-R6: the assisted descriptor labels the 16 MiB guest-RAM pad at phys_base HEAP, but
+     * the m1n1 heap is sealed below phys_base (heapblock ceiling, ANS005A); Windows uses that
+     * pad as RAM. With the seal proven, HEAP is not an EL2 exclusion; every other kind still is. */
+    reset(); c.heap_sealed_below_guest = true;
+    snapshot.regions[HV_CONTRACT_REGION_HEAP].base = RAM + 0x800;
+    snapshot.regions[HV_CONTRACT_REGION_HEAP].size = 1;
+    assert(allowed(0x100000, 4096, ANS_DMA_FROM_DEVICE) == RAM);
+    for (unsigned kind = 2; kind <= HV_CONTRACT_REGION_DART_TABLES; ++kind) {
+        if (kind == HV_CONTRACT_REGION_LOW_MEMORY) continue;
+        reset(); c.heap_sealed_below_guest = true;
+        snapshot.regions[kind].base = RAM + 0x800;
+        snapshot.regions[kind].size = 1;
+        denied(0x100000, 4096, ANS_DMA_FROM_DEVICE);
+    }
     reset(); private_pa[0] = (struct ans_memory_range){RAM + 0x200, 1};
     denied(0x100000, 4096, ANS_DMA_TO_DEVICE);
     reset(); c.ramdisk = (struct ans_memory_range){RAM + 0x200, 1};

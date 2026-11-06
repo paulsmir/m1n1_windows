@@ -16,6 +16,9 @@ struct ans_memory_context {
     size_t private_count;
     struct ans_memory_range ramdisk;
     bool reservations_complete;
+    /* Set only after the platform proved heapblock's ceiling == GUEST_RAM base: then the
+     * descriptor's HEAP region inside GUEST_RAM is guest memory, not an EL2 exclusion. */
+    bool heap_sealed_below_guest;
     uint8_t ipa_bits;
     void *leaf_context;
     bool (*raw_leaf)(void *ctx, uint64_t ipa, uint64_t *descriptor, uint8_t *shift);

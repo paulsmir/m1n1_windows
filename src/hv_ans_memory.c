@@ -67,6 +67,7 @@ static bool backing_allowed(const struct ans_memory_context *c, uint64_t pa, uin
         if (r->kind == HV_CONTRACT_REGION_GUEST_RAM) {
             owner = contains(r->base, r->size, pa, n);
         } else if (r->kind != HV_CONTRACT_REGION_LOW_MEMORY &&
+                   !(r->kind == HV_CONTRACT_REGION_HEAP && c->heap_sealed_below_guest) &&
                    overlaps(r->base, r->size, pa, n)) {
             return false;
         }

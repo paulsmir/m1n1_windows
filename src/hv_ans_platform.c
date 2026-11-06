@@ -106,7 +106,9 @@ static bool prepare_memory(void)
     runtime.memory=(struct ans_memory_context){
         .launch=&runtime.launch,.private_pa=runtime.private,.private_count=private_count,
         .ramdisk={J313_AUTONOMOUS_LAYOUT.ramdisk_base,J313_AUTONOMOUS_LAYOUT.ramdisk_max_size},
-        .reservations_complete=true,.ipa_bits=(uint8_t)vaddr_bits,.raw_leaf=raw_leaf};
+        .reservations_complete=true,
+        /* proven just above: heapblock ceiling == GUEST_RAM base (ANS006-R6) */
+        .heap_sealed_below_guest=true,.ipa_bits=(uint8_t)vaddr_bits,.raw_leaf=raw_leaf};
     /* The authorization helper separately checks every required reservation kind
      * and all source bounds; a missing/incomplete descriptor remains fail closed. */
     runtime.memory_ready=ans_memory_context_valid(&runtime.memory);return runtime.memory_ready;
