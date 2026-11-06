@@ -52,16 +52,26 @@ static struct {
 static unsigned char shadow_words[4096];
 static uint64_t vaddr_bits=36;
 static const struct {uint64_t ramdisk_base,ramdisk_max_size;} J313_AUTONOMOUS_LAYOUT={0x8b0000000,0x40000000};
-static unsigned sealed,hidden,boots,stops,carveout_loads;
+static unsigned sealed,hidden,boots,stops,carveout_loads,leaf_reads;
+static bool heap_sealed;
+static uint64_t carveout_pa;
 /* Production reads the live ADT; the boundary under test only needs the call.
- * Exclusion selection itself is covered by hv_ans_memory_test.c. */
+ * Exclusion selection itself is covered by hv_ans_memory_test.c. One synthetic
+ * carveout is placed near the top of the actual descriptor's GUEST_RAM. */
 static bool load_carveout_exclusions(size_t*count)
-{carveout_loads++;runtime.private[(*count)++]=(struct ans_memory_range){0x864204000,0x7a00000};return true;}
+{
+ const struct hv_contract_region*g=&runtime.launch.regions[HV_CONTRACT_REGION_GUEST_RAM];
+ carveout_loads++;carveout_pa=g->base+g->size-0x200000;
+ runtime.private[(*count)++]=(struct ans_memory_range){carveout_pa,0x4000};return true;
+}
+static bool heap_sealed_below_guest(void){return heap_sealed;}
 static bool stop_ok=true;
 static void hv_nvme_seal_recovery(void){sealed++;}
 static void hv_pci_hide_nvme(void){hidden++;}
+/* Identity 16 KiB stage-2 leaves, normal WB, RW: only reached once admission
+ * (heap seal + carveouts) has qualified the descriptor. */
 static bool raw_leaf(void*c,uint64_t ipa,uint64_t*raw,uint8_t*shift)
-{(void)c;(void)ipa;(void)raw;(void)shift;assert(!"unobserved reservations must reject before page lookup");return false;}
+{(void)c;assert(heap_sealed);leaf_reads++;*raw=(ipa&~UINT64_C(0x3fff))|0x7fc|3;*shift=14;return true;}
 static bool nvme_native_init(uint64_t gen,unsigned timeout,uint32_t*stage)
 {(void)gen;(void)timeout;(void)stage;boots++;return true;}
 '''
@@ -85,16 +95,16 @@ int main(int argc,char**argv){
  assert(hv_launch_j313_publish_descriptor(&descriptor));
  assert(!prepare_memory());
  assert(runtime.launch.region_count==8 && runtime.launch.regions[7].kind==HV_CONTRACT_REGION_DART_TABLES);
- assert(runtime.launch.regions[7].flags==1 && runtime.launch.regions[7].size==0);
+ /* HYP-ANS-CARVEOUT: the runner states "no DART tables inside GUEST_RAM". */
+ assert(runtime.launch.regions[7].flags==0 && runtime.launch.regions[7].size==0);
  for(unsigned i=0;i<7;i++)assert(runtime.launch.regions[i].flags==0 && runtime.launch.regions[i].size>0);
  struct ans_service_ops ops={yes,yes,yes,stop,yes,hide,boot,backing,submit,poll,shadow,release};
  struct ans_memory_ops mem={translate,metadata};
+ /* 1. Unsealed heap: handoff still completes, every DMA path stays closed. */
  assert(ans_service_init(&runtime.service,&ops,NULL,&mem,NULL,1000));
  ans_service_handoff(&runtime.service,1);
  assert(ans_handoff_receipt_valid(&runtime.service.handoff,1,0));
- assert(stops==1 && sealed==1 && hidden==1 && !runtime.memory_ready && boots==0);
- assert(carveout_loads==2 && runtime.memory.private_count==3);
- assert(runtime.launch.regions[7].flags==1 && runtime.launch.regions[7].size==0);
+ assert(stops==1 && sealed==1 && hidden==1 && !runtime.memory_ready && boots==0 && leaf_reads==0);
  uint64_t pa=123;assert(!ans_memory_translate(&runtime.memory,0x100000,4096,ANS_DMA_FROM_DEVICE,&pa) && pa==0);
  uint32_t stage=0;assert(!boot(NULL,1,&stage) && boots==0);
  struct ans_broker_request req={.abi_major=ANS_ABI_MAJOR,.size=sizeof(req),.generation=1,.sequence=1,.operation=ANS_OP_CLAIM};
@@ -102,11 +112,23 @@ int main(int argc,char**argv){
  ans_service_execute(&runtime.service,&req,&response);assert(response.result==0);
  req.sequence++;req.operation=ANS_OP_REGISTER_QUEUES;
  ans_service_execute(&runtime.service,&req,&response);assert(response.result!=0 && boots==0);
+ /* 2. Sealed heap + carveouts: guest RAM is admissible, the carveout is not. */
+ heap_sealed=true;
+ struct ans_service ready;assert(ans_service_init(&ready,&ops,NULL,&mem,NULL,1000));
+ ans_service_handoff(&ready,1);
+ assert(ans_handoff_receipt_valid(&ready.handoff,1,0) && runtime.memory_ready);
+ assert(carveout_loads==3 && runtime.memory.private_count==3);
+ uint64_t ok_ipa=carveout_pa-0x100000;
+ assert(ans_memory_translate(&runtime.memory,ok_ipa,4096,ANS_DMA_FROM_DEVICE,&pa) && pa==ok_ipa);
+ pa=1;assert(!ans_memory_translate(&runtime.memory,carveout_pa,4096,ANS_DMA_FROM_DEVICE,&pa) && pa==0);
+ pa=1;assert(!ans_memory_translate(&runtime.memory,carveout_pa-0x800,4096,ANS_DMA_TO_DEVICE,&pa) && pa==0);
+ assert(boot(NULL,2,&stage) && boots==1);
+ heap_sealed=false;stops=0;
  /* Independence does not relax any real stop/retirement prerequisite. */
  struct ans_service failed;assert(ans_service_init(&failed,&ops,NULL,&mem,NULL,1000));
  stop_ok=false;ans_service_handoff(&failed,1);
- assert(!ans_handoff_receipt_valid(&failed.handoff,1,0) && sealed==1 && hidden==1);
- puts("Actual assisted descriptor/capture: unbound handoff independent, native DMA fails closed PASS");
+ assert(!ans_handoff_receipt_valid(&failed.handoff,1,0) && sealed==2 && hidden==2);
+ puts("Actual assisted descriptor/capture: unsealed heap fails closed, sealed heap admits guest RAM but not carveouts PASS");
  return 0;
 }
 '''

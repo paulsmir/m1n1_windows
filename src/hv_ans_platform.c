@@ -6,6 +6,7 @@
 #include "hv.h"
 #include "hv_irq_routes.h"
 #include "hv_launch_j313.h"
+#include "heapblock.h"
 #include "hv_autonomous_layout.generated.h"
 #include "adt.h"
 #include "exception.h"
@@ -81,13 +82,27 @@ static bool load_carveout_exclusions(size_t *count)
         (struct ans_memory_range){cur_boot_args.phys_base,cur_boot_args.mem_size},
         runtime.private,ANS_MEMORY_MAX_PRIVATE_RANGES,count);
 }
+/* DART_TABLES (flags 0, size 0 inside GUEST_RAM) is truthful only while the
+ * m1n1 heap is sealed exactly at the guest base (proxy.c seal_heap_below_guest)
+ * and the carveout exclusions are loaded. HYP-ANS-CARVEOUT: every iBoot-retained
+ * page is declared in /chosen/carveout-memory-map (ANSDART001-R3, HVS2ISO002). */
+static bool heap_sealed_below_guest(void)
+{
+    for(unsigned i=0;i<runtime.launch.region_count;i++)
+        if(runtime.launch.regions[i].kind==HV_CONTRACT_REGION_GUEST_RAM)
+            return heapblock_get_ceiling() &&
+                   (u64)heapblock_get_ceiling()==runtime.launch.regions[i].base;
+    return false;
+}
 static bool prepare_memory(void)
 {
     size_t private_count=2;
     if(!hv_launch_j313_capture_base(HV_CONTRACT_PRE_GUEST,1,&runtime.launch))return false;
     runtime.private[0]=(struct ans_memory_range){(u64)&runtime,sizeof(runtime)};
     runtime.private[1]=(struct ans_memory_range){(u64)shadow_words,sizeof(shadow_words)};
-    if(!load_carveout_exclusions(&private_count)){runtime.memory_ready=false;return false;}
+    if(!load_carveout_exclusions(&private_count)||!heap_sealed_below_guest()){
+        runtime.memory_ready=false;return false;
+    }
     runtime.memory=(struct ans_memory_context){
         .launch=&runtime.launch,.private_pa=runtime.private,.private_count=private_count,
         .ramdisk={J313_AUTONOMOUS_LAYOUT.ramdisk_base,J313_AUTONOMOUS_LAYOUT.ramdisk_max_size},
@@ -125,10 +140,10 @@ static bool hide(void*ctx)
 {
     UNUSED(ctx);
     /* The service calls this only after recovery DMA stop and retirement.
-     * Hiding that retired frontend does not authorize any guest DMA. In the
-     * current assisted descriptor DART_TABLES remains UNOBSERVED, so memory
-     * qualification fails independently; boot() and translate() stay closed.
-     * ANS001 may enumerate the unbound devnode with QUERY/CLAIM only. */
+     * Hiding that retired frontend does not authorize any guest DMA by itself:
+     * prepare_memory() admits memory only with the heap sealed at the guest
+     * base and the ADT carveouts excluded; otherwise boot()/translate() stay
+     * closed and only QUERY/CLAIM remain available. */
     hv_nvme_seal_recovery();hv_pci_hide_nvme();
     (void)prepare_memory();
     return true;
