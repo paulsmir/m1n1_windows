@@ -122,3 +122,23 @@ bool ans_memory_translate(void *context, uint64_t ipa, size_t bytes,
 
 bool ans_memory_context_valid(const struct ans_memory_context *context)
 { return context && policy_valid(context); }
+
+bool ans_memory_carveout_exclusions(const struct ans_memory_range *carveouts, size_t n,
+                                    struct ans_memory_range guest,
+                                    struct ans_memory_range kernel,
+                                    struct ans_memory_range *out, size_t cap, size_t *count)
+{
+    if (!count || (n && !carveouts) || !out || *count > cap || !guest.size ||
+        !valid_range(guest.base, guest.size) || !valid_range(kernel.base, kernel.size))
+        return false;
+    for (size_t i = 0; i < n; ++i) {
+        struct ans_memory_range r = carveouts[i];
+        if (!r.size && !r.base) continue;            /* unused ADT slot */
+        if (!r.size || !valid_range(r.base, r.size)) return false;
+        if (r.base == kernel.base && r.size == kernel.size) continue;
+        if (!overlaps(guest.base, guest.size, r.base, r.size)) continue;
+        if (*count >= cap) return false;
+        out[(*count)++] = r;
+    }
+    return true;
+}

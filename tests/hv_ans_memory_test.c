@@ -247,9 +247,48 @@ static void authoritative_accessor(void)
     puts("ANS authoritative raw stage-2 accessor tests PASS");
 }
 #endif
+/* Real bug caught: a guest PRP pointing into an iBoot carveout inside guest
+ * RAM (ANSDART001-R3 found 13) would be DMA-authorized; or the kernel-range
+ * descriptor entry would wrongly exclude all of guest RAM. Layout is J313's. */
+static void carveouts(void)
+{
+    const struct ans_memory_range guest = {0x850000000, 0x18f708000};
+    const struct ans_memory_range kernel = {0x802078000, 0x1dd690000};
+    const struct ans_memory_range cv[] = {
+        {0x802078000, 0x1dd690000},   /* region-id-24: exact kernel range, skip */
+        {0x864204000, 0x7a00000},     /* region-id-167: inside guest */
+        {0x9fff34000, 0x28000},       /* region-id-16: above guest */
+        {0x0, 0x0},                   /* unused slot */
+        {0x84fffc000, 0x8000},        /* straddles the guest base */
+        {0x800000000, 0x4000},        /* below guest */
+    };
+    struct ans_memory_range out[4] = {{1, 1}};
+    size_t n = 1;
+    assert(ans_memory_carveout_exclusions(cv, 6, guest, kernel, out, 4, &n));
+    assert(n == 3 && out[0].base == 1);
+    assert(out[1].base == 0x864204000 && out[1].size == 0x7a00000);
+    assert(out[2].base == 0x84fffc000);
+    n = 3;
+    assert(!ans_memory_carveout_exclusions(cv, 6, guest, kernel, out, 4, &n)); /* over cap */
+    const struct ans_memory_range zero[] = {{0x860000000, 0}};
+    n = 0;
+    assert(!ans_memory_carveout_exclusions(zero, 1, guest, kernel, out, 4, &n));
+    const struct ans_memory_range wrap[] = {{UINT64_MAX - 0x1000, 0x4000}};
+    n = 0;
+    assert(!ans_memory_carveout_exclusions(wrap, 1, guest, kernel, out, 4, &n));
+
+    /* Translation denies a PRP into an excluded carveout page. */
+    reset();
+    struct ans_memory_range priv[3] = {private_pa[0], private_pa[1], {RAM + 0x4000, 0x4000}};
+    c.private_pa = priv;
+    c.private_count = 3;
+    assert(allowed(0x100000, 4096, ANS_DMA_FROM_DEVICE) == RAM);
+    denied(0x104000, 4096, ANS_DMA_FROM_DEVICE);
+    denied(0x103800, 4096, ANS_DMA_TO_DEVICE);
+}
 int main(void)
 {
-    ranges(); permissions(); ownership(); prp_callback();
+    ranges(); permissions(); ownership(); prp_callback(); carveouts();
 #ifdef ANS_TEST_STAGE2_SOURCE
     authoritative_accessor();
 #endif

@@ -46,13 +46,17 @@ static struct {
  struct ans_service service;
  struct ans_memory_context memory;
  struct hv_contract_snapshot launch;
- struct ans_memory_range private[2];
+ struct ans_memory_range private[ANS_MEMORY_MAX_PRIVATE_RANGES];
  bool memory_ready;
 } runtime;
 static unsigned char shadow_words[4096];
 static uint64_t vaddr_bits=36;
 static const struct {uint64_t ramdisk_base,ramdisk_max_size;} J313_AUTONOMOUS_LAYOUT={0x8b0000000,0x40000000};
-static unsigned sealed,hidden,boots,stops;
+static unsigned sealed,hidden,boots,stops,carveout_loads;
+/* Production reads the live ADT; the boundary under test only needs the call.
+ * Exclusion selection itself is covered by hv_ans_memory_test.c. */
+static bool load_carveout_exclusions(size_t*count)
+{carveout_loads++;runtime.private[(*count)++]=(struct ans_memory_range){0x864204000,0x7a00000};return true;}
 static bool stop_ok=true;
 static void hv_nvme_seal_recovery(void){sealed++;}
 static void hv_pci_hide_nvme(void){hidden++;}
@@ -89,6 +93,7 @@ int main(int argc,char**argv){
  ans_service_handoff(&runtime.service,1);
  assert(ans_handoff_receipt_valid(&runtime.service.handoff,1,0));
  assert(stops==1 && sealed==1 && hidden==1 && !runtime.memory_ready && boots==0);
+ assert(carveout_loads==2 && runtime.memory.private_count==3);
  assert(runtime.launch.regions[7].flags==1 && runtime.launch.regions[7].size==0);
  uint64_t pa=123;assert(!ans_memory_translate(&runtime.memory,0x100000,4096,ANS_DMA_FROM_DEVICE,&pa) && pa==0);
  uint32_t stage=0;assert(!boot(NULL,1,&stage) && boots==0);

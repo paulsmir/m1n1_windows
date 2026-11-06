@@ -21,6 +21,14 @@ struct ans_memory_context {
     bool (*raw_leaf)(void *ctx, uint64_t ipa, uint64_t *descriptor, uint8_t *shift);
 };
 #define ANS_MEMORY_MAX_PRIVATE_RANGES 64u
+/* ADT /chosen/carveout-memory-map entries are iBoot-retained memory. Append to
+ * out[*count..cap) every non-empty carveout that intersects guest, except one
+ * exactly equal to kernel (the boot-args DRAM range is a descriptor, not a
+ * reservation). False on overflow, a zero-size entry, or more than cap. */
+bool ans_memory_carveout_exclusions(const struct ans_memory_range *carveouts, size_t n,
+                                    struct ans_memory_range guest,
+                                    struct ans_memory_range kernel,
+                                    struct ans_memory_range *out, size_t cap, size_t *count);
 /* Suitable directly for ans_memory_ops.translate. Accepts metadata and payload
  * spans, including spans crossing a 16 KiB stage-2 boundary. No copies/DMA. */
 bool ans_memory_context_valid(const struct ans_memory_context *);

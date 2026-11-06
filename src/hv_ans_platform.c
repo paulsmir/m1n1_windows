@@ -14,6 +14,7 @@
 #include "soc.h"
 #include "string.h"
 #include "utils.h"
+#include "xnuboot.h"
 
 extern bool hv_nvme_freeze_recovery(void);
 extern bool hv_nvme_recovery_drained(void);
@@ -30,7 +31,7 @@ static struct {
     struct ans_pin_set pins;
     struct ans_memory_context memory;
     struct hv_contract_snapshot launch;
-    struct ans_memory_range private[2];
+    struct ans_memory_range private[ANS_MEMORY_MAX_PRIVATE_RANGES];
     struct ans_broker_request request;
     struct ans_broker_response response;
     bool mapped, memory_ready;
@@ -53,13 +54,42 @@ bool hv_ans_mapping_begin(u64 ipa,u64 size)
 void hv_ans_mapping_end(void){spin_unlock(&ans_mapping_lock);}
 static bool raw_leaf(void*ctx,uint64_t ipa,uint64_t*raw,uint8_t*shift)
 { UNUSED(ctx);return hv_stage2_get_leaf(ipa,raw,shift); }
+#define ANS_CARVEOUT_IDS 256u
+static struct ans_memory_range carveout_scratch[ANS_CARVEOUT_IDS];
+/* iBoot-retained memory (ANSDART001-R3: 13 carveouts inside GUEST_RAM; every
+ * observed retained DART table page lies in a carveout). Excluding them from
+ * ANS DMA also bounds DARTs whose registers cannot be read safely. */
+static bool load_carveout_exclusions(size_t *count)
+{
+    int node=adt_path_offset(adt,"/chosen/carveout-memory-map");
+    size_t n=0;
+    if(node<0)return false;
+    for(unsigned id=0;id<ANS_CARVEOUT_IDS;id++){
+        char name[24];u32 len=0;
+        snprintf(name,sizeof(name),"region-id-%u",id);
+        const u64*v=adt_getprop(adt,node,name,&len);
+        if(!v)continue;
+        if(len!=16)return false;
+        carveout_scratch[n++]=(struct ans_memory_range){v[0],v[1]};
+    }
+    const struct hv_contract_region*g=NULL;
+    for(unsigned i=0;i<runtime.launch.region_count;i++)
+        if(runtime.launch.regions[i].kind==HV_CONTRACT_REGION_GUEST_RAM)g=&runtime.launch.regions[i];
+    if(!g)return false;
+    return ans_memory_carveout_exclusions(carveout_scratch,n,
+        (struct ans_memory_range){g->base,g->size},
+        (struct ans_memory_range){cur_boot_args.phys_base,cur_boot_args.mem_size},
+        runtime.private,ANS_MEMORY_MAX_PRIVATE_RANGES,count);
+}
 static bool prepare_memory(void)
 {
+    size_t private_count=2;
     if(!hv_launch_j313_capture_base(HV_CONTRACT_PRE_GUEST,1,&runtime.launch))return false;
     runtime.private[0]=(struct ans_memory_range){(u64)&runtime,sizeof(runtime)};
     runtime.private[1]=(struct ans_memory_range){(u64)shadow_words,sizeof(shadow_words)};
+    if(!load_carveout_exclusions(&private_count)){runtime.memory_ready=false;return false;}
     runtime.memory=(struct ans_memory_context){
-        .launch=&runtime.launch,.private_pa=runtime.private,.private_count=2,
+        .launch=&runtime.launch,.private_pa=runtime.private,.private_count=private_count,
         .ramdisk={J313_AUTONOMOUS_LAYOUT.ramdisk_base,J313_AUTONOMOUS_LAYOUT.ramdisk_max_size},
         .reservations_complete=true,.ipa_bits=(uint8_t)vaddr_bits,.raw_leaf=raw_leaf};
     /* The authorization helper separately checks every required reservation kind
