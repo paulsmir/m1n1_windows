@@ -207,6 +207,17 @@ static bool broker_mmio(struct exc_info*ctx,u64 addr,u64*value,bool write,int wi
         runtime.active_tag=request.tag;
         ans_service_execute(&runtime.service,&request,&runtime.response);
         runtime.active_tag=ANS_QUEUE_DEPTH;
+        /* Receipt-only (ANS002): control operations are rare; data-path submit/reap are
+         * never logged. Capped so a looping guest cannot flood the UART. */
+        static unsigned control_logs;
+        if(request.operation!=ANS_OP_AUTHORIZE_SUBMIT && request.operation!=ANS_OP_REAP_COMPLETION &&
+           control_logs<64) {
+            control_logs++;
+            printf("HV ANS op=%u seq=%lu result=%u state=%u owner=%u gen=%lu\n",
+                   (unsigned)request.operation,(unsigned long)request.sequence,
+                   (unsigned)runtime.response.result,(unsigned)runtime.response.state,
+                   (unsigned)runtime.service.broker.owner,(unsigned long)runtime.response.generation);
+        }
         return true;
     }
     if(write)return true; /* All receipts, counters, cached CQEs are read-only. */
