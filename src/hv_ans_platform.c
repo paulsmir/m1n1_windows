@@ -114,9 +114,25 @@ static bool prepare_memory(void)
 static bool translate(void*ctx,uint64_t ipa,size_t size,uint32_t direction,uint64_t*pa)
 {
     UNUSED(ctx);
-    if(!runtime.memory_ready||runtime.active_tag>=ANS_QUEUE_DEPTH||
-       !ans_memory_translate(&runtime.memory,ipa,size,direction,pa))return false;
-    return ans_pin_add(&runtime.pins,runtime.active_tag,ipa,size);
+    static unsigned deny_logs;
+    if(!runtime.memory_ready||runtime.active_tag>=ANS_QUEUE_DEPTH)return false;
+    if(!ans_memory_translate(&runtime.memory,ipa,size,direction,pa)) {
+        /* Receipt-only (ANS006): which guest page the EL2 DMA policy rejected and why. */
+        if(deny_logs<16) {
+            uint64_t raw=0;uint8_t shift=0;bool leaf=raw_leaf(NULL,ipa,&raw,&shift);
+            deny_logs++;
+            printf("HV ANS deny ipa=0x%lx size=0x%lx dir=%u leaf=%u raw=0x%lx shift=%u oa=0x%lx\n",
+                   (unsigned long)ipa,(unsigned long)size,(unsigned)direction,(unsigned)leaf,
+                   (unsigned long)raw,(unsigned)shift,(unsigned long)(raw&0xfffffffff000ULL));
+        }
+        return false;
+    }
+    if(!ans_pin_add(&runtime.pins,runtime.active_tag,ipa,size)) {
+        if(deny_logs<16){deny_logs++;printf("HV ANS deny pin-table ipa=0x%lx size=0x%lx tag=%u\n",
+            (unsigned long)ipa,(unsigned long)size,(unsigned)runtime.active_tag);}
+        return false;
+    }
+    return true;
 }
 static bool read_metadata(void*ctx,uint64_t pa,void*out,size_t size)
 { UNUSED(ctx);if(size>ANS_MAX_DATA_PAGES*8)return false;memcpy(out,(const void*)pa,size);return true; }
