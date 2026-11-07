@@ -195,13 +195,21 @@ static struct {
     u64 last_irq,last_print,idle_start,busy_start;
     unsigned inflight;
     u64 n,bytes,len[5],qd[6],traps,svc,svc_max,hw,hw_max,hw_n,isr,isr_max,reap,reap_max,reap_n,idle,busy,noirq;
-    unsigned lines;
+    unsigned lines,rejects,stuck_lines;
 } perf;
 static u64 perf_us(u64 t){return ticks_to_usecs(t);}
 static void perf_max(u64*m,u64 v){if(v>*m)*m=v;}
 static void perf_doorbell(const struct ans_broker_request*r,const struct ans_broker_response*x,u64 t0)
 {
     u64 now=get_ticks(),svc=now-t0;unsigned tag=r->tag;
+    /* ANS009: every rejected I/O submit, with its LBA, is a receipt (capped). */
+    if(x->result!=0&&r->operation==ANS_OP_AUTHORIZE_SUBMIT&&r->queue==1&&perf.rejects<256){
+        perf.rejects++;
+        u64 lba=0;for(unsigned i=0;i<8;i++)lba|=(u64)r->sqe[40+i]<<(8*i);
+        printf("HV ANS reject result=%u sqe_op=0x%x tag=%u lba=%lu nlb=%u len=%u dir=%u\n",(unsigned)x->result,
+               (unsigned)r->sqe[0],tag,(unsigned long)lba,(unsigned)(r->sqe[48]|(r->sqe[49]<<8)),
+               (unsigned)r->transfer_length,(unsigned)r->direction);
+    }
     if(x->result!=0||tag>=ANS_QUEUE_DEPTH)return;
     if(r->operation==ANS_OP_AUTHORIZE_SUBMIT&&r->queue==1){
         if(!perf.inflight&&perf.idle_start){perf.idle+=t0-perf.idle_start;perf.idle_start=0;}
@@ -235,6 +243,13 @@ static void perf_tick(void)
     if(!perf.last_print){perf.last_print=now;return;}
     if(perf_us(now-perf.last_print)<5000000)return;
     perf.last_print=now;
+    /* ANS009: report any I/O tag in flight for more than 1 s, even in a window without new submits. */
+    for(unsigned tag=ANS_ADMIN_TAGS;tag<ANS_QUEUE_DEPTH&&perf.stuck_lines<64;tag++){
+        if(!perf.t_submit[tag]||perf_us(now-perf.t_submit[tag])<1000000)continue;
+        perf.stuck_lines++;
+        printf("HV ANS stuck tag=%u age_ms=%lu pending=%u inflight=%u\n",tag,
+               (unsigned long)(perf_us(now-perf.t_submit[tag])/1000),perf.t_pending[tag]?1u:0u,perf.inflight);
+    }
     if(!perf.n||perf.lines>=400){return;}
     perf.lines++;
     u64 busy=perf.busy+(perf.busy_start?now-perf.busy_start:0),idle=perf.idle+(perf.idle_start?now-perf.idle_start:0);
