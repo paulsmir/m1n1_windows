@@ -3,8 +3,9 @@
 
 #include "../src/hv_apple_input.generated.h"
 #include "../src/hv_irq_routes.h"
+#include "../src/hv_ans_broker_abi.h"
 
-static void test_agx_g2_routes_and_apple_input_capacity(void)
+static void test_agx_g2_input_and_ans_capacity(void)
 {
     static const struct hv_irq_route expected[] = {
         {.hw_irq = 563, .vintid = 880, .level = true},
@@ -44,6 +45,17 @@ static void test_agx_g2_routes_and_apple_input_capacity(void)
            (u32)HV_APPLE_INPUT_GUEST_VINTID);
     assert(hv_irq_route_from_vintid((u32)HV_APPLE_INPUT_GUEST_VINTID)->hw_irq ==
            (u32)HV_APPLE_INPUT_PHYSICAL_PARENT_IRQ);
+    /* ANS must fit alongside every existing G2 and input route. */
+    assert(hv_irq_route_register(ANS_EXPECTED_PHYSICAL_IRQ, ANS_GUEST_GSIV, true));
+    assert(hv_irq_route_count() == 12);
+    assert(hv_irq_route_from_hw(ANS_EXPECTED_PHYSICAL_IRQ)->vintid == ANS_GUEST_GSIV);
+    assert(hv_irq_route_from_vintid(ANS_GUEST_GSIV)->hw_irq == ANS_EXPECTED_PHYSICAL_IRQ);
+    u32 physical = 0, guest = 0;
+    assert(hv_irq_route_resolve_incoming(ANS_EXPECTED_PHYSICAL_IRQ, 64, &guest));
+    assert(guest == ANS_GUEST_GSIV);
+    assert(!hv_irq_route_level_eoi_target(ANS_GUEST_GSIV, false, &physical));
+    assert(hv_irq_route_level_eoi_target(ANS_GUEST_GSIV, true, &physical));
+    assert(physical == ANS_EXPECTED_PHYSICAL_IRQ);
     assert(!hv_irq_route_register(700, 900, true));
 }
 
@@ -107,7 +119,7 @@ int main(void)
     assert(hv_irq_route_count() == 1);
     assert(hv_irq_route_from_hw(333) == NULL);
 
-    test_agx_g2_routes_and_apple_input_capacity();
+    test_agx_g2_input_and_ans_capacity();
 
     puts("hv_irq_routes_test: ok");
     return 0;

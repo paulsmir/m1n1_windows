@@ -1830,6 +1830,7 @@ class HV(Reloadable):
         self.map_vuart()
         self.map_pci()
         self.map_agx_power_broker()
+        self.map_ans_native_broker()
 
         # ACTLR depends on the CPU part
         part = MIDR(self.u.mrs(MIDR_EL1)).PART
@@ -1874,6 +1875,54 @@ class HV(Reloadable):
         # map_vuart() does for its C hook.
         self.add_tracer(irange(ecam, 0x100000), "PCI-ECAM", TraceMode.RESERVED)
         print(f"HV: emulated PCIe/NVMe: ECAM 0x{ecam:x}, BAR window 0x{bar_window:x}, INTx vSPI {irq}")
+
+    def map_ans_native_broker(self):
+        mode = os.environ.get("WOM1_STORAGE_MODE", "VNVME_RECOVERY")
+        if mode == "VNVME_RECOVERY":
+            return
+        if mode != "ANS_NATIVE":
+            raise ValueError("Unsupported storage ownership mode")
+        import json
+        from pathlib import Path
+        contract = json.loads((Path(__file__).resolve().parents[4] / "config/j313-ans.json").read_text())
+        base = int(contract["broker"]["guest_base"], 0)
+        size = contract["broker"]["size"]
+        if not self.p.hv_map_ans_broker(base, size, contract["interrupt"]["guest_gsiv"],
+                                      contract["broker"]["abi_major"]):
+            raise RuntimeError("ANS native broker/ADT/ownership preflight failed")
+        # ANS008: optional one-shot WRITE LBA window "first:count", fixed before guest
+        # entry. Absent means the broker stays read-only (all WRITEs DENIED).
+        window = os.environ.get("WOM1_ANS_WRITE_WINDOW", "")
+        direct = os.environ.get("WOM1_ANS_DIRECT", "")
+        if direct not in ("", "1"):
+            raise ValueError("WOM1_ANS_DIRECT must be 1 or unset")
+        if direct and window:
+            raise ValueError("ANS direct mode is exclusive with the EL2 write window")
+        if direct:
+            # ANS-DIRECT: the EBS handoff cold-boots ANS to the Asahi hand-off state and
+            # passes the controller + mailbox through; EL2 leaves the data path.
+            if not self.p.hv_ans_direct(contract["broker"]["abi_major"]):
+                raise RuntimeError("ANS direct mode rejected by EL2")
+            print("HV: ANS direct mode armed (controller released to the guest at EBS)")
+        if window:
+            first, count = (int(v, 0) for v in window.split(":"))
+            if not self.p.hv_ans_write_window(first, count, contract["broker"]["abi_major"]):
+                raise RuntimeError("ANS write window rejected by EL2")
+            print(f"HV: ANS write window lba {first} count {count}")
+        # C has validated live ADT bases and the source-defined ASC mailbox
+        # offset. Preserve every private hook, including mailbox outside reg0.
+        for name in ("controller", "coprocessor", "sart", "mailbox"):
+            region = contract["physical_resources_expected_from_pinned_dt"][name]
+            self.add_tracer(irange(int(region["base"], 0), int(region["size"], 0)),
+                            "ANS-PRIVATE", TraceMode.RESERVED)
+        # The live ADT windows are larger than the DT protocol windows (reg0 0x6c000,
+        # reg3 0x60000 on J313) and C hooked them in full; keep every hooked page
+        # out of the broad /arm-io pass-through replay as well.
+        ans = self.adt["/arm-io/ans"]
+        for index in (0, 3):
+            adt_base, adt_size = ans.get_reg(index)
+            self.add_tracer(irange(adt_base, adt_size), "ANS-PRIVATE", TraceMode.RESERVED)
+        self.add_tracer(irange(base, size), "ANS-BROKER", TraceMode.RESERVED)
 
     def map_agx_power_broker(self):
         if os.environ.get("WOM1_AGX_G2_POWER_BROKER", "0") != "1":

@@ -661,6 +661,9 @@ class M1N1Proxy(Reloadable):
     P_HV_LAUNCH_PUBLISH = 0xc1d
     P_HV_LAUNCH_CAPTURE = 0xc1e
     P_HV_MAP_AGX_POWER = 0xc1f
+    P_HV_MAP_ANS_BROKER = 0xc20
+    P_HV_ANS_WRITE_WINDOW = 0xc21
+    P_HV_ANS_DIRECT = 0xc22
 
     P_FB_INIT = 0xd00
     P_FB_SHUTDOWN = 0xd01
@@ -1109,6 +1112,13 @@ class M1N1Proxy(Reloadable):
         return self.request(self.P_HV_INIT)
     def hv_map(self, from_, to, size, incr):
         return self.request(self.P_HV_MAP, from_, to, size, incr)
+    def hv_map_ans_broker(self, base, size, irq, abi_major):
+        return self.request(self.P_HV_MAP_ANS_BROKER, base, size, irq, abi_major)
+    def hv_ans_write_window(self, first, count, abi_major):
+        return self.request(self.P_HV_ANS_WRITE_WINDOW, first, count, abi_major)
+    def hv_ans_direct(self, abi_major):
+        return self.request(self.P_HV_ANS_DIRECT, abi_major)
+
     def hv_map_agx_power_broker(self):
         return self.request(self.P_HV_MAP_AGX_POWER)
     def hv_start(self, entry, *args):

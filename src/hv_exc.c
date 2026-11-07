@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: MIT */
 
 #include "hv.h"
+#include "hv_ans_platform.h"
 #include "hv_diag.h"
 #include "hv_exception_lower.h"
 #include "hv_fiq_fast_path.h"
@@ -1880,6 +1881,12 @@ void hv_exc_sync(struct exc_info *ctx)
             hv_wdt_breadcrumb('w');
             return;
         case ESR_EC_DABORT_LOWER: {
+            bool ans_matched = false;
+            handled = hv_ans_try_handle_dabort(ctx, &ans_matched);
+            if(ans_matched){
+                if(!handled)hv_quarantine_guest();
+                ctx->elr+=4;hv_set_elr(ctx->elr);hv_update_fiq();return;
+            }
             bool nvme_matched = false;
             handled = hv_nvme_try_handle_dabort(ctx, &nvme_matched);
             if (nvme_matched) {
@@ -2036,6 +2043,7 @@ void hv_exc_irq(struct exc_info *ctx)
     int type = FIELD_GET(AIC_EVENT_TYPE, reason);
 
     hv_diag_count_hw_irq(irq);
+    hv_ans_note_physical_irq(irq);
 
     u64 misr = mrs(ICH_MISR_EL2);
     u64 eisr = mrs(ICH_EISR_EL2);

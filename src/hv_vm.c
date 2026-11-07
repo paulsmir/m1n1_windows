@@ -7,6 +7,7 @@
 #include "cpu_regs.h"
 #include "exception.h"
 #include "hv_stage2_state.h"
+#include "hv_ans_platform.h"
 #include "iodev.h"
 #include "malloc.h"
 #include "smp.h"
@@ -305,7 +306,7 @@ static void hv_pt_map_l4(u64 from, u64 to, u64 size, u64 incr)
     }
 }
 
-int hv_map(u64 from, u64 to, u64 size, u64 incr)
+static int hv_map_under_owner_lock(u64 from, u64 to, u64 size, u64 incr)
 {
     const u64 requested_from = from;
     const u64 requested_to = to;
@@ -387,6 +388,13 @@ int hv_map(u64 from, u64 to, u64 size, u64 incr)
     }
     (void)hv_stage2_state_record(requested_from, target, requested_size, requested_incr, kind);
     return 0;
+}
+
+int hv_map(u64 from, u64 to, u64 size, u64 incr)
+{
+    if (!hv_ans_mapping_begin(from,size)) return -1;
+    int result=hv_map_under_owner_lock(from,to,size,incr);
+    hv_ans_mapping_end();return result;
 }
 
 int hv_unmap(u64 from, u64 size)
@@ -576,6 +584,48 @@ static u64 hv_pt_walk_impl(u64 addr, bool attributes)
 u64 hv_pt_walk(u64 addr)
 {
     return hv_pt_walk_impl(addr, false);
+}
+
+/* Read the authoritative raw stage-2 leaf without hv_pt_walk's attribute
+ * stripping/offset folding. Fail closed on every SW/hook/unmapped path.
+ * This is read-only; callers must serialize page-table mutation and retain
+ * backing while their authorized operation is live. It does not pin memory. */
+bool hv_stage2_get_leaf(u64 ipa, u64 *descriptor, u8 *shift)
+{
+    if (!descriptor || !shift)
+        return false;
+    *descriptor = 0;
+    *shift = 0;
+    if (!hv_Ltop || vaddr_bits < 32 || vaddr_bits > 44 || ipa >= BIT(vaddr_bits))
+        return false;
+    u64 *l2 = hv_Ltop;
+    if (vaddr_bits > 36) {
+        u64 l1d = hv_Ltop[ipa >> VADDR_L1_OFFSET_BITS];
+        /* Current table descriptors contain only OA and valid/type. Reject
+         * unexpected upper table attributes instead of ignoring restrictions. */
+        if ((l1d & (PTE_VALID | PTE_TYPE)) != (PTE_VALID | PTE_TYPE) ||
+            (l1d & ~(PTE_TARGET_MASK | PTE_VALID | PTE_TYPE)) ||
+            !(l1d & PTE_TARGET_MASK))
+            return false;
+        l2 = (u64 *)(l1d & PTE_TARGET_MASK);
+    }
+    u64 l2d = l2[(ipa >> VADDR_L2_OFFSET_BITS) & MASK(VADDR_L2_INDEX_BITS)];
+    if (L2_IS_HW_BLOCK(l2d)) {
+        *descriptor = l2d;
+        *shift = VADDR_L2_OFFSET_BITS;
+        return true;
+    }
+    if ((l2d & (PTE_VALID | PTE_TYPE)) != (PTE_VALID | PTE_TYPE) ||
+        (l2d & ~(PTE_TARGET_MASK | PTE_VALID | PTE_TYPE)) ||
+        !(l2d & PTE_TARGET_MASK))
+        return false;
+    u64 l3d = ((u64 *)(l2d & PTE_TARGET_MASK))[
+        (ipa >> VADDR_L3_OFFSET_BITS) & MASK(VADDR_L3_INDEX_BITS)];
+    if (!L3_IS_HW_BLOCK(l3d))
+        return false;
+    *descriptor = l3d;
+    *shift = VADDR_L3_OFFSET_BITS;
+    return true;
 }
 
 //

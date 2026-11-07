@@ -2,6 +2,7 @@
 
 #include "hv.h"
 #include "hv_tick_policy.h"
+#include "hv_ans_platform.h"
 #include "hv_runtime_diag.h"
 #include "hv_wfx_policy.h"
 #include "assert.h"
@@ -29,6 +30,8 @@
 #define HV_SLOW_TICK_RATE 1
 
 DECLARE_SPINLOCK(bhl);
+u32 hv_guest_quarantine_active;
+u64 hv_guest_quarantine_observed;
 
 void hv_enter_guest(u64 x0, u64 x1, u64 x2, u64 x3, void *entry);
 void hv_exit_guest(void) __attribute__((noreturn));
@@ -175,6 +178,7 @@ static void hv_configure_guest_wfi(void)
 
 bool hv_init(void)
 {
+    if (__atomic_load_n(&hv_guest_quarantine_active,__ATOMIC_ACQUIRE)) return false;
     hv_diag_reset();
     hv_diag_set_collector(hv_collect_diag, NULL);
     hv_fb_stream_disable(&hv_framebuffer_stream);
@@ -1370,5 +1374,31 @@ void hv_tick(struct exc_info *ctx)
             hv_exc_proxy(ctx, START_HV, HV_USER_INTERRUPT, NULL);
     }
     hv_vuart_poll();
+    hv_ans_tick();
     hv_fb_stream_tick(&hv_framebuffer_stream);
+}
+
+/* Terminal DMA containment. Never retire mappings/backing, run a reset path,
+ * or return to guest after an unproven storage stop. Every guest ERET checks
+ * this private EL2 flag, including local fast paths and first CPU entry. */
+bool hv_guest_has_started(void)
+{
+    for(unsigned i=0;i<MAX_CPUS;i++)if(hv_started_cpus[i])return true;
+    return false;
+}
+void hv_quarantine_park(void)
+{
+    __atomic_and_fetch(&hv_cpus_in_guest,~BIT(smp_id()),__ATOMIC_ACQ_REL);
+    __atomic_or_fetch(&hv_guest_quarantine_observed,BIT(smp_id()),__ATOMIC_ACQ_REL);
+    sysop("msr daifset, 15");
+    for(;;)sysop("wfe");
+}
+void hv_quarantine_guest(void)
+{
+    __atomic_store_n(&hv_guest_quarantine_active,1,__ATOMIC_RELEASE);
+    __atomic_store_n(&hv_rendezvous_active,true,__ATOMIC_RELEASE);
+    hv_wdt_suspend();
+    for(unsigned i=0;i<MAX_CPUS;i++)
+        if(i!=(unsigned)smp_id() && hv_started_cpus[i])smp_send_ipi(i);
+    hv_quarantine_park();
 }
