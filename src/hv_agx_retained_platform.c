@@ -1,4 +1,5 @@
 #include "hv.h"
+#include "gxf.h"
 #include "hv_agx_retained_platform.h"
 #include "hv_agx_local_reserve.h"
 #include "hv_agx_retained_root.h"
@@ -73,23 +74,34 @@ static unsigned long long translate_guest(void *context, unsigned long long ipa)
     return pa;
 }
 
-/* ASIDE1OS at EL2 with HCR_EL2.{E2H,TGE} != {1,1} targets the EL1&0 regime of the CURRENT VMID
- * (VTTBR_EL2.VMID); the GPU UAT obeys it as VMID 0. AGX_GUEST_VMID1 (EXP2231): the guest runs with
- * VMID 1 so Windows' own broadcast TLBIs (ASIDE1IS/VAE1IS/VMALLE1IS) no longer match GPU translations;
- * the broker's GPU invalidations switch this CPU to VMID 0 around the TLBI. Without the flag the
- * guest VMID is 0 and this is the previous instruction sequence. */
+/* ASIDE1OS at EL2 with HCR_EL2.{E2H,TGE} != {1,1} targets the EL1&0 regime of the CURRENT VMID;
+ * the GPU UAT obeys that as VMID 0. AGX_GUEST_VMID1: the guest runs as VMID 1 so its own broadcast
+ * TLBIs no longer match GPU translations; the broker's GPU invalidation switches this CPU's VTTBR to
+ * VMID 0 around the TLBI. With GXF enabled, VTTBR_EL2 (like HCR_EL2, see hv_write_hcr) is writable only
+ * in GL2: EXP2232 wrote it from plain EL2 and took an EL2 SYNC (ESR EC 0), so the whole sequence runs
+ * through gl2_call. Without the flag this is the previous instruction sequence. */
+static uint64_t agx_tlbi_aside1os_vmid0(uint64_t asid_field, uint64_t b, uint64_t c, uint64_t d)
+{
+    (void)b; (void)c; (void)d;
+    uint64_t vttbr = mrs(VTTBR_EL2);
+    msr(VTTBR_EL2, vttbr & ~(0xffffULL << 48));
+    __asm__ volatile("isb\n\tdsb oshst\n\tsys #0, c8, c1, #2, %0\n\tdsb osh\n\tisb"
+                     :: "r"(asid_field) : "memory");
+    msr(VTTBR_EL2, vttbr);
+    __asm__ volatile("isb" ::: "memory");
+    return 0;
+}
+
 static void agx_tlbi_aside1os_host_vmid(uint64_t asid_field)
 {
 #ifdef AGX_GUEST_VMID1
-    uint64_t vttbr = mrs(VTTBR_EL2);
-    msr(VTTBR_EL2, vttbr & ~(0xffffULL << 48));
-    __asm__ volatile("isb" ::: "memory");
-#endif
+    if (gxf_enabled() && !in_gl12())
+        gl2_call(agx_tlbi_aside1os_vmid0, asid_field, 0, 0, 0);
+    else
+        agx_tlbi_aside1os_vmid0(asid_field, 0, 0, 0);
+#else
     __asm__ volatile("dsb oshst\n\tsys #0, c8, c1, #2, %0\n\tdsb osh\n\tisb"
                      :: "r"(asid_field) : "memory");
-#ifdef AGX_GUEST_VMID1
-    msr(VTTBR_EL2, vttbr);
-    __asm__ volatile("isb" ::: "memory");
 #endif
 }
 
