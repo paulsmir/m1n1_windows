@@ -18,6 +18,7 @@
 #include "kboot.h"
 #include "malloc.h"
 #include "mcc.h"
+#include "hv_cppc.h"
 #include "memory.h"
 #include "nvme.h"
 #include "pcie.h"
@@ -527,6 +528,9 @@ int proxy_process(ProxyRequest *request, ProxyReply *reply)
             break;
         case P_HV_MAP_AGX_POWER:
             reply->retval = hv_agx_g2_resources_map();
+            break;
+        case P_HV_MAP_CPPC:
+            reply->retval = hv_cppc_map();
             break;
         case P_HV_MAP_VIRTIO:
             hv_map_virtio(request->args[0], (void *)request->args[1]);
