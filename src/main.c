@@ -205,6 +205,14 @@ void m1n1_main(void)
     if (supports_gxf())
         gxf_init();
     mcc_init();
+#ifdef MCC_SLC_AT_INIT
+    /* iBoot leaves the T8103 system-level cache disabled (all planes 0/16
+     * ways) for non-macOS payloads; upstream enables it only in kboot_boot().
+     * Windows has no MCC driver and the HV guest path never reaches
+     * kboot_boot(), so enable it here for every path (idempotent). */
+    if (mcc_enable_cache())
+        printf("MCC: SLC enable at init FAILED\n");
+#endif
     mmu_init();
     aic_init();
 #endif
