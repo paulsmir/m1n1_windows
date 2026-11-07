@@ -57,6 +57,12 @@ static u32 limited[CPPC_CPUS];
 static u32 dram_fast_mhz;
 static int dram_fast = -1;
 static bool cppc_mapped;
+
+/* Receipt: printed at most every CPPC_REPORT_SECONDS from the hook. */
+#define CPPC_REPORT_SECONDS 10
+static u64 report_at, report_last;
+static u32 writes[2], transitions[2], reads;
+static u32 want_min[2] = {~0u, ~0u}, want_max[2];
 static DECLARE_SPINLOCK(cppc_lock);
 
 static inline struct cppc_cluster *cpu_cluster(int cpu)
@@ -100,8 +106,10 @@ static void cluster_update(int index)
         return;
 
     cluster_account(c, mrs(CNTPCT_EL0));
-    if (cpufreq_set_cluster_pstate(c->cpufreq_index, ps) == 0)
+    if (cpufreq_set_cluster_pstate(c->cpufreq_index, ps) == 0) {
         c->pstate = ps;
+        transitions[index]++;
+    }
 
     if (index == 1 && dram_fast_mhz) {
         int fast = c->mhz[c->pstate] >= dram_fast_mhz;
@@ -124,10 +132,16 @@ static bool cppc_hook(struct exc_info *ctx, u64 addr, u64 *val, bool write, int 
     bool ok = true;
 
     spin_lock(&cppc_lock);
+    if (!write)
+        reads++;
     switch (reg) {
         case REG_DESIRED:
             if (write) {
+                int k = cpu < 4 ? 0 : 1;
                 desired[cpu] = (u32)*val;
+                writes[k]++;
+                want_min[k] = min(want_min[k], desired[cpu]);
+                want_max[k] = max(want_max[k], desired[cpu]);
                 cluster_update(cpu < 4 ? 0 : 1);
             } else {
                 *val = desired[cpu];
@@ -158,7 +172,28 @@ static bool cppc_hook(struct exc_info *ctx, u64 addr, u64 *val, bool write, int 
                 *val = 0;
             break;
     }
+    u64 now = mrs(CNTPCT_EL0);
+    bool report = now >= report_at;
+    u32 w[2], t[2], lo[2], hi[2], ps[2], r = 0;
+    int df = dram_fast;
+    if (report) {
+        u64 f = mrs(CNTFRQ_EL0) ? mrs(CNTFRQ_EL0) : 24000000;
+        report_at = now + CPPC_REPORT_SECONDS * f;
+        for (int k = 0; k < 2; k++) {
+            w[k] = writes[k]; t[k] = transitions[k]; lo[k] = want_min[k]; hi[k] = want_max[k];
+            ps[k] = clusters[k].pstate;
+            writes[k] = transitions[k] = 0; want_min[k] = ~0u; want_max[k] = 0;
+        }
+        r = reads;
+        reads = 0;
+    }
     spin_unlock(&cppc_lock);
+    if (report && (w[0] || w[1] || t[0] || t[1] || r)) {
+        printf("HV: CPPC dt_ms=%lu rd=%u E wr=%u want=%u..%u tr=%u ps=%u | P wr=%u want=%u..%u tr=%u ps=%u | dram_fast=%d\n",
+               report_last ? ticks_to_msecs(now - report_last) : 0UL, r, w[0], w[0] ? lo[0] : 0, hi[0], t[0], ps[0],
+               w[1], w[1] ? lo[1] : 0, hi[1], t[1], ps[1], df);
+        report_last = now;
+    }
     return ok;
 }
 
