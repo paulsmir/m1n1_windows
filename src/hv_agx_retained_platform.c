@@ -73,6 +73,26 @@ static unsigned long long translate_guest(void *context, unsigned long long ipa)
     return pa;
 }
 
+/* ASIDE1OS at EL2 with HCR_EL2.{E2H,TGE} != {1,1} targets the EL1&0 regime of the CURRENT VMID
+ * (VTTBR_EL2.VMID); the GPU UAT obeys it as VMID 0. AGX_GUEST_VMID1 (EXP2231): the guest runs with
+ * VMID 1 so Windows' own broadcast TLBIs (ASIDE1IS/VAE1IS/VMALLE1IS) no longer match GPU translations;
+ * the broker's GPU invalidations switch this CPU to VMID 0 around the TLBI. Without the flag the
+ * guest VMID is 0 and this is the previous instruction sequence. */
+static void agx_tlbi_aside1os_host_vmid(uint64_t asid_field)
+{
+#ifdef AGX_GUEST_VMID1
+    uint64_t vttbr = mrs(VTTBR_EL2);
+    msr(VTTBR_EL2, vttbr & ~(0xffffULL << 48));
+    __asm__ volatile("isb" ::: "memory");
+#endif
+    __asm__ volatile("dsb oshst\n\tsys #0, c8, c1, #2, %0\n\tdsb osh\n\tisb"
+                     :: "r"(asid_field) : "memory");
+#ifdef AGX_GUEST_VMID1
+    msr(VTTBR_EL2, vttbr);
+    __asm__ volatile("isb" ::: "memory");
+#endif
+}
+
 static void sync_tables(void *context)
 {
     (void)context;
@@ -81,8 +101,7 @@ static void sync_tables(void *context)
     /* ASIDE1OS encoding: SYS op1=0 CRn=8 CRm=1 op2=2 (Arm DDI0601).
      * Spell SYS because the pinned global -march=armv8.2-a assembler does not
      * name this v8.4 instruction; native EXP470 executed it on this J313. */
-    __asm__ volatile("dsb oshst\n\tsys #0, c8, c1, #2, %0\n\tdsb osh\n\tisb"
-                     :: "r"(0ULL) : "memory");
+    agx_tlbi_aside1os_host_vmid(0);
 }
 
 static uint64_t *gpuva_map_page(void *context, uint64_t ipa, uint64_t pa)
@@ -123,8 +142,7 @@ static bool gpuva_invalidate(void *context, unsigned slot)
     uint64_t asid = (uint64_t)slot << 48;
     (void)context;
     if (!slot || slot >= 64) return false;
-    __asm__ volatile("dsb oshst\n\tsys #0, c8, c1, #2, %0\n\tdsb osh\n\tisb"
-                     :: "r"(asid) : "memory");
+    agx_tlbi_aside1os_host_vmid(asid);
     return true;
 }
 static bool gpuva_prefix(void *context)

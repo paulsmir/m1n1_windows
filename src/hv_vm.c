@@ -139,7 +139,12 @@ void hv_pt_init(void)
                       FIELD_PREP(VTCR_SL0, sl0) |              // Start level
                       FIELD_PREP(VTCR_T0SZ, 64 - vaddr_bits)); // Translation region == PA
 
+#ifdef AGX_GUEST_VMID1
+    /* EXP2231: guest VMID 1 keeps Windows' broadcast TLBIs off the GPU's VMID-0 translations. */
+    msr(VTTBR_EL2, (u64)hv_Ltop | (1ULL << 48));
+#else
     msr(VTTBR_EL2, hv_Ltop);
+#endif
 }
 
 static u64 *hv_pt_get_l2(u64 from)
