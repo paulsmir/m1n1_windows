@@ -1288,7 +1288,10 @@ static bool hv_handle_msr_unlocked(struct exc_info *ctx, u64 iss)
                     pmcr1_value |= BIT(8);
                 }
                 else {
-                    pmcr1_value &= ~(BIT(16));
+                    /* U=1 excludes EL0: clear the EL0 enable (bit 8), not the
+                     * EL1 enable (bit 16).  Clearing bit 16 here stopped the
+                     * cycle counter in the Windows kernel (~MHz read 22). */
+                    pmcr1_value &= ~(BIT(8));
                 }
                 sysop("isb");
                 msr(SYS_IMP_APL_PMCR1, pmcr1_value);
