@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: MIT */
 
 #include "hv.h"
+#include "hv_cppc.h"
 #include "hv_tick_policy.h"
 #include "hv_runtime_diag.h"
 #include "hv_wfx_policy.h"
@@ -1371,4 +1372,5 @@ void hv_tick(struct exc_info *ctx)
     }
     hv_vuart_poll();
     hv_fb_stream_tick(&hv_framebuffer_stream);
+    hv_cppc_tick();
 }

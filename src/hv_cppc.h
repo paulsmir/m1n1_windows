@@ -12,6 +12,11 @@
 #define HV_CPPC_BASE 0x300010000ULL
 #define HV_CPPC_SIZE 0x4000ULL
 
+/* Memory-backed Reference/Delivered counters: CPU n at +n*0x10 (+0, +8). */
+#define HV_CPPC_COUNTERS_BASE 0x300014000ULL
+#define HV_CPPC_COUNTERS_SIZE 0x4000ULL
+
 bool hv_cppc_map(void);
+void hv_cppc_tick(void);
 
 #endif

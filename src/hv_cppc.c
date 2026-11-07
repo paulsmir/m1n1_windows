@@ -24,7 +24,10 @@
 #include "adt.h"
 #include "cpufreq.h"
 #include "hv.h"
+#include "malloc.h"
+#include "string.h"
 #include "mcc.h"
+#include "memory.h"
 #include "soc.h"
 #include "utils.h"
 
@@ -57,6 +60,10 @@ static u32 limited[CPPC_CPUS];
 static u32 dram_fast_mhz;
 static int dram_fast = -1;
 static bool cppc_mapped;
+/* Memory-backed feedback counters (EXP2251): CPU n Reference at +n*0x10,
+ * Delivered at +n*0x10+8, refreshed by hv_cppc_tick() at HV_TICK_RATE and
+ * cleaned to PoC because Windows maps _CPC registers uncached. */
+static volatile u64 *counters;
 
 /* Receipt: printed at most every CPPC_REPORT_SECONDS from the hook. */
 #define CPPC_REPORT_SECONDS 10
@@ -197,6 +204,26 @@ static bool cppc_hook(struct exc_info *ctx, u64 addr, u64 *val, bool write, int 
     return ok;
 }
 
+void hv_cppc_tick(void)
+{
+    if (!counters)
+        return;
+    u64 now = mrs(CNTPCT_EL0);
+    u64 deliv[2];
+    spin_lock(&cppc_lock);
+    for (int k = 0; k < 2; k++) {
+        struct cppc_cluster *c = &clusters[k];
+        deliv[k] = (c->delivered_acc + (now - c->last_tick) * c->mhz[c->pstate]) / nominal_mhz(c);
+    }
+    spin_unlock(&cppc_lock);
+    for (int cpu = 0; cpu < CPPC_CPUS; cpu++) {
+        counters[cpu * 2] = now;
+        counters[cpu * 2 + 1] = deliv[cpu < 4 ? 0 : 1];
+    }
+    dc_cvac_range((void *)counters, CPPC_CPUS * 16);
+    sysop("dsb sy");
+}
+
 bool hv_cppc_map(void)
 {
     if (cppc_mapped)
@@ -220,13 +247,25 @@ bool hv_cppc_map(void)
         clusters[i].last_tick = now;
     }
 
+    u64 *page = memalign(HV_CPPC_COUNTERS_SIZE, HV_CPPC_COUNTERS_SIZE);
+    if (!page) {
+        printf("HV CPPC: counter page allocation failed\n");
+        return false;
+    }
+    memset(page, 0, HV_CPPC_COUNTERS_SIZE);
+    dc_civac_range(page, HV_CPPC_COUNTERS_SIZE);
+    if (hv_map_hw(HV_CPPC_COUNTERS_BASE, (u64)page, HV_CPPC_COUNTERS_SIZE) < 0) {
+        printf("HV CPPC: counter page map failed\n");
+        return false;
+    }
+    counters = page;
     if (hv_map_hook(HV_CPPC_BASE, cppc_hook, HV_CPPC_SIZE) < 0) {
         printf("HV CPPC: hook map failed\n");
         return false;
     }
     cppc_mapped = true;
-    printf("HV CPPC: _CPC page at 0x%lx (E P1-5 600-2064 MHz, P P1-12 600-2988 MHz, "
+    printf("HV CPPC: _CPC page at 0x%lx, counters at 0x%lx (E P1-5 600-2064 MHz, P P1-12 600-2988 MHz, "
            "DRAMCFG fast >= %u MHz)\n",
-           (u64)HV_CPPC_BASE, dram_fast_mhz);
+           (u64)HV_CPPC_BASE, (u64)HV_CPPC_COUNTERS_BASE, dram_fast_mhz);
     return true;
 }
