@@ -11,6 +11,7 @@
 #include "gxf.h"
 #include "heapblock.h"
 #include "hv.h"
+#include "hv_ans_platform.h"
 #include "hv_agx_power_broker.h"
 #include "hv_diag.h"
 #include "hv_launch_j313.h"
@@ -35,6 +36,23 @@
 
 #include "minilzlib/minlzma.h"
 #include "tinf/tinf.h"
+
+/* Assisted launch: from descriptor publication on, every m1n1 heapblock
+ * allocation (incl. DART tables created after guest entry) must stay below the
+ * guest RAM window that ANS DMA admission treats as guest-owned. Idempotent
+ * for a re-publication of the same window; any other change fails closed. */
+static bool seal_heap_below_guest(const struct hv_launch_j313_descriptor *d)
+{
+    uint64_t base = 0;
+    for (uint32_t i = 0; i < d->region_count && i < HV_CONTRACT_MAX_REGIONS; i++)
+        if (d->regions[i].kind == HV_CONTRACT_REGION_GUEST_RAM)
+            base = d->regions[i].base;
+    if (!base)
+        return false;
+    if (heapblock_get_ceiling())
+        return (uint64_t)heapblock_get_ceiling() == base;
+    return heapblock_set_ceiling((void *)base);
+}
 
 int proxy_process(ProxyRequest *request, ProxyReply *reply)
 {
@@ -518,12 +536,22 @@ int proxy_process(ProxyRequest *request, ProxyReply *reply)
             break;
         case P_HV_LAUNCH_PUBLISH:
             reply->retval = request->args[1] == sizeof(struct hv_launch_j313_descriptor) &&
-                            hv_launch_j313_publish_descriptor((void *)request->args[0]);
+                            hv_launch_j313_publish_descriptor((void *)request->args[0]) &&
+                            seal_heap_below_guest((void *)request->args[0]);
             break;
         case P_HV_LAUNCH_CAPTURE:
             reply->retval = request->args[3] == sizeof(struct hv_contract_snapshot) &&
                             hv_launch_j313_capture(request->args[0], request->args[1],
                                                    (void *)request->args[2]);
+            break;
+        case P_HV_MAP_ANS_BROKER:
+            reply->retval = hv_map_ans_broker(request->args[0], request->args[1], request->args[2], request->args[3]);
+            break;
+        case P_HV_ANS_WRITE_WINDOW:
+            reply->retval = hv_ans_write_window(request->args[0], request->args[1], request->args[2]);
+            break;
+        case P_HV_ANS_DIRECT:
+            reply->retval = hv_ans_direct(request->args[0]);
             break;
         case P_HV_MAP_AGX_POWER:
             reply->retval = hv_agx_g2_resources_map();

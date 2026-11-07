@@ -40,6 +40,9 @@ extern void hv_nvme_map_bar(u64 bar_base);
 extern void hv_nvme_unmap_bar(void);
 
 static u64 ecam_base;
+static bool native_hidden;
+extern bool hv_nvme_is_frozen(void);
+void hv_pci_hide_nvme(void) { native_hidden=true; }
 static u64 bar_window_base;
 static int intx_irq;
 
@@ -166,13 +169,14 @@ static bool handle_pci_cfg(struct exc_info *ctx, u64 addr, u64 *val, bool write,
 
     // Only 00:00.0 exists. Any other BDF reads as all-ones ("no device present"); a missing
     // all-ones default here makes the enumerator probe empty space forever.
-    if (bus != 0 || dev != 0 || fn != 0) {
+    if (native_hidden || bus != 0 || dev != 0 || fn != 0) {
         if (!write)
             *val = 0xFFFFFFFFFFFFFFFFULL;
         return true;
     }
 
     if (write) {
+        if (hv_nvme_is_frozen()) return true;
         cfg_write(reg, boff, bytes, *val);
     } else {
         u32 dw = cfg_read_dword(reg);
@@ -184,6 +188,8 @@ static bool handle_pci_cfg(struct exc_info *ctx, u64 addr, u64 *val, bool write,
 
 bool hv_pci_init(u64 ecam, u64 bar_window, int irq)
 {
+    if (hv_nvme_is_frozen()) return false;
+    native_hidden=false;
     ecam_base = ecam;
     bar_window_base = bar_window;
     intx_irq = irq;

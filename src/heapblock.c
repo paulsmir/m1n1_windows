@@ -16,6 +16,8 @@
  */
 
 static void *heap_base;
+static void *heap_init_base;
+static uintptr_t heap_ceiling;
 
 void heapblock_init(void)
 {
@@ -23,6 +25,7 @@ void heapblock_init(void)
 
     heap_base = top_of_kernel_data;
     heapblock_alloc(0); // align base
+    heap_init_base = heap_base;
 
     printf("Heap base: %p\n", heap_base);
 }
@@ -37,8 +40,32 @@ void *heapblock_alloc_aligned(size_t size, size_t align)
     assert((align & (align - 1)) == 0);
     assert(heap_base);
 
-    uintptr_t block = (((uintptr_t)heap_base) + align - 1) & ~(align - 1);
+    uintptr_t base = (uintptr_t)heap_base;
+    if (base > UINTPTR_MAX - (align - 1))
+        panic("heapblock: alignment overflow\n");
+    uintptr_t block = (base + align - 1) & ~(align - 1);
+    if (!heapblock_block_fits(block, size, heap_ceiling))
+        panic("heapblock: 0x%lx+0x%lx crosses ceiling 0x%lx\n", block, size, heap_ceiling);
     heap_base = (void *)(block + size);
 
     return (void *)block;
+}
+
+bool heapblock_set_ceiling(void *ceiling)
+{
+    uintptr_t c = (uintptr_t)ceiling;
+    if (heap_ceiling || !c || !heap_base || c <= (uintptr_t)heap_base)
+        return false;
+    heap_ceiling = c;
+    return true;
+}
+
+void *heapblock_get_ceiling(void)
+{
+    return (void *)heap_ceiling;
+}
+
+void *heapblock_get_init_base(void)
+{
+    return heap_init_base;
 }

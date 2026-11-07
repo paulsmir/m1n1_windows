@@ -82,6 +82,10 @@ _hv_entry:
 .globl _hv_return
 .type _hv_return, @function
 _hv_return:
+    adrp x0, hv_guest_quarantine_active
+    add x0, x0, :lo12:hv_guest_quarantine_active
+    ldar w0, [x0]
+    cbnz w0, hv_quarantine_park
     ldp x0, x1, [sp], #16
     ldp x2, x3, [sp], #16
     ldp x4, x5, [sp], #16
@@ -152,6 +156,10 @@ _v_hv_serr:
 .globl hv_enter_guest
 .type hv_enter_guest, @function
 hv_enter_guest:
+    adrp x5, hv_guest_quarantine_active
+    add x5, x5, :lo12:hv_guest_quarantine_active
+    ldar w5, [x5]
+    cbnz w5, hv_quarantine_park
     stp x29, x30, [sp, #-16]!
     stp x27, x28, [sp, #-16]!
     stp x25, x26, [sp, #-16]!

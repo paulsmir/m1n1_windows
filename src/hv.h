@@ -65,6 +65,9 @@ bool hv_window_map_page(u64 ipa, u64 pa);
 void hv_window_sync(bool invalidated);
 u64 hv_translate(u64 addr, bool s1only, bool w, u64 *par_out);
 u64 hv_pt_walk(u64 addr);
+/* Raw authoritative HW leaf only. Caller holds stage-2 mapping lifetime lock.
+ * No offset folding/attribute stripping. shift=14 page or25 block. */
+bool hv_stage2_get_leaf(u64 ipa, u64 *descriptor, u8 *shift);
 bool hv_handle_dabort(struct exc_info *ctx);
 bool hv_pa_write(struct exc_info *ctx, u64 addr, u64 *val, int width);
 bool hv_pa_read(struct exc_info *ctx, u64 addr, u64 *val, int width);
@@ -136,6 +139,9 @@ void hv_start(void *entry, u64 regs[4]);
 void hv_start_secondary(int cpu, void *entry, u64 regs[4]);
 void hv_exit_cpu(int cpu);
 void hv_rendezvous(void);
+bool hv_guest_has_started(void);
+void hv_quarantine_guest(void) __attribute__((noreturn));
+void hv_quarantine_park(void) __attribute__((noreturn));
 bool hv_switch_cpu(int cpu);
 void hv_pin_cpu(int cpu);
 void hv_arm_tick(bool secondary);

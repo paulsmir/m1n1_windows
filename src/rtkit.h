@@ -26,6 +26,22 @@ rtkit_dev_t *rtkit_init(const char *name, asc_dev_t *asc, dart_dev_t *dart,
                         iova_domain_t *dart_iovad, sart_dev_t *sart, bool sram);
 bool rtkit_quiesce(rtkit_dev_t *rtk);
 bool rtkit_sleep(rtkit_dev_t *rtk);
+/* New lifecycle APIs: deadline is an absolute timeout_calculate() value.
+ * Caller serializes RTKit access. Failures retain every RTKit allocation.
+ * STOP requires an already drained/disabled controller; ACK+CPU stop is RTKit
+ * evidence only, not a substitute for the device's independent DMA-stop proof. */
+enum rtkit_stop_stage {
+    RTKIT_STOP_INVALID = 0, RTKIT_STOP_AP_SEND = 1, RTKIT_STOP_AP_ACK = 2,
+    RTKIT_STOP_IOP_SEND = 3, RTKIT_STOP_IOP_ACK = 4, RTKIT_STOP_CPU = 5,
+    RTKIT_STOP_DONE = 6,
+};
+bool rtkit_boot_bounded(rtkit_dev_t *rtk, u64 deadline);
+bool rtkit_sleep_bounded(rtkit_dev_t *rtk, u64 deadline, u32 *stage);
+/* One strict allocation-free system message for stop/drain waits. */
+int rtkit_poll_system_once(rtkit_dev_t *rtk, u64 deadline);
+/* One full system message for initialization; bounded replies, allocation allowed. */
+int rtkit_poll_boot_once(rtkit_dev_t *rtk, u64 deadline);
+
 void rtkit_free(rtkit_dev_t *rtk);
 
 bool rtkit_start_ep(rtkit_dev_t *rtk, u8 ep);
