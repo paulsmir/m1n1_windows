@@ -5,6 +5,7 @@
 #include "assert.h"
 #include "malloc.h"
 #include "nvme.h"
+#include "hv_ans_direct.h"
 #include "pmgr.h"
 #include "rtkit.h"
 #include "sart.h"
@@ -92,6 +93,9 @@ static bool nvme_native_boot_failed, nvme_stop_failed;
 static u64 nvme_native_deadline;
 static u64 native_tcb_inval_failures;
 static bool nvme_native_reserved, nvme_bounded_submission;
+/* ANS-DIRECT: set once the controller was cold-booted to the Asahi hand-off state
+ * and released to the guest. EL2 never touches the controller again. */
+static bool nvme_direct_released;
 static u8 nvme_die;
 
 static asc_dev_t *nvme_asc = NULL;
@@ -302,8 +306,9 @@ static bool nvme_exec_command(struct nvme_queue *q, struct nvme_command *cmd, u6
     return false;
 }
 
-static bool nvme_init_common(bool native, u64 generation, u32 *stage)
+static bool nvme_init_common(bool native, bool direct, u64 generation, u32 *stage)
 {
+    if (nvme_direct_released || (direct && !native)) return false;
     if (!native && nvme_native_reserved) return false;
     if (nvme_backend_present || nvme_initialized) {
         if (native || nvme_native_mode || nvme_stopped || nvme_native_boot_failed || nvme_stop_failed)
@@ -398,6 +403,30 @@ static bool nvme_init_common(bool native, u64 generation, u32 *stage)
         if (native) goto native_failed;
         if (!native) printf("nvme: ANS did not boot correctly.\n");
         goto out_shutdown;
+    }
+
+    if (direct) {
+        /* ANS-DIRECT hand-off state (Asahi apple_nvme_disable convention): firmware
+         * running, BOOT_STATUS OK, NVMe disabled. No linear SQ, NVMMU, AQA or
+         * queue is programmed; the guest driver owns all of that. Clear EN only if
+         * the fresh boot left it set, then prove EN=0, RDY=0 and no fatal status. */
+        *stage = NVME_STAGE_DISABLE;
+        u32 cc = read32(nvme_base + NVME_CC), csts = read32(nvme_base + NVME_CSTS);
+        if (cc == UINT32_MAX || csts == UINT32_MAX)
+            goto native_failed;
+        if (((cc & NVME_CC_EN) || (csts & NVME_CSTS_RDY)) &&
+            !nvme_ctrl_disable_bounded(nvme_native_deadline, true))
+            goto native_failed;
+        cc = read32(nvme_base + NVME_CC);
+        csts = read32(nvme_base + NVME_CSTS);
+        if (!nvme_direct_handoff_state_ok(cc, csts))
+            goto native_failed;
+        /* Backing (queues, RTKit, SART buffers) stays allocated for the guest's
+         * lifetime: the IOP keeps writing its syslog/ioreport buffers. */
+        nvme_direct_released = true;
+        nvme_initialized = false;
+        *stage = NVME_STAGE_DIRECT_RELEASED;
+        return true;
     }
 
     /* setup controller and NVMMU for linear submission queue */
@@ -507,7 +536,7 @@ native_failed:
 bool nvme_init(void)
 {
     u32 stage;
-    return nvme_init_common(false, 1, &stage);
+    return nvme_init_common(false, false, 1, &stage);
 }
 
 bool nvme_native_init(u64 generation, u32 timeout_usec, u32 *stage)
@@ -517,7 +546,23 @@ bool nvme_native_init(u64 generation, u32 timeout_usec, u32 *stage)
     if (!nvme_native_reserved || !generation || !timeout_usec || nvme_backend_present || nvme_initialized)
         return false;
     nvme_native_deadline = timeout_calculate(timeout_usec);
-    return nvme_init_common(true, generation, stage);
+    return nvme_init_common(true, false, generation, stage);
+}
+
+bool nvme_direct_boot_disabled(u32 timeout_usec, u32 *stage)
+{
+    if (!stage) return false;
+    *stage = NVME_STAGE_INVALID;
+    if (!nvme_native_reserved || !timeout_usec || nvme_backend_present || nvme_initialized ||
+        nvme_direct_released)
+        return false;
+    nvme_native_deadline = timeout_calculate(timeout_usec);
+    return nvme_init_common(true, true, 1, stage);
+}
+
+bool nvme_direct_is_released(void)
+{
+    return nvme_direct_released;
 }
 
 void nvme_ensure_shutdown(void)
@@ -821,7 +866,7 @@ bool nvme_stop_bounded(u32 timeout_usec, u32 *stage)
 {
     if (!stage) return false;
     *stage = NVME_STAGE_INVALID;
-    if (!timeout_usec || !nvme_backend_present || !nvme_rtkit) return false;
+    if (!timeout_usec || !nvme_backend_present || !nvme_rtkit || nvme_direct_released) return false;
     if (nvme_stopped) { *stage = NVME_STAGE_STOPPED; return true; }
     *stage = NVME_STAGE_DRAIN;
     nvme_stop_failed = true;
@@ -852,7 +897,7 @@ bool nvme_stop_bounded(u32 timeout_usec, u32 *stage)
 
 bool nvme_retire_stopped(void)
 {
-    if (!nvme_stopped || !nvme_backend_present || queue_engine.outstanding)
+    if (nvme_direct_released || !nvme_stopped || !nvme_backend_present || queue_engine.outstanding)
         return false;
     /* Caller has independently retired its shadow/mapping lifetimes. No free
      * is reachable from the bounded failure path. */

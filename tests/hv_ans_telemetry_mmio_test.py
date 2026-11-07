@@ -13,6 +13,7 @@ harness = r'''
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stddef.h>
 typedef uint64_t u64;
 typedef uint32_t u32;
 typedef uint8_t u8;
@@ -22,7 +23,7 @@ static struct {
     struct ans_service service;
     struct ans_broker_request request;
     struct ans_broker_response response;
-    bool mapped;
+    bool mapped, direct_released;
     unsigned active_tag;
     u64 physical_irqs, pending_snapshot;
     struct ans_telemetry telemetry_snapshot;
@@ -88,6 +89,18 @@ int main(void) {
     broker_mmio(NULL,ANS_BROKER_BASE+ANS_TELEMETRY_OFFSET,&value,false,2);
     assert(!(runtime.telemetry_snapshot.valid_fields&ANS_TELEM_BROKER_REJECTIONS));
     assert(runtime.telemetry_snapshot.broker_rejections==UINT64_MAX);
+    /* ANS-DIRECT: after release the page is a read-only receipt. Writes (doorbell,
+     * handoff, even the one-way abort) never reach the service or the controller. */
+    runtime.direct_released=true;runtime.service.broker.header.reserved=0x54435244;
+    struct ans_broker_response before=runtime.response;u64 rejected=runtime.service.rejected;
+    runtime.request_words=(1u<<(sizeof(runtime.request)/4))-1u;
+    value=24;assert(broker_mmio(NULL,ANS_BROKER_BASE+ANS_DOORBELL_OFFSET,&value,true,2));
+    value=9;assert(broker_mmio(NULL,ANS_BROKER_BASE+ANS_HANDOFF_REQUEST_OFFSET,&value,true,3));
+    value=1;assert(broker_mmio(NULL,ANS_BROKER_BASE+ANS_ABORT_OFFSET,&value,true,2));
+    assert(!memcmp(&before,&runtime.response,sizeof(before)) && runtime.service.rejected==rejected);
+    assert(!runtime.service.handoff_started && runtime.service.broker.header.sequence==23);
+    value=0;assert(broker_mmio(NULL,ANS_BROKER_BASE+offsetof(struct ans_broker_header,reserved),&value,false,2));
+    assert(value==0x54435244);
     return 0;
 }
 '''

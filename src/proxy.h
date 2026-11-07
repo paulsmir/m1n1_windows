@@ -161,6 +161,7 @@ typedef enum {
     P_HV_MAP_AGX_POWER = 0xc1f,
     P_HV_MAP_ANS_BROKER = 0xc20,
     P_HV_ANS_WRITE_WINDOW = 0xc21,
+    P_HV_ANS_DIRECT = 0xc22,
 
     P_FB_INIT = 0xd00,
     P_FB_SHUTDOWN,

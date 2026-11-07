@@ -20,6 +20,7 @@ pre=r'''
 #include <stdlib.h>
 #include <string.h>
 #include "ans_queue.h"
+#include "hv_ans_direct.h"
 typedef uint64_t u64;typedef uint32_t u32;typedef uint8_t u8;
 typedef int asc_dev_t;typedef int rtkit_dev_t;typedef int sart_dev_t;
 #define BIT(n) (UINT64_C(1) << (n))
@@ -103,13 +104,15 @@ static int poll32(u64 a,u32 mask,u32 value,u32 timeout) {(void)timeout;return (r
 for name in ['alloc_queue','free_queue','nvme_poll_syslog','nvme_ctrl_disable','nvme_ctrl_enable',
              'nvme_ctrl_shutdown','nvme_wait_bounded','nvme_ctrl_disable_bounded','nvme_ctrl_enable_bounded',
              'queue_dma_wmb','queue_dma_rmb','queue_submit','queue_invalidate','queue_ack',
-             'nvme_exec_command','nvme_init_common','nvme_init','nvme_native_init','nvme_shutdown',
+             'nvme_exec_command','nvme_init_common','nvme_init','nvme_native_init','nvme_direct_boot_disabled',
+             'nvme_direct_is_released','nvme_shutdown',
              'nvme_native_generation','nvme_native_queue_backing','nvme_native_submit','nvme_native_poll',
              'nvme_stop_bounded','nvme_retire_stopped','nvme_recovery_physical_idle','nvme_recovery_idle',
              'nvme_begin_native_handoff','nvme_handoff_idle','nvme_handoff_flush_bounded','nvme_native_tcb_inval_failures',
              'nvme_flush','nvme_rw_blocks','nvme_read_blocks','nvme_write_blocks','nvme_read','nvme_write','nvme_get_namespace_info']:
     pre+='\n'+fn(name)
 pre+=r'''
+static bool nvme_native_cq_pending_model(void) {return nvme_initialized;}
 static void reset_flags(void) {
  assert(!live_allocations);starts=submits=system_polls=stop_calls=boot_polls=legacy_polls=0;tcb_status=0;
  no_completion=flush_error=false;nvme_native_reserved=true; /* stopped native-world fixture */now=last_status_address=cc=0;
@@ -239,6 +242,36 @@ int main(void) {
    assert(nvme_stop_bounded(1000,&stage)&&nvme_retire_stopped());
    assert(nvme_native_reserved&&!nvme_init()&&!nvme_recovery_idle());
  }
+ /* ANS-DIRECT: cold boot to the Asahi hand-off state (RTKit up, NVMe disabled), no queue. */
+ reset_flags();nvme_native_reserved=false;
+ assert(!nvme_direct_boot_disabled(1000,&stage)&&stage==NVME_STAGE_INVALID&&!live_allocations);
+ nvme_native_reserved=true;assert(!nvme_direct_boot_disabled(0,&stage)&&!nvme_direct_boot_disabled(1000,NULL));
+ for(unsigned failure=0;failure<5;failure++) {
+   reset_flags();
+   if(failure==0)boot_ok=false;
+   if(failure==1)fail_boot_status=true;
+   if(failure==2){cc=1;fail_disable=true;}
+   if(failure==3)csts_fatal=true;
+   if(failure==4)asc_running=true;
+   assert(!nvme_direct_boot_disabled(30,&stage)&&!nvme_direct_is_released());
+   assert(stage==(failure==0?NVME_STAGE_RTKIT_BOOT:failure==1?NVME_STAGE_BOOT_STATUS:
+                  failure==4?NVME_STAGE_SOFT_RESET:NVME_STAGE_DISABLE));
+   assert(live_allocations==9&&submits==0); /* boot may have started: retain everything */
+   boot_ok=true;fail_boot_status=fail_disable=csts_fatal=asc_running=false;
+   assert(nvme_stop_bounded(1000,&stage)&&nvme_retire_stopped());
+ }
+ /* Fresh boot left EN set: cleared and proven; nothing else is programmed. */
+ reset_flags();cc=1;
+ assert(nvme_direct_boot_disabled(1000,&stage)&&stage==NVME_STAGE_DIRECT_RELEASED);
+ assert(nvme_direct_is_released()&&cc==0&&submits==0&&starts==1&&live_allocations==9);
+ assert(!nvme_native_generation()&&!nvme_native_cq_pending_model());
+ /* EL2 never touches the released controller again; backing stays allocated forever. */
+ struct nvme_command flushcmd={.opcode=0,.nsid=1};
+ assert(!nvme_direct_boot_disabled(1000,&stage)&&!nvme_native_init(200,1000,&stage));
+ assert(!nvme_init()&&!nvme_stop_bounded(1000,&stage)&&!nvme_retire_stopped());
+ assert(nvme_native_submit(1,1,2,&flushcmd,0)==ANS_Q_FAULT&&!nvme_flush(1));
+ assert(!nvme_handoff_flush_bounded(1,1000,&stage));
+ nvme_shutdown();assert(live_allocations==9&&cc==0&&submits==0&&stop_calls==0);
  puts("NVMe native lifecycle/admin-only/policy/failure-retention tests PASS");
 }
 '''

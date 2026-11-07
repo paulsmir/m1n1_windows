@@ -1893,6 +1893,17 @@ class HV(Reloadable):
         # ANS008: optional one-shot WRITE LBA window "first:count", fixed before guest
         # entry. Absent means the broker stays read-only (all WRITEs DENIED).
         window = os.environ.get("WOM1_ANS_WRITE_WINDOW", "")
+        direct = os.environ.get("WOM1_ANS_DIRECT", "")
+        if direct not in ("", "1"):
+            raise ValueError("WOM1_ANS_DIRECT must be 1 or unset")
+        if direct and window:
+            raise ValueError("ANS direct mode is exclusive with the EL2 write window")
+        if direct:
+            # ANS-DIRECT: the EBS handoff cold-boots ANS to the Asahi hand-off state and
+            # passes the controller + mailbox through; EL2 leaves the data path.
+            if not self.p.hv_ans_direct(contract["broker"]["abi_major"]):
+                raise RuntimeError("ANS direct mode rejected by EL2")
+            print("HV: ANS direct mode armed (controller released to the guest at EBS)")
         if window:
             first, count = (int(v, 0) for v in window.split(":"))
             if not self.p.hv_ans_write_window(first, count, contract["broker"]["abi_major"]):

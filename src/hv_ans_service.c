@@ -1,5 +1,6 @@
 /* SPDX-License-Identifier: MIT */
 #include "hv_ans_service.h"
+#include "hv_ans_direct.h"
 #include <string.h>
 #include <stddef.h>
 
@@ -61,13 +62,21 @@ bool ans_service_init(struct ans_service *s,const struct ans_service_ops *o,void
 
 bool ans_service_set_write_window(struct ans_service *s,uint64_t first,uint64_t count)
 {
-    if(!s||s->handoff_started||s->write_window.count||s->broker.owner!=ANS_OWNER_RECOVERY||
+    if(!s||s->handoff_started||s->direct||s->write_window.count||s->broker.owner!=ANS_OWNER_RECOVERY||
        !count||first>=s->namespace_blocks||count>s->namespace_blocks-first)
         return false;
     s->write_window=(struct ans_write_window){first,count};
     s->broker.header.features=(s->broker.header.features&~(uint32_t)ANS_FEATURE_READ_ONLY)|
                               ANS_FEATURE_WRITE_WINDOW;
     return true;
+}
+
+bool ans_service_set_direct(struct ans_service *s)
+{
+    if(!s||s->handoff_started||s->direct||s->write_window.count||!s->ops.direct_release||
+       s->broker.owner!=ANS_OWNER_RECOVERY)
+        return false;
+    s->direct=true;return true;
 }
 
 void ans_service_handoff(struct ans_service *s,uint64_t sequence)
@@ -92,7 +101,17 @@ void ans_service_handoff(struct ans_service *s,uint64_t sequence)
     r->proof_flags|=8|16;
     if(!s->ops.retire(s->ctx)||!s->ops.hide_recovery(s->ctx))goto failed;
     r->proof_flags|=32;
+    if(s->direct) {
+        /* Physical release happens before the receipt can claim success; a failed
+         * cold boot leaves a FAULTED receipt and the Mu gate dead-loops pre-EBS. */
+        if(!s->ops.direct_release(s->ctx,&stage)){s->last_stage=stage;goto failed;}
+        s->last_stage=stage;
+    }
     if(ans_broker_handoff(&s->broker,true,true,true,true))goto failed;
+    if(s->direct) {
+        s->broker.owner=ANS_OWNER_DIRECT;
+        s->broker.header.reserved=ANS_DIRECT_HEADER_MARKER;
+    }
     r->proof_flags|=64;r->result=ANS_RESULT_OK;
     r->generation=s->broker.header.generation;r->state=s->broker.header.state;
     return;
@@ -232,6 +251,8 @@ void ans_service_execute(struct ans_service*s,const struct ans_broker_request*r,
     int rc=ans_broker_request_begin(&s->broker,r);
     uint32_t stage=0;
     if(rc)goto finish;
+    /* ANS-DIRECT: the guest owns the physical controller; no broker operation exists. */
+    if(s->broker.owner==ANS_OWNER_DIRECT){rc=ANS_RESULT_BAD_STATE;goto finish;}
     if(r->operation!=ANS_OP_AUTHORIZE_SUBMIT &&
        (r->transfer_length||r->direction||!zero(r->sqe,sizeof(r->sqe)))) {
         rc=ANS_RESULT_BAD_COMMAND;goto finish;

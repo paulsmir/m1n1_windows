@@ -8,6 +8,9 @@ void hv_ans_tick(void);
 bool hv_map_ans_broker(u64 expected_base, u64 expected_size, u32 expected_irq, u32 abi_major);
 /* ANS008: one-shot pre-guest WRITE LBA window; without it the broker stays read-only. */
 bool hv_ans_write_window(u64 first, u64 count, u32 abi_major);
+/* ANS-DIRECT: one-shot pre-guest; the EBS handoff releases the physical controller
+ * to the guest (exclusive with the write window). */
+bool hv_ans_direct(u32 abi_major);
 bool hv_ans_try_handle_dabort(struct exc_info *, bool *matched);
 bool hv_ans_mapping_begin(u64 ipa, u64 size);
 void hv_ans_mapping_end(void);

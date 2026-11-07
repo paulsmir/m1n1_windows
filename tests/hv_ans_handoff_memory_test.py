@@ -98,7 +98,7 @@ int main(int argc,char**argv){
  /* HYP-ANS-CARVEOUT: the runner states "no DART tables inside GUEST_RAM". */
  assert(runtime.launch.regions[7].flags==0 && runtime.launch.regions[7].size==0);
  for(unsigned i=0;i<7;i++)assert(runtime.launch.regions[i].flags==0 && runtime.launch.regions[i].size>0);
- struct ans_service_ops ops={yes,yes,yes,stop,yes,hide,boot,backing,submit,poll,shadow,release};
+ struct ans_service_ops ops={yes,yes,yes,stop,yes,hide,boot,backing,submit,poll,shadow,release,NULL};
  struct ans_memory_ops mem={translate,metadata};
  /* 1. Unsealed heap: handoff still completes, every DMA path stays closed. */
  assert(ans_service_init(&runtime.service,&ops,NULL,&mem,NULL,1000));

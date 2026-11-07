@@ -3,6 +3,7 @@
 #include "hv_ans_service.h"
 #include "hv_ans_memory.h"
 #include "hv_ans_pins.h"
+#include "hv_ans_direct.h"
 #include "hv.h"
 #include "hv_irq_routes.h"
 #include "hv_vgic.h"
@@ -36,7 +37,7 @@ static struct {
     struct ans_memory_range private[ANS_MEMORY_MAX_PRIVATE_RANGES];
     struct ans_broker_request request;
     struct ans_broker_response response;
-    bool mapped, memory_ready;
+    bool mapped, memory_ready, direct_released;
     unsigned active_tag;
     u32 physical_irq;
     u64 physical_irqs, pending_snapshot;
@@ -188,6 +189,34 @@ static void release(void*ctx,unsigned tag)
     ans_pin_release(&runtime.pins,tag);memset(shadow_words[tag],0,sizeof(shadow_words[tag]));
 }
 
+/* ANS-DIRECT: called once from the handoff, after the proven recovery stop/retire/hide.
+ * Cold-boot ANS to the Asahi hand-off state, then pass the NVMe controller and the ASC
+ * mailbox through to the guest (identity IPA==PA; stage-2 MemAttr 1111 defers to the
+ * guest's stage-1 Device mapping, as for every other /arm-io passthrough). The ASC CPU
+ * control page and SART stay hooked/private. IRQ 590->889 was registered as a level
+ * passthrough route by hv_map_ans_broker: hv_exc_irq masks it at AIC and injects, the
+ * guest EOI unmasks it (hv_vgic). From here on EL2 never touches ANS. */
+static bool direct_release(void*ctx,uint32_t*stage)
+{
+    UNUSED(ctx);
+    if(!nvme_direct_boot_disabled(5000000,stage)) {
+        printf("HV ANS direct: cold boot to hand-off state failed at stage %u\n",(unsigned)*stage);
+        return false;
+    }
+    if(hv_map_hw(ANS_EXPECTED_CONTROLLER_BASE,ANS_EXPECTED_CONTROLLER_BASE,ANS_EXPECTED_CONTROLLER_SIZE)||
+       hv_map_hw(ANS_EXPECTED_MAILBOX_BASE,ANS_EXPECTED_MAILBOX_BASE,ANS_EXPECTED_MAILBOX_SIZE)) {
+        printf("HV ANS direct: stage-2 passthrough failed\n");
+        return false;
+    }
+    runtime.direct_released=true;
+    printf("HV ANS direct handoff: controller 0x%lx+0x%lx mailbox 0x%lx+0x%lx IRQ %u->%u passthrough; "
+           "RTKit running, NVMe disabled; EL2 leaves the data path\n",
+           (unsigned long)ANS_EXPECTED_CONTROLLER_BASE,(unsigned long)ANS_EXPECTED_CONTROLLER_SIZE,
+           (unsigned long)ANS_EXPECTED_MAILBOX_BASE,(unsigned long)ANS_EXPECTED_MAILBOX_SIZE,
+           (unsigned)ANS_EXPECTED_PHYSICAL_IRQ,(unsigned)ANS_GUEST_GSIV);
+    return true;
+}
+
 /* ANS007 receipt-only performance attribution. Never changes broker behaviour: every hook only
  * reads the generic timer and updates these private counters; one summary line per 5 s of I/O. */
 static struct {
@@ -283,6 +312,8 @@ static bool broker_mmio(struct exc_info*ctx,u64 addr,u64*value,bool write,int wi
     if(off>=ANS_BROKER_SIZE||bytes>ANS_BROKER_SIZE-off||(off&(bytes-1)))return true;
     if(!write)*value=0;
     if(!runtime.mapped)return true;
+    /* ANS-DIRECT: after release the page is a read-only receipt; nothing reaches ANS. */
+    if(write && runtime.direct_released)return true;
     if(write && off==ANS_ABORT_OFFSET && width==2)hv_quarantine_guest();
     if(write && inside(off,bytes,ANS_REQUEST_OFFSET,sizeof(runtime.request))) {
         if(width!=2){runtime.request_words=0;return true;}
@@ -418,7 +449,7 @@ bool hv_map_ans_broker(u64 base,u64 size,u32 irq,u32 abi_major)
     if(matches!=1)ANS_REJECT("physical IRQ not unique");
     u64 blocks;
     if(!hv_nvme_recovery_geometry(&blocks))ANS_REJECT("recovery geometry");
-    struct ans_service_ops ops={freeze,drain,flush,stop,retire,hide,boot,backing,submit,poll,shadow,release};
+    struct ans_service_ops ops={freeze,drain,flush,stop,retire,hide,boot,backing,submit,poll,shadow,release,direct_release};
     struct ans_memory_ops mem={translate,read_metadata};
     if(!ans_service_init(&runtime.service,&ops,NULL,&mem,NULL,blocks))ANS_REJECT("service init");
     runtime.active_tag=ANS_QUEUE_DEPTH;runtime.physical_irq=ANS_EXPECTED_PHYSICAL_IRQ;
@@ -436,6 +467,14 @@ bool hv_ans_write_window(u64 first,u64 count,u32 abi_major)
     if(!ans_service_set_write_window(&runtime.service,first,count))ANS_REJECT("write window range");
     printf("HV ANS write window: lba %lu count %lu (namespace %lu blocks)\n",(unsigned long)first,
            (unsigned long)count,(unsigned long)runtime.service.namespace_blocks);
+    return true;
+}
+
+bool hv_ans_direct(u32 abi_major)
+{
+    if(abi_major!=ANS_ABI_MAJOR||!runtime.mapped||hv_guest_has_started())ANS_REJECT("direct state");
+    if(!ans_service_set_direct(&runtime.service))ANS_REJECT("direct exclusive with write window or already set");
+    printf("HV ANS direct mode armed: the EBS handoff releases the controller to the guest\n");
     return true;
 }
 
@@ -462,6 +501,7 @@ void hv_ans_tick(void)
     static u64 first_seen;
     static unsigned kick_logs;
     /* Counters are written under ans_lock by broker MMIO on any vCPU; never block the tick. */
+    if(runtime.direct_released)return; /* ANS-DIRECT: no EL2 runtime, no synthetic IRQ. */
     if(runtime.mapped&&spin_try_lock(&ans_lock)){perf_tick();spin_unlock(&ans_lock);}
     if(!runtime.mapped||!runtime.service.broker.queues_registered||
        runtime.service.submitted==runtime.service.completed||!nvme_native_cq_pending()){

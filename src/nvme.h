@@ -36,9 +36,15 @@ enum nvme_lifecycle_stage {
     NVME_STAGE_RTKIT_IOP_SEND = 13, NVME_STAGE_RTKIT_IOP_ACK = 14,
     NVME_STAGE_RTKIT_CPU_STOP = 15, NVME_STAGE_SOFT_RESET = 16,
     NVME_STAGE_FLUSH_SUBMIT = 17, NVME_STAGE_FLUSH_COMPLETION = 18,
-    NVME_STAGE_FLUSH_DONE = 19,
+    NVME_STAGE_FLUSH_DONE = 19, NVME_STAGE_DIRECT_RELEASED = 20,
 };
 bool nvme_native_init(u64 generation, u32 timeout_usec, u32 *stage);
+/* ANS-DIRECT: after recovery stop+retire (native reservation held), cold-boot ANS
+ * (pmgr reset, RTKit, BOOT_STATUS) and stop in the Asahi hand-off state: firmware
+ * running, CC.EN=0, CSTS.RDY=0. Programs no queue. On success EL2 never touches the
+ * controller again; every other nvme_* entry point refuses. Allocations are kept. */
+bool nvme_direct_boot_disabled(u32 timeout_usec, u32 *stage);
+bool nvme_direct_is_released(void);
 int nvme_native_submit(u64 generation, unsigned queue, unsigned tag,
                         const struct nvme_command *cmd, u32 direction);
 int nvme_native_poll(u64 generation, unsigned queue, struct nvme_completion *cqe);

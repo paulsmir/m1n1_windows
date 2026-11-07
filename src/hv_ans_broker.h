@@ -5,7 +5,8 @@
 #include <stdbool.h>
 #include <stddef.h>
 
-enum ans_owner { ANS_OWNER_RECOVERY, ANS_OWNER_NONE, ANS_OWNER_NATIVE };
+/* DIRECT: the guest owns the physical controller (ANS-DIRECT); the broker is dead. */
+enum ans_owner { ANS_OWNER_RECOVERY, ANS_OWNER_NONE, ANS_OWNER_NATIVE, ANS_OWNER_DIRECT };
 struct ans_tag {
     uint8_t state, queue;
     uint8_t cqe[16];

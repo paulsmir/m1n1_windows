@@ -23,6 +23,9 @@ struct ans_service_ops {
     bool (*shadow_list)(void *, unsigned tag, const uint64_t *pages, unsigned count,
                         uint64_t *host_pa);
     void (*release_tag)(void *, unsigned tag);
+    /* ANS-DIRECT only (may be NULL otherwise): after hide, cold-boot the controller
+     * to the hand-off state and pass it through to the guest. EL2 keeps no runtime. */
+    bool (*direct_release)(void *, uint32_t *stage);
 };
 struct ans_service {
     struct ans_broker broker;
@@ -36,7 +39,7 @@ struct ans_service {
     uint32_t last_stage;
     struct ans_telemetry telemetry;
     uint32_t transfer_bytes[ANS_QUEUE_DEPTH];
-    bool io_cq, io_sq, io_cq_pending, io_sq_pending, handoff_started, admin_started;
+    bool io_cq, io_sq, io_cq_pending, io_sq_pending, handoff_started, admin_started, direct;
     uint8_t opcode[ANS_QUEUE_DEPTH];
     struct ans_handoff_receipt handoff;
 };
@@ -47,6 +50,10 @@ bool ans_service_init(struct ans_service *, const struct ans_service_ops *, void
  * Rejects count==0, a range outside the namespace, a second call, or any call after
  * handoff started. Success replaces READ_ONLY with WRITE_WINDOW in the features. */
 bool ans_service_set_write_window(struct ans_service *, uint64_t first, uint64_t count);
+/* ANS-DIRECT: select, once and before handoff, a handoff that releases the physical
+ * controller to the guest instead of arming the broker. Exclusive with a write
+ * window; requires ops.direct_release. */
+bool ans_service_set_direct(struct ans_service *);
 void ans_service_handoff(struct ans_service *, uint64_t sequence);
 void ans_service_execute(struct ans_service *, const struct ans_broker_request *,
                          struct ans_broker_response *);

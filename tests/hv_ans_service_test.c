@@ -1,4 +1,5 @@
 #include "hv_ans_service.h"
+#include "hv_ans_direct.h"
 #include <assert.h>
 #include <string.h>
 #include <stdio.h>
@@ -22,6 +23,9 @@ static int poll(void*x,uint64_t gen,unsigned q,struct nvme_completion*c){struct 
  if(f->next && q==(f->cqe.tag<ANS_ADMIN_TAGS?0u:1u)){*c=f->cqe;f->next=0;return 0;}return ANS_Q_EMPTY;}
 static bool shadow(void*x,unsigned t,const uint64_t*p,unsigned n,uint64_t*pa){(void)x;(void)t;assert(n>1 && p[0]);*pa=0x300000;return true;}
 static void release(void*x,unsigned t){struct fake*f=x;(void)t;f->release++;}
+static unsigned direct_calls;static bool direct_fail;
+/* Release runs strictly after freeze/drain/flush/hide (step==4). */
+static bool direct(void*x,uint32_t*stage){struct fake*f=x;assert(f->step==4);direct_calls++;*stage=20;return !direct_fail;}
 static bool translate(void*x,uint64_t ipa,size_t n,uint32_t d,uint64_t*pa){(void)x;(void)n;(void)d;*pa=ipa+0x100000000ULL;return ipa>=0x1000;}
 static bool readmeta(void*x,uint64_t pa,void*d,size_t n){(void)x;(void)pa;(void)d;(void)n;return false;}
 static struct ans_broker_request req;
@@ -30,7 +34,7 @@ static void command(struct ans_service*s,unsigned op){if(op!=ANS_OP_AUTHORIZE_SU
 static void completion(struct ans_service*s,struct fake*f,unsigned tag){f->cqe=(struct nvme_completion){.tag=tag,.status=1};f->next=1;assert(ans_service_drain(s)==0);}
 int main(void){
  struct fake f={0}; struct ans_service s;
- struct ans_service_ops ops={freeze,drain,flush,stop,retire,hide,boot,backing,submit,poll,shadow,release};
+ struct ans_service_ops ops={freeze,drain,flush,stop,retire,hide,boot,backing,submit,poll,shadow,release,NULL};
  struct ans_memory_ops mem={translate,readmeta};
  /* ANS008 write window: one-shot, launch-time only, valid inside the namespace. */
  {struct fake g={0};struct ans_service w;
@@ -123,5 +127,48 @@ int main(void){
  f.fail_stop=true;command(&s,ANS_OP_RESET);assert(resp.result==ANS_RESULT_IO_ERROR && resp.generation==1);
  f.fail_stop=false;command(&s,ANS_OP_RESET);assert(resp.result==0 && resp.generation==2 && resp.state==ANS_STATE_READY);
  assert(s.telemetry.resets==2 && s.telemetry.stops==2 && s.telemetry.current_outstanding==0);
+ /* ANS-DIRECT: launch-time selection, exclusive with the write window. */
+ {struct ans_service_ops dops=ops;dops.direct_release=direct;
+  struct fake g={0};struct ans_service d;
+  assert(ans_service_init(&d,&ops,&g,&mem,&g,1000));
+  assert(!ans_service_set_direct(&d));            /* no release op */
+  assert(ans_service_init(&d,&dops,&g,&mem,&g,1000));
+  assert(ans_service_set_write_window(&d,0,1) && !ans_service_set_direct(&d) && !d.direct);
+  assert(ans_service_init(&d,&dops,&g,&mem,&g,1000));
+  assert(ans_service_set_direct(&d) && d.direct);
+  assert(!ans_service_set_direct(&d));            /* one-shot */
+  assert(!ans_service_set_write_window(&d,0,1) && !d.write_window.count);
+  /* Successful direct handoff: same Mu-valid receipt, broker dead, header marked. */
+  direct_calls=0;ans_service_handoff(&d,7);
+  assert(direct_calls==1 && g.stops==1 && ans_handoff_receipt_valid(&d.handoff,7,0));
+  assert(d.broker.owner==ANS_OWNER_DIRECT && d.broker.header.reserved==ANS_DIRECT_HEADER_MARKER);
+  assert(d.last_stage==20 && d.handoff.state==ANS_STATE_READY);
+  ans_service_handoff(&d,7);assert(direct_calls==1 && g.stops==1); /* never repeats teardown */
+  /* Every broker operation is rejected afterwards; no boot, no submit. */
+  struct ans_broker_request dr={.abi_major=ANS_ABI_MAJOR,.size=sizeof(dr)};
+  dr.generation=d.broker.header.generation;
+  for(unsigned op=ANS_OP_QUERY;op<=ANS_OP_RELEASE;op++){
+   dr.operation=op;dr.sequence++;ans_service_execute(&d,&dr,&resp);
+   assert(resp.result==ANS_RESULT_BAD_STATE);}
+  assert(!g.boots && !g.submits && d.broker.owner==ANS_OWNER_DIRECT);
+  assert(!ans_service_set_direct(&d));
+  /* Failed cold boot: FAULTED receipt that the Mu gate rejects; no broker arming. */
+  struct fake h={0};struct ans_service e;
+  assert(ans_service_init(&e,&dops,&h,&mem,&h,1000)&&ans_service_set_direct(&e));
+  direct_fail=true;direct_calls=0;ans_service_handoff(&e,3);direct_fail=false;
+  assert(direct_calls==1 && !ans_handoff_receipt_valid(&e.handoff,3,0));
+  assert(e.handoff.state==ANS_STATE_FAULTED && e.handoff.proof_flags==63);
+  assert(e.broker.owner==ANS_OWNER_RECOVERY && e.broker.header.reserved==0);
+  /* A non-direct service ignores a present release op (broker path unchanged). */
+  struct fake k={0};struct ans_service n;
+  assert(ans_service_init(&n,&dops,&k,&mem,&k,1000));direct_calls=0;
+  ans_service_handoff(&n,1);assert(!direct_calls && ans_handoff_receipt_valid(&n.handoff,1,0));
+  assert(n.broker.owner==ANS_OWNER_NONE && n.broker.header.reserved==0);
+  /* Hand-off register predicate: RTKit up, NVMe disabled, not fatal, not shutting down. */
+  assert(nvme_direct_handoff_state_ok(0,0));
+  assert(nvme_direct_handoff_state_ok(0x00460000,0x8)); /* CC config bits, SHST complete */
+  assert(!nvme_direct_handoff_state_ok(1,0)&&!nvme_direct_handoff_state_ok(0,1));
+  assert(!nvme_direct_handoff_state_ok(0,2)&&!nvme_direct_handoff_state_ok(0,4));
+  assert(!nvme_direct_handoff_state_ok(UINT32_MAX,0)&&!nvme_direct_handoff_state_ok(0,UINT32_MAX));}
  puts("ANS service ownership/admin/translation/completion/telemetry tests PASS");
 }
