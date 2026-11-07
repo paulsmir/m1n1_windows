@@ -1885,7 +1885,12 @@ class HV(Reloadable):
             raise ValueError("Unsupported storage ownership mode")
         import json
         from pathlib import Path
-        contract = json.loads((Path(__file__).resolve().parents[4] / "config/j313-ans.json").read_text())
+        # WOM1_ANS_CONTRACT names config/j313-ans.json when this proxyclient runs from a
+        # standalone m1n1 worktree (GPU launchers set M1N1_PROXYCLIENT); default: repo layout.
+        path = os.environ.get("WOM1_ANS_CONTRACT") or str(Path(__file__).resolve().parents[4] / "config/j313-ans.json")
+        contract = json.loads(Path(path).read_text())
+        if contract.get("platform") != "J313" or contract.get("acpi_hid") != "APPL0003":
+            raise ValueError(f"not the J313 ANS contract: {path}")
         base = int(contract["broker"]["guest_base"], 0)
         size = contract["broker"]["size"]
         if not self.p.hv_map_ans_broker(base, size, contract["interrupt"]["guest_gsiv"],
