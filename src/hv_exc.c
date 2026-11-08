@@ -1736,6 +1736,39 @@ static bool hv_handle_smc(struct exc_info *ctx) {
         // image (0x9d...) so the call chain that led to the reset - and, we hope, the
         // bugcheck path - can be reconstructed. Flush before the reset actually fires.
         //
+        //
+        // The native SSD driver refuses crash-dump instances, so a bugcheck leaves no dump.
+        // Read ntoskrnl's KiBugCheckData (ULONG_PTR[5]: code, p1..p4) through the guest's own
+        // translation. The base is the first 2 MiB-aligned 'MZ' below the PC. The RVA is for
+        // ntoskrnl 26100.9711, PDB 287D4F3D-731D-E7A3-AA2D-C7DD8F8AEF76; the print names the
+        // base so a different kernel is visible as nonsense rather than silently trusted.
+        //
+        if (ctx->elr >> 63) {
+            const u64 kibugcheckdata_rva = 0xdbc9c0;
+            u64 base = 0;
+            for (u64 va = ctx->elr & ~0x1fffffUL, n = 0; n < 16; n++, va -= 0x200000) {
+                u64 pa = hv_translate(va, false, false, NULL);
+                if (pa && read16(pa) == 0x5a4d) {
+                    base = va;
+                    break;
+                }
+            }
+            if (base) {
+                u64 words[5] = {0};
+                bool ok = true;
+                for (int i = 0; i < 5 && ok; i++) {
+                    u64 pa = hv_translate(base + kibugcheckdata_rva + i * 8, false, false, NULL);
+                    if (pa)
+                        words[i] = read64(pa);
+                    else
+                        ok = false;
+                }
+                printf("BUGCHECK %s base=0x%lx code=0x%lx p1=0x%lx p2=0x%lx p3=0x%lx p4=0x%lx\n",
+                       ok ? "ok" : "unmapped", base, words[0], words[1], words[2], words[3], words[4]);
+            } else {
+                printf("BUGCHECK no kernel base below ELR\n");
+            }
+        }
         u64 sp = ctx->sp[1];
         for (int i = 0; i < 96; i++) {
             u64 va = sp + i * 8;
