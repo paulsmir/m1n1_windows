@@ -1868,6 +1868,23 @@ static inline void hv_exit_count(int cls)
     hv_exit_census[smp_id()].c[cls]++;
 }
 
+/* Top sysreg encodings (EXP2253): key = class<<24 | (ISS & 0x3ffc1e) for MSR
+ * (Op0/Op2/Op1/CRn/CRm + direction, Rt masked) or class<<24 | afsr1 low bits
+ * for IMPDEF.  Small per-CPU open table; overflow counted separately. */
+#define XK_SLOTS 16
+struct hv_exit_keys { u32 key[XK_SLOTS]; u32 cnt[XK_SLOTS]; u32 overflow; } ALIGNED(128);
+static struct hv_exit_keys hv_exit_keys[MAX_CPUS];
+
+static inline void hv_exit_key(u32 key)
+{
+    struct hv_exit_keys *t = &hv_exit_keys[smp_id()];
+    for (int i = 0; i < XK_SLOTS; i++) {
+        if (t->key[i] == key) { t->cnt[i]++; return; }
+        if (!t->cnt[i]) { t->key[i] = key; t->cnt[i] = 1; return; }
+    }
+    t->overflow++;
+}
+
 void hv_exit_census_report(void)
 {
     u64 now = mrs(CNTPCT_EL0);
@@ -1890,6 +1907,29 @@ void hv_exit_census_report(void)
         used += snprintf(line + used, sizeof(line) - used, " %s=%u", xc_names[c], total[c]);
     printf("%s\n", line);
     hv_exit_report_last = now;
+
+    u32 mk[64], mc[64], n = 0, ovf = 0;
+    for (int cpu = 0; cpu < MAX_CPUS; cpu++) {
+        struct hv_exit_keys *t = &hv_exit_keys[cpu];
+        for (int i = 0; i < XK_SLOTS; i++) {
+            if (!t->cnt[i]) continue;
+            u32 j;
+            for (j = 0; j < n && mk[j] != t->key[i]; j++);
+            if (j == n && n < 64) { mk[n] = t->key[i]; mc[n] = 0; n++; }
+            if (j < 64) mc[j] += t->cnt[i];
+        }
+        ovf += t->overflow;
+        memset(t, 0, sizeof(*t));
+    }
+    used = snprintf(line, sizeof(line), "HV: EXITKEYS ovf=%u", ovf);
+    for (int k = 0; k < 8; k++) {
+        u32 best = 0, bi = 0;
+        for (u32 j = 0; j < n; j++) if (mc[j] > best) { best = mc[j]; bi = j; }
+        if (!best) break;
+        used += snprintf(line + used, sizeof(line) - used, " %x:%u", mk[bi], best);
+        mc[bi] = 0;
+    }
+    printf("%s\n", line);
 }
 
 void hv_exc_sync(struct exc_info *ctx)
@@ -1909,11 +1949,15 @@ void hv_exc_sync(struct exc_info *ctx)
             /* ICC_* group-1 regs: Op0=3, Op1=0, CRn=12 */
             bool icc = ((iss >> 20) & 3) == 3 && ((iss >> 14) & 7) == 0 && ((iss >> 10) & 0xf) == 12;
             hv_exit_count(icc ? XC_MSR_ICC : XC_MSR_OTHER);
+            hv_exit_key((1u << 24) | (iss & 0x3ffc1f & ~0x3e0u));
             break;
         }
         case ESR_EC_SMC: hv_exit_count(XC_SMC); break;
         case ESR_EC_HVC: hv_exit_count(XC_HVC); break;
-        case ESR_EC_IMPDEF: hv_exit_count(XC_IMPDEF); break;
+        case ESR_EC_IMPDEF:
+            hv_exit_count(XC_IMPDEF);
+            hv_exit_key((2u << 24) | ((u32)ctx->afsr1 & 0xffffffu));
+            break;
         default: hv_exit_count(XC_OTHER); break;
     }
 
