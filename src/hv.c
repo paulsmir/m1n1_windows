@@ -3,6 +3,7 @@
 #include "hv.h"
 #include "hv_cppc.h"
 void hv_exit_census_report(void);
+void hv_agx_scanout_service_run_once(void);
 #include "hv_tick_policy.h"
 #include "hv_ans_platform.h"
 #include "hv_runtime_diag.h"
@@ -1388,6 +1389,11 @@ void hv_tick(struct exc_info *ctx)
     hv_ans_tick();
     hv_fb_stream_tick(&hv_framebuffer_stream);
     hv_cppc_tick();
+#ifdef HV_SCANOUT_SERVICE_TICK
+    /* EXP2257: one bounded scanout step per HV tick (5 kHz, CPU0) instead of one per
+     * slow guest exit (~77k/s idle steps, EXP2256 BROKERLOCK service class). */
+    hv_agx_scanout_service_run_once();
+#endif
     hv_exit_census_report();
 }
 
