@@ -307,9 +307,19 @@ static enum hv_agx_gpuva_v5_result publish_entry(struct hv_agx_gpuva_v5 *b,
             b->slots[slot].jobs) return HV_AGX_GPUVA_V5_BUSY;
     *entry = descriptor;
     if (!b->ops.sync_tables(b->ops.context)) goto rollback;
+#ifdef AGX_GPUVA_MAP_NO_TLBI
+    /* EXP2261 (Asahi UAT semantics): an entry that was invalid cannot be cached by the
+     * GPU TLB, so invalid -> valid needs only the store barrier above; changing or
+     * removing a valid entry still invalidates the owner's ASIDs. */
+    if (!(old & 1))
+        goto published;
+#endif
     for (slot = 1; slot < HV_AGX_GPUVA_V5_SLOTS; ++slot)
         if (b->slots[slot].occupied && b->slots[slot].owner == owner &&
             !b->ops.invalidate(b->ops.context, slot)) goto rollback;
+#ifdef AGX_GPUVA_MAP_NO_TLBI
+published:
+#endif
     if (check(b) != HV_AGX_GPUVA_V5_OK) return HV_AGX_GPUVA_V5_TAINTED;
     ++b->processes[owner].map_generation;
     return HV_AGX_GPUVA_V5_OK;
