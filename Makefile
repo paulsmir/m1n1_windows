@@ -69,9 +69,11 @@ endif
 ifeq ($(APPLE_INPUT),0)
 CFG += HV_DISABLE_APPLE_INPUT
 endif
-ifeq ($(HV_GUEST_OWNS_DEBUG),1)
-CFG += HV_GUEST_OWNS_DEBUG
-CFLAGS += -DHV_GUEST_OWNS_DEBUG=1
+# EXP2256: the guest owns its debug registers by default; HV_DEBUG_GUEST=1 restores
+# MDCR_EL2 TDE|TDA|TDOSA|TDRA for HV-side guest debugging (diagnostic profile only).
+ifeq ($(HV_DEBUG_GUEST),1)
+CFG += HV_DEBUG_GUEST
+CFLAGS += -DHV_DEBUG_GUEST=1
 endif
 ifeq ($(MCC_SLC_LEAVE_DISABLED),1)
 CFG += MCC_SLC_LEAVE_DISABLED

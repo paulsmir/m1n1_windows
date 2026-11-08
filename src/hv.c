@@ -383,7 +383,7 @@ void hv_start(void *entry, u64 regs[4])
     hv_secondary_info.hacr = mrs(HACR_EL2);
     hv_secondary_info.vtcr = mrs(VTCR_EL2);
     hv_secondary_info.vttbr = mrs(VTTBR_EL2);
-#ifdef HV_GUEST_OWNS_DEBUG
+#ifndef HV_DEBUG_GUEST
     /* EXP2254: the guest owns its debug registers and debug exceptions.
      * MDCR_EL2.TDA trapped every MDSCR_EL1 read (0.4-3.3 M per 10 s, EXP2253)
      * and TDE routed guest BRK/debug exceptions to EL2; both exist only for

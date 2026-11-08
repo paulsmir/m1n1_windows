@@ -27,7 +27,7 @@ struct hv_guest_cpu_state hv_guest_cpu_state_prepare(uint64_t current_amx_config
         .hacr = HACR_TRAP_CTRR | HACR_TRAP_IPI | HACR_TRAP_SERROR_INFO |
                 HACR_TRAP_EHID | HACR_TRAP_HID | HACR_TRAP_ACC |
                 HACR_TRAP_PMUV3 | HACR_TRAP_PM,
-#ifdef HV_GUEST_OWNS_DEBUG
+#ifndef HV_DEBUG_GUEST
         .mdcr = 0,
 #else
         .mdcr = MDCR_TDE | MDCR_TDA | MDCR_TDOSA | MDCR_TDRA,
