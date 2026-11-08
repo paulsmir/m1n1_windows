@@ -1289,7 +1289,10 @@ static bool hv_handle_msr_unlocked(struct exc_info *ctx, u64 iss)
                     pmcr1_value |= BIT(8);
                 }
                 else {
-                    pmcr1_value &= ~(BIT(16));
+                    /* U=1 excludes EL0: clear the EL0 enable (bit 8), not the
+                     * EL1 enable (bit 16).  Clearing bit 16 here stopped the
+                     * cycle counter in the Windows kernel (~MHz read 22). */
+                    pmcr1_value &= ~(BIT(8));
                 }
                 sysop("isb");
                 msr(SYS_IMP_APL_PMCR1, pmcr1_value);
@@ -1850,6 +1853,86 @@ static void hv_exc_exit(struct exc_info *ctx)
     msr(SP_EL1, ctx->sp[1]);
 }
 
+
+/* Exit census (receipt only, EXP2252): per-CPU counters, summed every 10 s from
+ * hv_tick on CPU0.  Racy reads of other CPUs' counters are fine for a receipt. */
+enum { XC_WFI, XC_DABT, XC_BRK, XC_MSR_ICC, XC_MSR_OTHER, XC_SMC, XC_HVC, XC_IMPDEF, XC_OTHER,
+       XC_IRQ, XC_FIQ, XC_COUNT };
+static const char *const xc_names[XC_COUNT] = {"wfi", "dabt", "brk", "icc", "msr", "smc",
+                                               "hvc", "impdef", "other", "irq", "fiq"};
+struct hv_exit_row { u32 c[XC_COUNT]; } ALIGNED(128);
+static struct hv_exit_row hv_exit_census[MAX_CPUS];
+static u64 hv_exit_report_at, hv_exit_report_last;
+
+static inline void hv_exit_count(int cls)
+{
+    hv_exit_census[smp_id()].c[cls]++;
+}
+
+/* Top sysreg encodings (EXP2253): key = class<<24 | (ISS & 0x3ffc1e) for MSR
+ * (Op0/Op2/Op1/CRn/CRm + direction, Rt masked) or class<<24 | afsr1 low bits
+ * for IMPDEF.  Small per-CPU open table; overflow counted separately. */
+#define XK_SLOTS 16
+struct hv_exit_keys { u32 key[XK_SLOTS]; u32 cnt[XK_SLOTS]; u32 overflow; } ALIGNED(128);
+static struct hv_exit_keys hv_exit_keys[MAX_CPUS];
+
+static inline void hv_exit_key(u32 key)
+{
+    struct hv_exit_keys *t = &hv_exit_keys[smp_id()];
+    for (int i = 0; i < XK_SLOTS; i++) {
+        if (t->key[i] == key) { t->cnt[i]++; return; }
+        if (!t->cnt[i]) { t->key[i] = key; t->cnt[i] = 1; return; }
+    }
+    t->overflow++;
+}
+
+void hv_exit_census_report(void)
+{
+    u64 now = mrs(CNTPCT_EL0);
+    u64 f = mrs(CNTFRQ_EL0) ? mrs(CNTFRQ_EL0) : 24000000;
+    char line[480];
+    int used;
+    u32 total[XC_COUNT] = {0};
+
+    if (now < hv_exit_report_at)
+        return;
+    hv_exit_report_at = now + 10 * f;
+    for (int cpu = 0; cpu < MAX_CPUS; cpu++)
+        for (int c = 0; c < XC_COUNT; c++) {
+            total[c] += hv_exit_census[cpu].c[c];
+            hv_exit_census[cpu].c[c] = 0;
+        }
+    used = snprintf(line, sizeof(line), "HV: EXITS dt_ms=%lu",
+                    hv_exit_report_last ? ticks_to_msecs(now - hv_exit_report_last) : 0UL);
+    for (int c = 0; c < XC_COUNT && used < (int)sizeof(line); c++)
+        used += snprintf(line + used, sizeof(line) - used, " %s=%u", xc_names[c], total[c]);
+    printf("%s\n", line);
+    hv_exit_report_last = now;
+
+    u32 mk[64], mc[64], n = 0, ovf = 0;
+    for (int cpu = 0; cpu < MAX_CPUS; cpu++) {
+        struct hv_exit_keys *t = &hv_exit_keys[cpu];
+        for (int i = 0; i < XK_SLOTS; i++) {
+            if (!t->cnt[i]) continue;
+            u32 j;
+            for (j = 0; j < n && mk[j] != t->key[i]; j++);
+            if (j == n && n < 64) { mk[n] = t->key[i]; mc[n] = 0; n++; }
+            if (j < 64) mc[j] += t->cnt[i];
+        }
+        ovf += t->overflow;
+        memset(t, 0, sizeof(*t));
+    }
+    used = snprintf(line, sizeof(line), "HV: EXITKEYS ovf=%u", ovf);
+    for (int k = 0; k < 8; k++) {
+        u32 best = 0, bi = 0;
+        for (u32 j = 0; j < n; j++) if (mc[j] > best) { best = mc[j]; bi = j; }
+        if (!best) break;
+        used += snprintf(line + used, sizeof(line) - used, " %x:%u", mk[bi], best);
+        mc[bi] = 0;
+    }
+    printf("%s\n", line);
+}
+
 void hv_exc_sync(struct exc_info *ctx)
 {
     hv_wdt_breadcrumb('S');
@@ -1857,6 +1940,27 @@ void hv_exc_sync(struct exc_info *ctx)
     bool handled = false;
     bool advance_elr = true;
     u32 ec = FIELD_GET(ESR_EC, ctx->esr);
+
+    switch (ec) {
+        case ESR_EC_WFI: hv_exit_count(XC_WFI); break;
+        case ESR_EC_DABORT_LOWER: hv_exit_count(XC_DABT); break;
+        case ESR_EC_BRK: hv_exit_count(XC_BRK); break;
+        case ESR_EC_MSR: {
+            u32 iss = FIELD_GET(ESR_ISS, ctx->esr);
+            /* ICC_* group-1 regs: Op0=3, Op1=0, CRn=12 */
+            bool icc = ((iss >> 20) & 3) == 3 && ((iss >> 14) & 7) == 0 && ((iss >> 10) & 0xf) == 12;
+            hv_exit_count(icc ? XC_MSR_ICC : XC_MSR_OTHER);
+            hv_exit_key((1u << 24) | (iss & 0x3ffc1f & ~0x3e0u));
+            break;
+        }
+        case ESR_EC_SMC: hv_exit_count(XC_SMC); break;
+        case ESR_EC_HVC: hv_exit_count(XC_HVC); break;
+        case ESR_EC_IMPDEF:
+            hv_exit_count(XC_IMPDEF);
+            hv_exit_key((2u << 24) | ((u32)ctx->afsr1 & 0xffffffu));
+            break;
+        default: hv_exit_count(XC_OTHER); break;
+    }
 
     switch (ec) {
         case ESR_EC_WFI:
@@ -2042,6 +2146,7 @@ void hv_exc_sync(struct exc_info *ctx)
 
 void hv_exc_irq(struct exc_info *ctx)
 {
+    hv_exit_count(XC_IRQ);
 #ifdef ENABLE_VGIC_MODULE
     u32 reason = aic_ack();
     int irq = FIELD_GET(AIC_EVENT_NUM, reason);
@@ -2144,6 +2249,7 @@ void hv_exc_irq(struct exc_info *ctx)
 
 void hv_exc_fiq(struct exc_info *ctx)
 {
+    hv_exit_count(XC_FIQ);
     bool tick = false;
 
     hv_maybe_exit();

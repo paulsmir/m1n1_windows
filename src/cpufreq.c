@@ -513,6 +513,34 @@ const struct feat_t *cpufreq_get_features(void)
     }
 }
 
+/* Runtime request from the HV CPPC emulation (hv_cppc.c): cluster index in
+ * cpufreq_get_clusters() order (T8103: 0 = ECPU, 1 = PCPU). */
+int cpufreq_set_cluster_pstate(int index, uint32_t pstate)
+{
+    const struct cluster_t *cluster = cpufreq_get_clusters();
+
+    if (!cluster)
+        return -1;
+    for (int i = 0; i < index; i++)
+        if (!cluster[i].base)
+            return -1;
+    if (!cluster[index].base)
+        return -1;
+    return set_pstate(&cluster[index], pstate);
+}
+
+int cpufreq_get_cluster_pstate(int index)
+{
+    const struct cluster_t *cluster = cpufreq_get_clusters();
+
+    if (!cluster)
+        return -1;
+    for (int i = 0; i <= index; i++)
+        if (!cluster[i].base)
+            return -1;
+    return pstate_reg_to_pstate(read64(cluster[index].base + CLUSTER_PSTATE));
+}
+
 int cpufreq_init(void)
 {
     printf("cpufreq: Initializing clusters\n");

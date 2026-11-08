@@ -664,6 +664,7 @@ class M1N1Proxy(Reloadable):
     P_HV_MAP_ANS_BROKER = 0xc20
     P_HV_ANS_WRITE_WINDOW = 0xc21
     P_HV_ANS_DIRECT = 0xc22
+    P_HV_MAP_CPPC = 0xc30
 
     P_FB_INIT = 0xd00
     P_FB_SHUTDOWN = 0xd01
@@ -1121,6 +1122,9 @@ class M1N1Proxy(Reloadable):
 
     def hv_map_agx_power_broker(self):
         return self.request(self.P_HV_MAP_AGX_POWER)
+
+    def hv_map_cppc(self):
+        return self.request(self.P_HV_MAP_CPPC)
     def hv_start(self, entry, *args):
         return self.request(self.P_HV_START, entry, *args)
     def hv_translate(self, addr, s1=False, w=False):

@@ -220,6 +220,25 @@ int mcc_unmap_carveouts(void)
     return 0;
 }
 
+#define MCC_MAX_DCS 8
+static bool t8103_dramcfg_valid;
+static u32 t8103_dramcfg_fast[2];
+static u32 t8103_dramcfg_boot[MCC_MAX_DCS][2];
+
+/* fast=true: write dramcfg-data[0] to every DCS channel; false: restore the
+ * values iBoot left.  Returns -1 when the ADT table was not found. */
+int mcc_dramcfg_set_fast(bool fast)
+{
+    if (!t8103_dramcfg_valid)
+        return -1;
+    for (int ch = 0; ch < mcc_regs[0].dcs_count && ch < MCC_MAX_DCS; ch++) {
+        u64 base = mcc_regs[0].dcs_base + ch * T8103_DCS_STRIDE;
+        write32(base + T8103_DCC_DRAMCFG0, fast ? t8103_dramcfg_fast[0] : t8103_dramcfg_boot[ch][0]);
+        write32(base + T8103_DCC_DRAMCFG1, fast ? t8103_dramcfg_fast[1] : t8103_dramcfg_boot[ch][1]);
+    }
+    return 0;
+}
+
 int mcc_init_t8103(int node, int *path, bool t8112)
 {
     printf("MCC: Initializing T8103 MCC...\n");
@@ -259,6 +278,22 @@ int mcc_init_t8103(int node, int *path, bool t8112)
     mcc_regs[0].tz = &t8103_tz_regs;
 
     printf("MCC: Initialized T8103 MCC (%d channels)\n", val);
+
+    /* macOS DRAMCFG mode table (AppleT8103MemCacheController reads the same
+     * property): dramcfg-data[0] = {DRAMCFG0, DRAMCFG1} "fast" pair.  Save
+     * iBoot's per-channel values so mode 0 restores them exactly. */
+    u32 pair[2];
+    if (!t8112 && adt_getprop_copy(adt, node, "dramcfg-data", pair, sizeof(pair)) == sizeof(pair) &&
+        val <= MCC_MAX_DCS) {
+        t8103_dramcfg_fast[0] = pair[0];
+        t8103_dramcfg_fast[1] = pair[1];
+        for (u32 ch = 0; ch < val; ch++) {
+            u64 base = mcc_regs[0].dcs_base + ch * T8103_DCS_STRIDE;
+            t8103_dramcfg_boot[ch][0] = read32(base + T8103_DCC_DRAMCFG0);
+            t8103_dramcfg_boot[ch][1] = read32(base + T8103_DCC_DRAMCFG1);
+        }
+        t8103_dramcfg_valid = true;
+    }
 
     mcc_initialized = true;
 

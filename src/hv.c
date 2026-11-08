@@ -1,6 +1,8 @@
 /* SPDX-License-Identifier: MIT */
 
 #include "hv.h"
+#include "hv_cppc.h"
+void hv_exit_census_report(void);
 #include "hv_tick_policy.h"
 #include "hv_ans_platform.h"
 #include "hv_runtime_diag.h"
@@ -381,6 +383,15 @@ void hv_start(void *entry, u64 regs[4])
     hv_secondary_info.hacr = mrs(HACR_EL2);
     hv_secondary_info.vtcr = mrs(VTCR_EL2);
     hv_secondary_info.vttbr = mrs(VTTBR_EL2);
+#ifdef HV_GUEST_OWNS_DEBUG
+    /* EXP2254: the guest owns its debug registers and debug exceptions.
+     * MDCR_EL2.TDA trapped every MDSCR_EL1 read (0.4-3.3 M per 10 s, EXP2253)
+     * and TDE routed guest BRK/debug exceptions to EL2; both exist only for
+     * HV-side guest debugging. */
+    msr(MDCR_EL2, 0);
+    sysop("isb");
+    printf("HV: guest owns debug (MDCR_EL2=0)\n");
+#endif
     hv_secondary_info.mdcr = mrs(MDCR_EL2);
     hv_secondary_info.mdscr = mrs(MDSCR_EL1);
     hv_secondary_info.amx_ctl = mrs(SYS_IMP_APL_AMX_CTL_EL2);
@@ -1376,6 +1387,8 @@ void hv_tick(struct exc_info *ctx)
     hv_vuart_poll();
     hv_ans_tick();
     hv_fb_stream_tick(&hv_framebuffer_stream);
+    hv_cppc_tick();
+    hv_exit_census_report();
 }
 
 /* Terminal DMA containment. Never retire mappings/backing, run a reset path,
