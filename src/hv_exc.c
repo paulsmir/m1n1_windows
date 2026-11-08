@@ -1852,6 +1852,46 @@ static void hv_exc_exit(struct exc_info *ctx)
     msr(SP_EL1, ctx->sp[1]);
 }
 
+
+/* Exit census (receipt only, EXP2252): per-CPU counters, summed every 10 s from
+ * hv_tick on CPU0.  Racy reads of other CPUs' counters are fine for a receipt. */
+enum { XC_WFI, XC_DABT, XC_BRK, XC_MSR_ICC, XC_MSR_OTHER, XC_SMC, XC_HVC, XC_IMPDEF, XC_OTHER,
+       XC_IRQ, XC_FIQ, XC_COUNT };
+static const char *const xc_names[XC_COUNT] = {"wfi", "dabt", "brk", "icc", "msr", "smc",
+                                               "hvc", "impdef", "other", "irq", "fiq"};
+struct hv_exit_row { u32 c[XC_COUNT]; } ALIGNED(128);
+static struct hv_exit_row hv_exit_census[MAX_CPUS];
+static u64 hv_exit_report_at, hv_exit_report_last;
+
+static inline void hv_exit_count(int cls)
+{
+    hv_exit_census[smp_id()].c[cls]++;
+}
+
+void hv_exit_census_report(void)
+{
+    u64 now = mrs(CNTPCT_EL0);
+    u64 f = mrs(CNTFRQ_EL0) ? mrs(CNTFRQ_EL0) : 24000000;
+    char line[480];
+    int used;
+    u32 total[XC_COUNT] = {0};
+
+    if (now < hv_exit_report_at)
+        return;
+    hv_exit_report_at = now + 10 * f;
+    for (int cpu = 0; cpu < MAX_CPUS; cpu++)
+        for (int c = 0; c < XC_COUNT; c++) {
+            total[c] += hv_exit_census[cpu].c[c];
+            hv_exit_census[cpu].c[c] = 0;
+        }
+    used = snprintf(line, sizeof(line), "HV: EXITS dt_ms=%lu",
+                    hv_exit_report_last ? ticks_to_msecs(now - hv_exit_report_last) : 0UL);
+    for (int c = 0; c < XC_COUNT && used < (int)sizeof(line); c++)
+        used += snprintf(line + used, sizeof(line) - used, " %s=%u", xc_names[c], total[c]);
+    printf("%s\n", line);
+    hv_exit_report_last = now;
+}
+
 void hv_exc_sync(struct exc_info *ctx)
 {
     hv_wdt_breadcrumb('S');
@@ -1859,6 +1899,23 @@ void hv_exc_sync(struct exc_info *ctx)
     bool handled = false;
     bool advance_elr = true;
     u32 ec = FIELD_GET(ESR_EC, ctx->esr);
+
+    switch (ec) {
+        case ESR_EC_WFI: hv_exit_count(XC_WFI); break;
+        case ESR_EC_DABORT_LOWER: hv_exit_count(XC_DABT); break;
+        case ESR_EC_BRK: hv_exit_count(XC_BRK); break;
+        case ESR_EC_MSR: {
+            u32 iss = FIELD_GET(ESR_ISS, ctx->esr);
+            /* ICC_* group-1 regs: Op0=3, Op1=0, CRn=12 */
+            bool icc = ((iss >> 20) & 3) == 3 && ((iss >> 14) & 7) == 0 && ((iss >> 10) & 0xf) == 12;
+            hv_exit_count(icc ? XC_MSR_ICC : XC_MSR_OTHER);
+            break;
+        }
+        case ESR_EC_SMC: hv_exit_count(XC_SMC); break;
+        case ESR_EC_HVC: hv_exit_count(XC_HVC); break;
+        case ESR_EC_IMPDEF: hv_exit_count(XC_IMPDEF); break;
+        default: hv_exit_count(XC_OTHER); break;
+    }
 
     switch (ec) {
         case ESR_EC_WFI:
@@ -2038,6 +2095,7 @@ void hv_exc_sync(struct exc_info *ctx)
 
 void hv_exc_irq(struct exc_info *ctx)
 {
+    hv_exit_count(XC_IRQ);
 #ifdef ENABLE_VGIC_MODULE
     u32 reason = aic_ack();
     int irq = FIELD_GET(AIC_EVENT_NUM, reason);
@@ -2139,6 +2197,7 @@ void hv_exc_irq(struct exc_info *ctx)
 
 void hv_exc_fiq(struct exc_info *ctx)
 {
+    hv_exit_count(XC_FIQ);
     bool tick = false;
 
     hv_maybe_exit();
