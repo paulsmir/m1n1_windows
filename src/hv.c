@@ -1390,7 +1390,7 @@ void hv_tick(struct exc_info *ctx)
     hv_ans_tick();
     hv_fb_stream_tick(&hv_framebuffer_stream);
     hv_cppc_tick();
-#ifdef HV_SCANOUT_SERVICE_TICK
+#ifndef HV_SCANOUT_SERVICE_EXIT
     /* EXP2257: one bounded scanout step per HV tick (5 kHz, CPU0) instead of one per
      * slow guest exit (~77k/s idle steps, EXP2256 BROKERLOCK service class). */
     hv_agx_scanout_service_run_once();

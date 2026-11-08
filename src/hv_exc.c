@@ -1843,7 +1843,7 @@ static void hv_exc_exit(struct exc_info *ctx)
     spin_unlock(&bhl);
     /* Exactly one bounded scanout state-machine step.  This is deliberately
      * outside the global BHL and never runs from the broker MMIO handler. */
-#ifndef HV_SCANOUT_SERVICE_TICK
+#ifdef HV_SCANOUT_SERVICE_EXIT
     hv_agx_scanout_service_run_once();
 #endif
     hv_maybe_exit();

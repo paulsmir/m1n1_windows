@@ -71,9 +71,11 @@ CFG += HV_DISABLE_APPLE_INPUT
 endif
 # EXP2256: the guest owns its debug registers by default; HV_DEBUG_GUEST=1 restores
 # MDCR_EL2 TDE|TDA|TDOSA|TDRA for HV-side guest debugging (diagnostic profile only).
-ifeq ($(HV_SCANOUT_SERVICE_TICK),1)
-CFG += HV_SCANOUT_SERVICE_TICK
-CFLAGS += -DHV_SCANOUT_SERVICE_TICK=1
+# EXP2257: the scanout service steps from the HV tick by default; HV_SCANOUT_SERVICE_EXIT=1
+# restores the per-slow-exit step.
+ifeq ($(HV_SCANOUT_SERVICE_EXIT),1)
+CFG += HV_SCANOUT_SERVICE_EXIT
+CFLAGS += -DHV_SCANOUT_SERVICE_EXIT=1
 endif
 ifeq ($(HV_DEBUG_GUEST),1)
 CFG += HV_DEBUG_GUEST
