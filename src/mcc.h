@@ -17,5 +17,6 @@ int mcc_init(void);
 int mcc_unmap_carveouts(void);
 int mcc_enable_cache(void);
 int mcc_dramcfg_set_fast(bool fast);
+void mcc_dsid_report(void);
 
 #endif

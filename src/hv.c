@@ -2,6 +2,7 @@
 
 #include "hv.h"
 #include "hv_cppc.h"
+#include "mcc.h"
 void hv_exit_census_report(void);
 void hv_agx_scanout_service_run_once(void);
 #include "hv_tick_policy.h"
@@ -1395,6 +1396,7 @@ void hv_tick(struct exc_info *ctx)
     hv_agx_scanout_service_run_once();
 #endif
     hv_exit_census_report();
+    mcc_dsid_report();
 }
 
 /* Terminal DMA containment. Never retire mappings/backing, run a reset path,

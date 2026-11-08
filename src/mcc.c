@@ -227,6 +227,28 @@ static u32 t8103_dramcfg_boot[MCC_MAX_DCS][2];
 
 /* fast=true: write dramcfg-data[0] to every DCS channel; false: restore the
  * values iBoot left.  Returns -1 when the ADT table was not found. */
+/* EXP2258 receipt (read-only): T8103 per-DSID-group SLC quota (+0xa000), usage (+0xa400)
+ * and quota use count (+0xc000) of plane 0 for groups 0..31 (macOS MCPolicyMgr offsets). */
+void mcc_dsid_report(void)
+{
+    static u64 next;
+    u64 now = mrs(CNTPCT_EL0), f = mrs(CNTFRQ_EL0) ? mrs(CNTFRQ_EL0) : 24000000;
+    char line[900];
+    int used;
+
+    if (!mcc_initialized || now < next)
+        return;
+    next = now + 10 * f;
+    u64 pb = mcc_regs[0].plane_base;
+    used = snprintf(line, sizeof(line), "HV: MCCDSID grp:quota/usage/cnt");
+    for (int g = 0; g < 32 && used < (int)sizeof(line) - 40; g++) {
+        u32 q = read32(pb + 0xa000 + 4 * g), u = read32(pb + 0xa400 + 4 * g), c = read32(pb + 0xc000 + 4 * g);
+        if (q || u || c)
+            used += snprintf(line + used, sizeof(line) - used, " %x:%x/%x/%x", g, q, u, c);
+    }
+    printf("%s\n", line);
+}
+
 int mcc_dramcfg_set_fast(bool fast)
 {
     if (!t8103_dramcfg_valid)
