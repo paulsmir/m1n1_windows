@@ -1133,8 +1133,15 @@ static bool hv_handle_msr_unlocked(struct exc_info *ctx, u64 iss)
                 regs[rt] = mrs(ID_AA64PFR1_EL1);
             return true;
         case SYSREG_ISS(ID_AA64DFR0_EL1):
-            if (is_read)
+            if (is_read) {
                 regs[rt] = mrs(ID_AA64DFR0_EL1);
+#ifdef HV_HIDE_PMU
+                /* EXP2268: report no PMUv3 (PMUVer[11:8] = 0) so Windows stops using
+                 * PMCCNTR_EL0 for cycle accounting (0.8-2.3 M HACR traps per 10 s,
+                 * EXP2253/2256). The HACR PMUv3 emulation stays as a safety net. */
+                regs[rt] &= ~(u64)(0xfULL << 8);
+#endif
+            }
             return true;
         case SYSREG_ISS(ID_AA64DFR1_EL1):
             if (is_read)
