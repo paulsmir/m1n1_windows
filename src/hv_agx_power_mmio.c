@@ -837,11 +837,11 @@ static bool handle_agx_power_broker_locked(struct exc_info *ctx, u64 addr, u64 *
 
     offset = addr - HV_AGX_G2_POWER_BROKER_BASE;
     /* KMD diagnostic: last waived TA pair, printed at a guest reset */
-    if (offset >= 0xe00 && offset < 0xe00 + sizeof(ov5_beacon) && width == 2) {
+    if (offset >= 0xf00 && offset < 0xf00 + sizeof(ov5_beacon) && width == 2) {
         if (write)
-            ov5_beacon[(offset - 0xe00) / 4] = (u32)*value;
+            ov5_beacon[(offset - 0xf00) / 4] = (u32)*value;
         else
-            *value = ov5_beacon[(offset - 0xe00) / 4];
+            *value = ov5_beacon[(offset - 0xf00) / 4];
         return true;
     }
     if (offset >= HV_AGX_LOCAL_MMIO_OFFSET &&
