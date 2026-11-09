@@ -516,8 +516,20 @@ static void external_storage_scales_system_backings(void)
     free(f);
 }
 
+/* EXP2306: after AGX_RR_CLOSE the platform zeroes the broker, and the pool
+ * window still asks whether a page is busy. A closed broker owns nothing. */
+static void closed_broker_lookup_is_empty(void)
+{
+    struct hv_agx_gpuva_v5 *closed = calloc(1, sizeof(*closed));
+    assert(closed);
+    assert(!hv_agx_gpuva_v5_backing_by_pa(closed, P_DATA));
+    assert(!hv_agx_gpuva_v5_backing_by_ipa(closed, P_DATA));
+    free(closed);
+}
+
 int main(void)
 {
+    closed_broker_lookup_is_empty();
     independent_flush();
     guest_backing_validation();
     destroy_order_with_live_tables();

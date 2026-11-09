@@ -72,7 +72,10 @@ static struct hv_agx_gpuva_v5_backing *backing_find(
     const struct hv_agx_gpuva_v5 *b, uint64_t key, bool by_ipa)
 {
     const uint32_t *index = by_ipa ? b->backing_by_ipa : b->backing_by_pa;
-    uint32_t slot = backing_hash(b, key), probes;
+    uint32_t slot, probes;
+    /* A closed (zeroed) broker has no index and owns no backing. */
+    if (!index) return NULL;
+    slot = backing_hash(b, key);
     for (probes = 0; probes <= BACKING_SLOT_MASK(b); ++probes) {
         uint32_t ref = index[slot];
         if (!ref) return NULL;
