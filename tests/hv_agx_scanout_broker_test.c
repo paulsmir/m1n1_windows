@@ -211,6 +211,81 @@ static void test_v2_scaled_source_destination_reaches_the_request(void)
     assert(hv_agx_scanout_broker_mark_latched(&broker, 5));
 }
 
+/* A scaled owner releases the pool (adapter disable) and a new owner
+ * registers again without an m1n1 restart.  The broker is initialised once,
+ * so the ABI and CAP_SCALED_SOURCE stay; RELEASE clears the pool but not the
+ * staging registers, so the destination is whatever the last owner wrote
+ * until the new owner writes its own with its PRESENT. */
+static void test_v2_scaled_source_survives_release_and_reopen(void)
+{
+    struct hv_agx_scanout_broker broker;
+    struct hv_agx_scanout_request request;
+    uint32_t capabilities;
+
+    hv_agx_scanout_broker_init_v2(&broker, true);
+    capabilities = read32(&broker, HV_AGX_SCANOUT_REG_CAPABILITIES);
+    register_ready(&broker);
+    stage_scaled_present(&broker, 2, 0x10000, 1280, 720, 5120, 5120u * 720u,
+                         640u | (440u << 16), 1280u | (720u << 16));
+    assert(hv_agx_scanout_broker_take_pending(&broker, &request));
+    assert(hv_agx_scanout_broker_complete_present(&broker, 2,
+                                                    HV_AGX_SCANOUT_RESULT_OK, 7));
+    assert(hv_agx_scanout_broker_mark_latched(&broker, 2));
+
+    write64(&broker, HV_AGX_SCANOUT_REG_REQUEST_SEQUENCE, 3);
+    write32(&broker, HV_AGX_SCANOUT_REG_COMMAND, HV_AGX_SCANOUT_CMD_RELEASE);
+    assert(hv_agx_scanout_broker_take_pending(&broker, &request));
+    assert(hv_agx_scanout_broker_complete_release(
+        &broker, 3, HV_AGX_SCANOUT_RESULT_OK, true));
+    assert(read32(&broker, HV_AGX_SCANOUT_REG_STATE) ==
+           HV_AGX_SCANOUT_UNREGISTERED);
+    assert(read32(&broker, HV_AGX_SCANOUT_REG_ABI_VERSION) ==
+           HV_AGX_SCANOUT_ABI_VERSION_V2);
+    assert(read32(&broker, HV_AGX_SCANOUT_REG_CAPABILITIES) == capabilities);
+    assert(capabilities & HV_AGX_SCANOUT_CAP_SCALED_SOURCE);
+    assert(read32(&broker, HV_AGX_SCANOUT_REG_DEST_ORIGIN) ==
+           (640u | (440u << 16)));
+    assert(read32(&broker, HV_AGX_SCANOUT_REG_DEST_SIZE) ==
+           (1280u | (720u << 16)));
+
+    /* Scaled geometry is not admitted before the new owner registers. */
+    stage_scaled_present(&broker, 4, 0x10000, 1280, 720, 5120, 5120u * 720u,
+                         640u | (440u << 16), 1280u | (720u << 16));
+    assert(read32(&broker, HV_AGX_SCANOUT_REG_RESULT) ==
+           HV_AGX_SCANOUT_RESULT_INVALID_SURFACE);
+
+    stage_register(&broker, 5);
+    assert(hv_agx_scanout_broker_take_pending(&broker, &request));
+    assert(hv_agx_scanout_broker_complete_register(
+        &broker, 5, HV_AGX_SCANOUT_RESULT_OK, UINT64_C(0x880000000),
+        UINT64_C(0xf00000000)));
+    assert(read32(&broker, HV_AGX_SCANOUT_REG_STATE) == HV_AGX_SCANOUT_READY);
+
+    /* The new owner's first PRESENT is native and writes the full-panel
+     * destination, as the Windows client does with CAP_SCALED_SOURCE. */
+    stage_scaled_present(&broker, 6, 0x10000, HV_AGX_SCANOUT_J313_WIDTH,
+                         HV_AGX_SCANOUT_J313_HEIGHT, HV_AGX_SCANOUT_J313_STRIDE,
+                         HV_AGX_SCANOUT_J313_SURFACE_SIZE, 0,
+                         HV_AGX_SCANOUT_J313_DEST_SIZE);
+    assert(read32(&broker, HV_AGX_SCANOUT_REG_RESULT) == HV_AGX_SCANOUT_RESULT_OK);
+    assert(hv_agx_scanout_broker_take_pending(&broker, &request));
+    assert(request.Width == 2560 && request.Height == 1600);
+    assert(request.DestX == 0 && request.DestY == 0);
+    assert(request.DestWidth == 2560 && request.DestHeight == 1600);
+    assert(hv_agx_scanout_broker_complete_present(&broker, 6,
+                                                    HV_AGX_SCANOUT_RESULT_OK, 8));
+    assert(hv_agx_scanout_broker_mark_latched(&broker, 6));
+
+    /* And a scaled mode works again after the reopen. */
+    stage_scaled_present(&broker, 7, 0x20000, 1920, 1080, 7680, 7680u * 1080u,
+                         0u | (80u << 16), 2560u | (1440u << 16));
+    assert(read32(&broker, HV_AGX_SCANOUT_REG_RESULT) == HV_AGX_SCANOUT_RESULT_OK);
+    assert(hv_agx_scanout_broker_take_pending(&broker, &request));
+    assert(request.Width == 1920 && request.Height == 1080);
+    assert(request.DestX == 0 && request.DestY == 80);
+    assert(request.DestWidth == 2560 && request.DestHeight == 1440);
+}
+
 static void test_v2_scaled_source_refusals(void)
 {
     struct hv_agx_scanout_broker broker;
@@ -615,6 +690,7 @@ int main(void)
     test_identity_and_exact_mmio();
     test_v1_stays_native_only_and_ignores_destination();
     test_v2_scaled_source_destination_reaches_the_request();
+    test_v2_scaled_source_survives_release_and_reopen();
     test_v2_scaled_source_refusals();
     test_register_snapshot_and_completion();
     test_sequence_and_busy_rejection();
