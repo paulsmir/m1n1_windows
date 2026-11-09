@@ -1771,6 +1771,11 @@ static bool hv_handle_smc(struct exc_info *ctx) {
         }
         // Raw AGX ASC outbox control (bit 17 empty): read last, after the bugcheck line is out.
         iodev_console_flush();
+        {
+            extern void hv_agx_ov5_beacon_report(void);
+            hv_agx_ov5_beacon_report();
+            iodev_console_flush();
+        }
         printf("ASC RX control=0x%x\n", read32(0x206400000UL + 0x8114));
         u64 sp = ctx->sp[1];
         for (int i = 0; i < 96; i++) {

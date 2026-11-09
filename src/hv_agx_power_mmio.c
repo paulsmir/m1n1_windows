@@ -821,6 +821,8 @@ static const struct hv_agx_scanout_platform_ops scanout_ops = {
     .quiesce_poll = scanout_quiesce_poll,
 };
 
+static u32 ov5_beacon[12];
+
 static bool handle_agx_power_broker_locked(struct exc_info *ctx, u64 addr, u64 *value,
                                            bool write, int width)
 {
@@ -834,6 +836,14 @@ static bool handle_agx_power_broker_locked(struct exc_info *ctx, u64 addr, u64 *
         return false;
 
     offset = addr - HV_AGX_G2_POWER_BROKER_BASE;
+    /* KMD diagnostic: last waived TA pair, printed at a guest reset */
+    if (offset >= 0xe00 && offset < 0xe00 + sizeof(ov5_beacon) && width == 2) {
+        if (write)
+            ov5_beacon[(offset - 0xe00) / 4] = (u32)*value;
+        else
+            *value = ov5_beacon[(offset - 0xe00) / 4];
+        return true;
+    }
     if (offset >= HV_AGX_LOCAL_MMIO_OFFSET &&
         offset < HV_AGX_LOCAL_MMIO_OFFSET + HV_AGX_LOCAL_MMIO_BYTES) {
         bool log_read = false;
@@ -945,6 +955,16 @@ static bool handle_agx_power_broker_locked(struct exc_info *ctx, u64 addr, u64 *
     }
     broker_lock_exit(&ticket);
     return handled;
+}
+
+void hv_agx_ov5_beacon_report(void)
+{
+    const u32 *w = ov5_beacon;
+    printf("OV5B magic=%x seq=%u fence=%u running=%u wait=%u slot=%u self=%u ta=%x d3=%x ipa=%x%08x\n",
+           w[0], w[1], w[2], w[3], w[4], w[5], w[6], w[7], w[8], w[10], w[9]);
+    u64 ipa = ((u64)w[10] << 32) | w[9];
+    if (w[0] == 0x4235564f && ipa)
+        printf("OV5B STAMP now=%u wait=%u\n", read32(ipa), w[4]);
 }
 
 static bool handle_agx_power_broker(struct exc_info *ctx, u64 addr, u64 *value, bool write,
