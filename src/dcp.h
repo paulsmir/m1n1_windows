@@ -59,6 +59,7 @@ typedef struct dcp_dev {
     u32 iomfb_expected_swap_id;
     u32 iomfb_latched_swap_id;
     bool iomfb_surfaces_cleared;
+    bool iomfb_diag_verbose; /* R13: print D591/D592 while a diagnostic runs */
     u32 die;
     u32 dp2hdmi_pwr_gpio;
     u32 hdmi_pwr_gpio;
@@ -78,6 +79,11 @@ int dcp_iomfb_owner_poll_latch(dcp_dev_t *dcp, u32 expected_swap_id);
 int dcp_iomfb_owner_present(dcp_dev_t *dcp, u64 surface_iova, u32 width,
                             u32 height, u32 stride, u32 dcp_format,
                             const struct dcp_iomfb_present_rect *destination);
+/* R13 diagnostic: one swap carrying DCP slots 0 and 1 (see
+ * dcp_iomfb_present_build_layers_v13_5).  Returns the swap id or -1. */
+int dcp_iomfb_owner_present_layers(
+    dcp_dev_t *dcp,
+    const struct dcp_iomfb_present_layer layers[DCP_IOMFB_J313_LAYERS]);
 
 dcp_dev_t *dcp_init(const display_config_t *config);
 

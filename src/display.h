@@ -25,6 +25,14 @@ bool display_shutdown_complete(void);
 const display_config_t *display_get_config(void);
 
 /* Non-blocking fixed-panel backend used by the EL2 scanout broker. */
+/* R13 diagnostic (proxy P_DISPLAY_DIAG_OVERLAY): show a solid test surface
+ * in DCP slot 1 over the current slot-0 surface, observe the latch, hold,
+ * then remove slot 1 again unless DISPLAY_DIAG_OVERLAY_KEEP is set. */
+#define DISPLAY_DIAG_OVERLAY_PREMULTIPLIED (1u << 0)
+#define DISPLAY_DIAG_OVERLAY_SPLIT_ALPHA0 (1u << 1) /* right half 0x00000000 */
+#define DISPLAY_DIAG_OVERLAY_KEEP (1u << 2)
+int display_diag_overlay(u32 argb, u32 x, u32 y, u32 width, u32 height,
+                         u32 flags_and_hold_ms);
 bool display_scanout_ready(void);
 bool display_scanout_latch_source_proven(void);
 bool display_scanout_reserve_iova(u64 size, u64 alignment, u64 *iova);

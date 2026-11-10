@@ -130,6 +130,104 @@ int main(void)
         /* DCP's stride rule still applies to a small source. */
         assert(!dcp_iomfb_present_build_v13_5(&scaled, 0x12340000, 1366, 768, 5464, DCP_IOMFB_FORMAT_BGRA, false, &fhd));
     }
+    /* R13: two-slot swap.  Offsets are the Asahi v13.x layout
+     * (iomfb_template.h:20-130 with DCP_FW_VER 13.3 and the >= 13.2
+     * branches; iomfb_plane.h:137-165), not this file's structs:
+     * surf_ids 0x54, src_rect 0x64, surf_flags 0xa4, surf_unk 0xb4,
+     * dst_rect 0xc4, swap_enabled 0x104, swap_completed 0x108,
+     * surf[] 0x468 + i*0x22c, surf_iova 0xd18, surf_null 0x1877. */
+    {
+        struct dcp_iomfb_present_request one, two, off;
+        struct dcp_iomfb_present_layer l[2];
+        static const struct { size_t lo, hi; } slot1[] = {
+            {0x58, 0x5c}, {0x74, 0x84}, {0xa8, 0xac}, {0xd4, 0xe4},
+            {0x104, 0x10c}, {0x694, 0x8c0}, {0xd20, 0xd28}, {0x1878, 0x1879},
+        };
+        memset(l, 0, sizeof(l));
+        l[0] = (struct dcp_iomfb_present_layer){
+            .iova = 0x12340000, .width = 2560, .height = 1600, .stride = 10240,
+            .dcp_format = DCP_IOMFB_FORMAT_BGRA, .source = {0, 0, 2560, 1600},
+            .destination = {0, 0, 2560, 1600}, .surface_id = 3};
+        l[1] = (struct dcp_iomfb_present_layer){
+            .iova = 0x56780000, .width = 1280, .height = 720, .stride = 5120,
+            .dcp_format = DCP_IOMFB_FORMAT_RGBA, .source = {0, 0, 1280, 720},
+            .destination = {640, 440, 1280, 720}, .surface_id = 4,
+            .premultiplied = true};
+        assert(dcp_iomfb_present_build_v13_5(&one, 0x12340000, 2560, 1600, 10240, DCP_IOMFB_FORMAT_BGRA, false, NULL));
+        assert(dcp_iomfb_present_build_layers_v13_5(&two, l, false));
+        assert(u32at(two.bytes + 0x54) == 3 && u32at(two.bytes + 0x58) == 4);
+        assert(u32at(two.bytes + 0x74) == 0 && u32at(two.bytes + 0x78) == 0);
+        assert(u32at(two.bytes + 0x7c) == 1280 && u32at(two.bytes + 0x80) == 720);
+        assert(u32at(two.bytes + 0xa4) == 1 && u32at(two.bytes + 0xa8) == 1);
+        assert(u32at(two.bytes + 0xb8) == 0);
+        assert(u32at(two.bytes + 0xd4) == 640 && u32at(two.bytes + 0xd8) == 440);
+        assert(u32at(two.bytes + 0xdc) == 1280 && u32at(two.bytes + 0xe0) == 720);
+        assert(u32at(two.bytes + 0x104) == 3 && u32at(two.bytes + 0x108) == 3);
+        assert(two.bytes[0x694 + 0] == 0 && two.bytes[0x694 + 2] == 1);
+        assert(u32at(two.bytes + 0x694 + 0x0b) == DCP_IOMFB_FORMAT_RGBA);
+        assert(two.bytes[0x694 + 0x13] == 13 && two.bytes[0x694 + 0x14] == 1);
+        assert(u32at(two.bytes + 0x694 + 0x15) == 5120);
+        assert(two.bytes[0x694 + 0x19] == 4);
+        assert(u32at(two.bytes + 0x694 + 0x21) == 1280);
+        assert(u32at(two.bytes + 0x694 + 0x25) == 720);
+        assert(u32at(two.bytes + 0x694 + 0x29) == 5120 * 720);
+        assert(u32at(two.bytes + 0x694 + 0x35) == 4);
+        assert(u64at(two.bytes + 0x694 + 0x51) == 1);
+        assert(u64at(two.bytes + 0x694 + 0x149) == 1);
+        assert(u64at(two.bytes + 0xd18) == 0x12340000);
+        assert(u64at(two.bytes + 0xd20) == 0x56780000);
+        assert(two.bytes[0x1877] == 0 && two.bytes[0x1878] == 0);
+        assert(two.bytes[0x1879] == 1 && two.bytes[0x187a] == 1);
+        /* Slot 0 and every swap-global word equal the proven one-slot swap. */
+        for (size_t i = 0; i < sizeof(one.bytes); ++i) {
+            bool in_slot1 = false;
+            for (size_t r = 0; r < sizeof(slot1) / sizeof(slot1[0]); ++r)
+                in_slot1 |= i >= slot1[r].lo && i < slot1[r].hi;
+            if (!in_slot1)
+                assert(one.bytes[i] == two.bytes[i]);
+        }
+        /* Disabling slot 1 = enable bit set, surface null, nothing else. */
+        l[1].iova = 0;
+        assert(dcp_iomfb_present_build_layers_v13_5(&off, l, false));
+        assert(u32at(off.bytes + 0x104) == 3 && u32at(off.bytes + 0x108) == 3);
+        assert(off.bytes[0x1878] == 1);
+        assert(memcmp(one.bytes, off.bytes, 0x104) == 0);
+        assert(memcmp(one.bytes + 0x10c, off.bytes + 0x10c, sizeof(one.bytes) - 0x10c) == 0);
+        l[1].iova = 0x56780000;
+        /* Boot-surface clear keeps the one-slot form of the enable word. */
+        assert(dcp_iomfb_present_build_layers_v13_5(&two, l, true));
+        assert(u32at(two.bytes + 0x104) == 0x80000007u && two.bytes[0x1878] == 0);
+        /* Refusals: DCP limits from Asahi plane.c and the slot contract. */
+        l[1].destination = (struct dcp_iomfb_present_rect){0, 0, 31, 720};
+        l[1].source = (struct dcp_iomfb_present_rect){0, 0, 31, 720};
+        assert(!dcp_iomfb_present_build_layers_v13_5(&two, l, false));
+        l[1].source = (struct dcp_iomfb_present_rect){0, 0, 640, 360};
+        l[1].destination = (struct dcp_iomfb_present_rect){0, 0, 1280, 720};
+        assert(dcp_iomfb_present_build_layers_v13_5(&two, l, false));   /* 2x up */
+        l[1].destination = (struct dcp_iomfb_present_rect){0, 0, 1281, 720};
+        assert(!dcp_iomfb_present_build_layers_v13_5(&two, l, false));  /* > 2x */
+        l[1].source = (struct dcp_iomfb_present_rect){0, 0, 1280, 720};
+        l[1].destination = (struct dcp_iomfb_present_rect){0, 0, 640, 360};
+        assert(dcp_iomfb_present_build_layers_v13_5(&two, l, false));   /* 2x down */
+        l[1].destination = (struct dcp_iomfb_present_rect){0, 0, 639, 360};
+        assert(!dcp_iomfb_present_build_layers_v13_5(&two, l, false));
+        l[1].destination = (struct dcp_iomfb_present_rect){1281, 0, 1280, 720};
+        assert(!dcp_iomfb_present_build_layers_v13_5(&two, l, false));  /* off panel */
+        l[1].destination = (struct dcp_iomfb_present_rect){640, 440, 1280, 720};
+        l[1].source = (struct dcp_iomfb_present_rect){1, 0, 1280, 720};
+        assert(!dcp_iomfb_present_build_layers_v13_5(&two, l, false));  /* outside surface */
+        l[1].source = (struct dcp_iomfb_present_rect){0, 0, 1280, 720};
+        l[1].surface_id = 3;
+        assert(!dcp_iomfb_present_build_layers_v13_5(&two, l, false));  /* duplicate id */
+        l[1].surface_id = 4;
+        l[1].stride = 5128;
+        assert(!dcp_iomfb_present_build_layers_v13_5(&two, l, false));  /* stride & 63 */
+        l[1].stride = 5120;
+        l[0].iova = 0;
+        assert(!dcp_iomfb_present_build_layers_v13_5(&two, l, false));  /* slot 0 required */
+        l[0].iova = 0x12340000;
+        assert(dcp_iomfb_present_build_layers_v13_5(&two, l, false));
+    }
     puts("dcp_iomfb_present_test: ok");
     return 0;
 }

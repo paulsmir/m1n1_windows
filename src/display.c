@@ -10,6 +10,7 @@
 #include "dcp.h"
 #include "dcp_iboot.h"
 #include "fb.h"
+#include "malloc.h"
 #include "firmware.h"
 #include "memory.h"
 #include "soc.h"
@@ -642,6 +643,131 @@ static bool display_scanout_build_layer(u64 iova, u32 width, u32 height,
         .y = destination.y,
     };
     return true;
+}
+
+#ifdef DCP_IOMFB_FULL_OWNER
+static int display_diag_wait_latch(int swap_id, const char *what)
+{
+    int latch = 0;
+    u64 start = get_ticks();
+
+    for (unsigned int attempt = 0; attempt < 1000 && latch == 0; ++attempt) {
+        latch = dcp_iomfb_owner_poll_latch(dcp, (u32)swap_id);
+        if (latch == 0)
+            udelay(100);
+    }
+    printf("display: diag-overlay %s swap_id=%d D589=%s after %lu us\n", what,
+           swap_id, latch > 0 ? "MATCHED" : latch == 0 ? "TIMEOUT" : "FAILED",
+           ticks_to_usecs(get_ticks() - start));
+    return latch;
+}
+#endif
+
+/* flags_and_hold_ms: bits 0-7 DISPLAY_DIAG_OVERLAY_* flags, bits 8-31 hold
+ * time in ms before slot 1 is removed again.  Returns 0 on success, a
+ * negative stage code otherwise (printed on the vUART as well). */
+int display_diag_overlay(u32 argb, u32 x, u32 y, u32 width, u32 height,
+                         u32 flags_and_hold_ms)
+{
+#ifndef DCP_IOMFB_FULL_OWNER
+    (void)argb; (void)x; (void)y; (void)width; (void)height;
+    (void)flags_and_hold_ms;
+    return -1;
+#else
+    struct dcp_iomfb_present_layer layers[DCP_IOMFB_J313_LAYERS];
+    u32 flags = flags_and_hold_ms & 0xff;
+    u32 hold_ms = flags_and_hold_ms >> 8;
+    u64 slot0 = guest_fb_dva ? guest_fb_dva : fb_dva;
+    u32 stride = ALIGN_UP(width * 4, 64);
+    u64 size = ALIGN_UP((u64)stride * height, SZ_16K);
+    u32 *pixels;
+    uintptr_t iova;
+    int swap_id, ret = 0;
+
+    if (!dcp_iomfb_owner_active(dcp) || scanout_swap_active || !slot0 ||
+        dcp->iomfb_expected_swap_id) {
+        printf("display: diag-overlay refused: owner/scanout not idle\n");
+        return -1;
+    }
+    if (width < DCP_IOMFB_MIN_LAYER_EXTENT || height < DCP_IOMFB_MIN_LAYER_EXTENT ||
+        width > DCP_IOMFB_J313_PANEL_WIDTH || height > DCP_IOMFB_J313_PANEL_HEIGHT ||
+        x > DCP_IOMFB_J313_PANEL_WIDTH - width ||
+        y > DCP_IOMFB_J313_PANEL_HEIGHT - height || hold_ms > 60000) {
+        printf("display: diag-overlay refused: geometry\n");
+        return -2;
+    }
+    pixels = memalign(SZ_16K, size);
+    if (!pixels)
+        return -3;
+    for (u32 row = 0; row < height; row++) {
+        u32 *line = (u32 *)((u8 *)pixels + (u64)row * stride);
+        for (u32 col = 0; col < stride / 4; col++)
+            line[col] = (flags & DISPLAY_DIAG_OVERLAY_SPLIT_ALPHA0) &&
+                                col >= width / 2 ? 0u : argb;
+    }
+    dc_cvac_range(pixels, size);
+    iova = display_map_fb(0, (u64)(uintptr_t)pixels, size);
+    if (DART_IS_ERR(iova)) {
+        free(pixels);
+        return -3;
+    }
+
+    memset(layers, 0, sizeof(layers));
+    layers[0] = (struct dcp_iomfb_present_layer){
+        .iova = slot0, .width = cur_boot_args.video.width,
+        .height = cur_boot_args.video.height,
+        .stride = cur_boot_args.video.stride,
+        .dcp_format = DCP_IOMFB_FORMAT_BGRA,
+        .source = {0, 0, cur_boot_args.video.width, cur_boot_args.video.height},
+        .destination = {0, 0, cur_boot_args.video.width,
+                        cur_boot_args.video.height},
+        .surface_id = 3};
+    layers[1] = (struct dcp_iomfb_present_layer){
+        .iova = iova, .width = width, .height = height, .stride = stride,
+        .dcp_format = DCP_IOMFB_FORMAT_BGRA, .source = {0, 0, width, height},
+        .destination = {x, y, width, height}, .surface_id = 4,
+        .premultiplied = (flags & DISPLAY_DIAG_OVERLAY_PREMULTIPLIED) != 0};
+    printf("display: diag-overlay slot0 dva=%#lx slot1 dva=%#lx %ux%u at %u,%u "
+           "argb=%08x flags=%#x hold=%ums\n", slot0, (u64)iova, width, height,
+           x, y, argb, flags, hold_ms);
+
+    dcp->iomfb_diag_verbose = true;
+    swap_id = dcp_iomfb_owner_present_layers(dcp, layers);
+    if (swap_id <= 0) {
+        printf("display: diag-overlay two-slot swap refused before latch\n");
+        ret = -4;
+        goto out_unmap;
+    }
+    if (display_diag_wait_latch(swap_id, "two-slot") <= 0) {
+        /* Surface may still be referenced by DCP: keep it mapped. */
+        dcp->iomfb_diag_verbose = false;
+        return -5;
+    }
+    if (flags & DISPLAY_DIAG_OVERLAY_KEEP) {
+        dcp->iomfb_diag_verbose = false;
+        return 0; /* recovery: reboot */
+    }
+    mdelay(hold_ms);
+    layers[1].iova = 0;
+    swap_id = dcp_iomfb_owner_present_layers(dcp, layers);
+    if (swap_id <= 0) {
+        printf("display: diag-overlay restore swap refused\n");
+        dcp->iomfb_diag_verbose = false;
+        return -6;
+    }
+    if (display_diag_wait_latch(swap_id, "restore") <= 0) {
+        dcp->iomfb_diag_verbose = false;
+        return -7;
+    }
+    /* Asahi releases a framebuffer only after the swap that unbinds it has
+     * completed (iomfb_template.c:1339-1357); D589 of the restore is that. */
+out_unmap:
+    dcp->iomfb_diag_verbose = false;
+    dart_unmap(dcp->dart_dcp, iova, size);
+    dart_unmap(dcp->dart_disp, iova, size);
+    free(pixels);
+    return ret;
+#endif
 }
 
 bool display_scanout_ready(void)

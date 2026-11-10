@@ -171,6 +171,105 @@ bool dcp_iomfb_present_build_v13_5(struct dcp_iomfb_present_request *request,
     wire->surface_iova[0] = iova;
     return true;
 }
+/* R13: two-slot builder.  Swap-global words are those of the one-slot
+ * builder above (proven on this firmware); per-slot words mirror slot 0. */
+static bool layer_scale_ok(uint32_t source, uint32_t destination)
+{
+    return (uint64_t)destination <= 2ull * source &&
+           (uint64_t)source <= 2ull * destination;
+}
+static bool layer_valid(const struct dcp_iomfb_present_layer *layer)
+{
+    uint64_t total = (uint64_t)layer->height * layer->stride;
+    const struct dcp_iomfb_present_rect *src = &layer->source;
+    const struct dcp_iomfb_present_rect *dst = &layer->destination;
+
+    if (!layer->iova || !layer->surface_id || !layer->width ||
+        !layer->height ||
+        (uint64_t)layer->stride < (uint64_t)layer->width * 4 ||
+        (layer->stride & 63) || !total || total > UINT32_MAX ||
+        (layer->dcp_format != DCP_IOMFB_FORMAT_BGRA &&
+         layer->dcp_format != DCP_IOMFB_FORMAT_RGBA))
+        return false;
+    if (!src->width || !src->height || src->width > layer->width ||
+        src->x > layer->width - src->width || src->height > layer->height ||
+        src->y > layer->height - src->height)
+        return false;
+    if (!destination_valid(dst) || dst->width < DCP_IOMFB_MIN_LAYER_EXTENT ||
+        dst->height < DCP_IOMFB_MIN_LAYER_EXTENT)
+        return false;
+    return layer_scale_ok(src->width, dst->width) &&
+           layer_scale_ok(src->height, dst->height);
+}
+bool dcp_iomfb_present_build_layers_v13_5(
+    struct dcp_iomfb_present_request *request,
+    const struct dcp_iomfb_present_layer layers[DCP_IOMFB_J313_LAYERS],
+    bool clear_boot_surfaces)
+{
+    struct iomfb_submit_v13_5 *wire;
+    uint32_t enabled = 0;
+
+    if (!request || !layers || !layer_valid(&layers[0]))
+        return false;
+    for (unsigned i = 1; i < DCP_IOMFB_J313_LAYERS; i++) {
+        if (!layers[i].iova)
+            continue;
+        if (!layer_valid(&layers[i]))
+            return false;
+        for (unsigned j = 0; j < i; j++)
+            if (layers[j].iova && layers[j].surface_id == layers[i].surface_id)
+                return false;
+    }
+    memset(request, 0, sizeof(*request));
+    wire = (struct iomfb_submit_v13_5 *)request->bytes;
+    wire->swap.flags_1 = 0x861202;
+    wire->swap.flags_2 = 0x04;
+    for (unsigned i = 0; i < SURFACES; i++) wire->surface_null[i] = 1;
+    for (unsigned i = 0; i < SECONDARY_SURFACES; i++) wire->secondary_null[i] = 1;
+    wire->unknown_u32_pointer_null = wire->unknown_u32_out_null = 1;
+    for (unsigned i = 0; i < DCP_IOMFB_J313_LAYERS; i++) {
+        const struct dcp_iomfb_present_layer *layer = &layers[i];
+        struct iomfb_surface_base *surface = &wire->surfaces[i].base;
+
+        enabled |= 1u << i;
+        if (!layer->iova)
+            continue; /* enable bit + null surface = slot removed */
+        wire->swap.surface_ids[i] = layer->surface_id;
+        wire->swap.source[i] = (struct iomfb_rect){
+            layer->source.x, layer->source.y, layer->source.width,
+            layer->source.height};
+        wire->swap.surface_flags[i] = 1;
+        wire->swap.destination[i] = (struct iomfb_rect){
+            layer->destination.x, layer->destination.y,
+            layer->destination.width, layer->destination.height};
+        surface->is_premultiplied = layer->premultiplied ? 1 : 0;
+        surface->format = layer->dcp_format;
+        surface->transfer_function = XFER_SDR;
+        surface->colorspace = COLORSPACE_SRGB;
+        surface->stride = layer->stride;
+        surface->pixel_size = 4;
+        surface->pel_width = surface->pel_height = 1;
+        surface->width = layer->width;
+        surface->height = layer->height;
+        surface->buffer_size = layer->height * layer->stride;
+        surface->surface_id = layer->surface_id;
+        surface->has_components = surface->has_planes = 1;
+        wire->surface_iova[i] = layer->iova;
+        wire->surface_null[i] = 0;
+    }
+    /* Same rule as the one-slot builder: clearing the boot surfaces or a
+     * slot-0 destination smaller than the panel uses the black background
+     * with layers 0-2 enabled (Asahi iomfb_template.c:1318-1326). */
+    if (clear_boot_surfaces || !destination_is_full_panel(&layers[0].destination))
+        enabled = SET_BACKGROUND | 0x7u;
+    wire->swap.swap_enabled = enabled;
+    wire->swap.swap_completed = enabled; /* iomfb_template.c:1410-1411 */
+    wire->swap.background_color = 0;
+    wire->swap.backlight_unknown = 1;
+    wire->swap.backlight_value = 0x58f058d0;
+    wire->swap.backlight_power = 0x40;
+    return true;
+}
 bool dcp_iomfb_present_set_swap_id_v13_5(struct dcp_iomfb_present_request *request,
                                           uint32_t swap_id)
 {

@@ -692,6 +692,7 @@ class M1N1Proxy(Reloadable):
     P_DISPLAY_START_DCP = 0x1103
     P_DISPLAY_IS_EXTERNAL = 0x1104
     P_DISPLAY_PREPARE_GUEST_SURFACE = 0x1105
+    P_DISPLAY_DIAG_OVERLAY = 0x1106
 
     P_DAPF_INIT_ALL = 0x1200
     P_DAPF_INIT = 0x1201
@@ -1264,6 +1265,10 @@ class M1N1Proxy(Reloadable):
     def display_prepare_guest_surface(self, base, size, width, height, stride, depth):
         return self.request(self.P_DISPLAY_PREPARE_GUEST_SURFACE, base, size, width, height,
                             stride, depth)
+    def display_diag_overlay(self, argb, x, y, width, height, flags=0, hold_ms=0):
+        # R13: slot-1 test surface over slot 0; returns 0 or a negative stage code.
+        return self.request(self.P_DISPLAY_DIAG_OVERLAY, argb, x, y, width, height,
+                            (flags & 0xff) | (hold_ms << 8), signed=True)
 
     def dapf_init_all(self):
         return self.request(self.P_DAPF_INIT_ALL)

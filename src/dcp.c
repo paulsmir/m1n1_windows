@@ -218,7 +218,26 @@ static int dcp_iomfb_owner_callback(void *opaque, const char tag[4],
                                     void *output, u32 output_size)
 {
     dcp_dev_t *dcp = opaque;
-    int result = dcp ? dcp_iomfb_bootstrap_callback(&dcp->iomfb_bootstrap, tag,
+    int result;
+
+    /* R13: tags arrive byte-reversed ("985D" = D589, dcp_iomfb_latch.c:12-15).
+     * D591 swap_complete_intent_gated {u32 swap_id; u8; u32; u32 width;
+     * u32 height} and D592 abort_swap_ap_gated {u32 swap_id}: Asahi
+     * iomfb.h:315-321, iomfb_template.c:1064-1076, iomfb_v13_3.c:99-100. */
+    if (dcp && dcp->iomfb_diag_verbose && tag[1] == '9' && tag[2] == '5' &&
+        tag[3] == 'D' && input) {
+        u32 v[3] = {0};
+        if (tag[0] == '2' && input_size >= 4) {
+            memcpy(&v[0], input, 4);
+            printf("dcp-iomfb: D592 abort_swap swap_id=%u\n", v[0]);
+        } else if (tag[0] == '1' && input_size >= 17) {
+            memcpy(&v[0], input, 4);
+            memcpy(&v[1], (const u8 *)input + 9, 4);
+            memcpy(&v[2], (const u8 *)input + 13, 4);
+            printf("dcp-iomfb: D591 intent swap_id=%u %ux%u\n", v[0], v[1], v[2]);
+        }
+    }
+    result = dcp ? dcp_iomfb_bootstrap_callback(&dcp->iomfb_bootstrap, tag,
                                                      input, input_size, output,
                                                      output_size) : -1;
     if (result < 0)
@@ -632,25 +651,16 @@ int dcp_iomfb_owner_poll_latch(dcp_dev_t *dcp, u32 expected_swap_id)
     return dcp->iomfb_latched_swap_id == expected_swap_id;
 }
 
-int dcp_iomfb_owner_present(dcp_dev_t *dcp, u64 surface_iova, u32 width,
-                            u32 height, u32 stride, u32 dcp_format,
-                            const struct dcp_iomfb_present_rect *destination)
+/* Submits the request already built in dcp->iomfb_present_request:
+ * A407 swap_start, swap id, A408 swap_submit, then arms the D589 latch. */
+static int dcp_iomfb_owner_submit_built(dcp_dev_t *dcp, const u8 *start_input)
 {
-    u8 start_input[DCP_IOMFB_V13_5_SWAP_START_SIZE];
     u8 start_output[DCP_IOMFB_V13_5_SWAP_START_SIZE] = {0};
     u8 submit_output[DCP_IOMFB_V13_5_SWAP_SUBMIT_OUTPUT_SIZE] = {0};
     u32 swap_id = 0;
 
-    if (!dcp_iomfb_owner_active(dcp) || dcp->iomfb_expected_swap_id ||
-        !dcp_iomfb_present_build_start_v13_5(start_input,
-                                              sizeof(start_input)) ||
-        !dcp_iomfb_present_build_v13_5(&dcp->iomfb_present_request,
-                                        surface_iova, width, height, stride,
-                                        dcp_format,
-                                        !dcp->iomfb_surfaces_cleared,
-                                        destination))
-        return -1;
-    if (!dcp_iomfb_owner_call(dcp, "A407", start_input, sizeof(start_input),
+    if (!dcp_iomfb_owner_call(dcp, "A407", start_input,
+                               DCP_IOMFB_V13_5_SWAP_START_SIZE,
                                start_output, sizeof(start_output)) ||
         !dcp_iomfb_present_parse_start_v13_5(start_output,
                                               sizeof(start_output), &swap_id) ||
@@ -665,6 +675,12 @@ int dcp_iomfb_owner_present(dcp_dev_t *dcp, u64 surface_iova, u32 width,
                                submit_output, sizeof(submit_output)) ||
         !dcp_iomfb_present_parse_submit_v13_5(submit_output,
                                                sizeof(submit_output))) {
+        if (dcp->iomfb_diag_verbose)
+            printf("dcp-iomfb: A408 refused swap_id=%u out=%02x%02x%02x%02x%02x%02x%02x%02x%02x\n",
+                   swap_id, submit_output[0], submit_output[1],
+                   submit_output[2], submit_output[3], submit_output[4],
+                   submit_output[5], submit_output[6], submit_output[7],
+                   submit_output[8]);
         dcp->iomfb_expected_swap_id = 0;
         return -1;
     }
@@ -672,6 +688,40 @@ int dcp_iomfb_owner_present(dcp_dev_t *dcp, u64 surface_iova, u32 width,
            swap_id);
     dcp->iomfb_surfaces_cleared = true;
     return (int)swap_id;
+}
+
+int dcp_iomfb_owner_present(dcp_dev_t *dcp, u64 surface_iova, u32 width,
+                            u32 height, u32 stride, u32 dcp_format,
+                            const struct dcp_iomfb_present_rect *destination)
+{
+    u8 start_input[DCP_IOMFB_V13_5_SWAP_START_SIZE];
+
+    if (!dcp_iomfb_owner_active(dcp) || dcp->iomfb_expected_swap_id ||
+        !dcp_iomfb_present_build_start_v13_5(start_input,
+                                              sizeof(start_input)) ||
+        !dcp_iomfb_present_build_v13_5(&dcp->iomfb_present_request,
+                                        surface_iova, width, height, stride,
+                                        dcp_format,
+                                        !dcp->iomfb_surfaces_cleared,
+                                        destination))
+        return -1;
+    return dcp_iomfb_owner_submit_built(dcp, start_input);
+}
+
+int dcp_iomfb_owner_present_layers(
+    dcp_dev_t *dcp,
+    const struct dcp_iomfb_present_layer layers[DCP_IOMFB_J313_LAYERS])
+{
+    u8 start_input[DCP_IOMFB_V13_5_SWAP_START_SIZE];
+
+    if (!dcp_iomfb_owner_active(dcp) || dcp->iomfb_expected_swap_id ||
+        !dcp_iomfb_present_build_start_v13_5(start_input,
+                                              sizeof(start_input)) ||
+        !dcp_iomfb_present_build_layers_v13_5(&dcp->iomfb_present_request,
+                                               layers,
+                                               !dcp->iomfb_surfaces_cleared))
+        return -1;
+    return dcp_iomfb_owner_submit_built(dcp, start_input);
 }
 
 static int dcp_iomfb_receive(void *opaque, afk_raw_u8 endpoint,
