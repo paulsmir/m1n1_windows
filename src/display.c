@@ -646,12 +646,13 @@ static bool display_scanout_build_layer(u64 iova, u32 width, u32 height,
 }
 
 #ifdef DCP_IOMFB_FULL_OWNER
-static int display_diag_wait_latch(int swap_id, const char *what)
+static int display_diag_wait_latch(int swap_id, const char *what,
+                                   unsigned int attempts)
 {
     int latch = 0;
     u64 start = get_ticks();
 
-    for (unsigned int attempt = 0; attempt < 1000 && latch == 0; ++attempt) {
+    for (unsigned int attempt = 0; attempt < attempts && latch == 0; ++attempt) {
         latch = dcp_iomfb_owner_poll_latch(dcp, (u32)swap_id);
         if (latch == 0)
             udelay(100);
@@ -696,6 +697,21 @@ int display_diag_overlay(u32 argb, u32 x, u32 y, u32 width, u32 height,
         printf("display: diag-overlay refused: geometry\n");
         return -2;
     }
+    /* H1: at the proxy stage no owner swap has run yet.  The two-slot swap
+     * must be the only new variable, so the first swap is the proven
+     * one-slot form that clears the boot surfaces (what the guest surface
+     * handoff does), with the bound of the one-swap observer. */
+    if (!dcp->iomfb_surfaces_cleared) {
+        swap_id = dcp_iomfb_owner_present(dcp, slot0, cur_boot_args.video.width,
+                                          cur_boot_args.video.height,
+                                          cur_boot_args.video.stride,
+                                          DCP_IOMFB_FORMAT_BGRA, NULL);
+        if (swap_id <= 0 ||
+            display_diag_wait_latch(swap_id, "baseline one-slot", 5000) <= 0) {
+            printf("display: diag-overlay baseline one-slot swap failed\n");
+            return -8;
+        }
+    }
     pixels = memalign(SZ_16K, size);
     if (!pixels)
         return -3;
@@ -738,7 +754,7 @@ int display_diag_overlay(u32 argb, u32 x, u32 y, u32 width, u32 height,
         ret = -4;
         goto out_unmap;
     }
-    if (display_diag_wait_latch(swap_id, "two-slot") <= 0) {
+    if (display_diag_wait_latch(swap_id, "two-slot", 1000) <= 0) {
         /* Surface may still be referenced by DCP: keep it mapped. */
         dcp->iomfb_diag_verbose = false;
         return -5;
@@ -755,7 +771,7 @@ int display_diag_overlay(u32 argb, u32 x, u32 y, u32 width, u32 height,
         dcp->iomfb_diag_verbose = false;
         return -6;
     }
-    if (display_diag_wait_latch(swap_id, "restore") <= 0) {
+    if (display_diag_wait_latch(swap_id, "restore", 1000) <= 0) {
         dcp->iomfb_diag_verbose = false;
         return -7;
     }

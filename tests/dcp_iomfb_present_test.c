@@ -13,6 +13,34 @@ static unsigned count_u32(const uint8_t *p, size_t n, uint32_t value)
         found += u32at(p + i) == value;
     return found;
 }
+/* FNV-1a 64 of a whole swap record. */
+static uint64_t record_digest(const struct dcp_iomfb_present_request *request)
+{
+    uint64_t hash = 0xcbf29ce484222325ull;
+    for (size_t i = 0; i < sizeof(request->bytes); ++i) {
+        hash ^= request->bytes[i];
+        hash *= 0x100000001b3ull;
+    }
+    return hash;
+}
+/* H1: the one-slot records the scanout broker sends today, taken from the
+ * builder of 14c893b2 (bench line).  The two-slot builder must not move a
+ * byte of them. */
+static void test_one_slot_records_are_the_bench_records(void)
+{
+    struct dcp_iomfb_present_request r;
+    const struct dcp_iomfb_present_rect scaled = {0, 80, 2560, 1440};
+
+    assert(sizeof(r.bytes) == 6276);
+    assert(dcp_iomfb_present_build_v13_5(&r, 0x12340000, 2560, 1600, 10240, DCP_IOMFB_FORMAT_BGRA, false, NULL));
+    assert(record_digest(&r) == 0x392cae8b8b469a1full);
+    assert(dcp_iomfb_present_build_v13_5(&r, 0x12340000, 2560, 1600, 10240, DCP_IOMFB_FORMAT_BGRA, true, NULL));
+    assert(record_digest(&r) == 0x64a2587d3e249dffull);
+    assert(dcp_iomfb_present_build_v13_5(&r, 0x56780000, 1920, 1080, 7680, DCP_IOMFB_FORMAT_BGRA, false, &scaled));
+    assert(record_digest(&r) == 0x73b039c595136986ull);
+    assert(dcp_iomfb_present_build_v13_5(&r, 0x12340000, 2560, 1600, 10240, DCP_IOMFB_FORMAT_RGBA, false, NULL));
+    assert(record_digest(&r) == 0x443e8a06dbd76e1full);
+}
 int main(void)
 {
     struct dcp_iomfb_present_request req;
@@ -228,6 +256,7 @@ int main(void)
         l[0].iova = 0x12340000;
         assert(dcp_iomfb_present_build_layers_v13_5(&two, l, false));
     }
+    test_one_slot_records_are_the_bench_records();
     puts("dcp_iomfb_present_test: ok");
     return 0;
 }
