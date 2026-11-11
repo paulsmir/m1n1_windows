@@ -136,6 +136,7 @@ take_request(struct hv_agx_scanout_service *service,
         service->state = HV_AGX_SCANOUT_SERVICE_VALIDATE;
         break;
     case HV_AGX_SCANOUT_CMD_PRESENT:
+    case HV_AGX_SCANOUT_CMD_COMMIT_LAYERS:
         service->state = HV_AGX_SCANOUT_SERVICE_PRESENT_BEGIN;
         break;
     case HV_AGX_SCANOUT_CMD_RELEASE:
@@ -344,6 +345,29 @@ poll_present_latch(struct hv_agx_scanout_service *service,
     return HV_AGX_SCANOUT_SERVICE_PROGRESSED;
 }
 
+/* V3: every layer of the commit lies inside the owned pool. */
+static bool layers_begin(struct hv_agx_scanout_service *service)
+{
+    const struct hv_agx_scanout_request *request = &service->request;
+
+    if (!service->owns_pool || !service->ops ||
+        !service->ops->present_layers_begin || !service->ops->present_poll ||
+        request->LayerCount == 0 ||
+        request->LayerCount > HV_AGX_SCANOUT_V3_LAYERS ||
+        (request->RemoveSlot1 && request->LayerCount != 1))
+        return false;
+    for (uint32_t i = 0; i < request->LayerCount; i++) {
+        const struct hv_agx_scanout_layer *layer = &request->Layers[i];
+
+        if (layer->SurfaceSize > request->PoolSize ||
+            layer->SurfaceOffset > request->PoolSize - layer->SurfaceSize ||
+            service->pool_iova > UINT64_MAX - layer->SurfaceOffset)
+            return false;
+    }
+    return service->ops->present_layers_begin(service->opaque, service->pool_iova,
+                                              request, &service->async_cookie);
+}
+
 static void unmap_release_chunk(struct hv_agx_scanout_service *service,
                                 enum hv_agx_scanout_dart dart)
 {
@@ -450,6 +474,14 @@ hv_agx_scanout_service_step(struct hv_agx_scanout_service *service,
             complete_register_error(service, broker);
         break;
     case HV_AGX_SCANOUT_SERVICE_PRESENT_BEGIN:
+        if (service->request.Command == HV_AGX_SCANOUT_CMD_COMMIT_LAYERS) {
+            if (!layers_begin(service)) {
+                fail_present(service, broker);
+                break;
+            }
+            service->state = HV_AGX_SCANOUT_SERVICE_PRESENT_POLL;
+            break;
+        }
         if (!service->owns_pool || !service->ops || !service->ops->present_begin ||
             !service->ops->present_poll ||
             service->request.SurfaceSize > service->request.PoolSize ||
@@ -489,8 +521,12 @@ hv_agx_scanout_service_step(struct hv_agx_scanout_service *service,
         if (!service->owns_pool || !service->ops || !service->ops->quiesce_begin ||
             !service->ops->quiesce_poll || !service->ops->unmap ||
             !service->ops->free_iova ||
-            !service->ops->quiesce_begin(service->opaque,
-                                         &service->async_cookie)) {
+            (service->request.RemoveSlot1
+                 ? !service->ops->quiesce_slot1_begin ||
+                       !service->ops->quiesce_slot1_begin(service->opaque,
+                                                          &service->async_cookie)
+                 : !service->ops->quiesce_begin(service->opaque,
+                                                &service->async_cookie))) {
             fail_release(service, broker);
             break;
         }

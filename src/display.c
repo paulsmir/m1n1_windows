@@ -986,6 +986,63 @@ bool display_scanout_quiesce_begin(u64 *cookie)
     return true;
 }
 
+/* S2 (broker ABI V3): one owner swap carrying both DCP slots.  The broker
+ * validated every layer against the J313 panel; the live panel must be that
+ * panel.  No iBoot fallback: two slots exist only on the IOMFB owner. */
+static bool display_scanout_owner_slots_begin(
+    const struct dcp_iomfb_present_layer layers[DCP_IOMFB_J313_LAYERS],
+    u32 remove_mask, bool quiescing, u64 *cookie)
+{
+    int owner_swap_id;
+
+    if (!cookie || !layers || scanout_swap_active || !display_scanout_ready() ||
+        !dcp_iomfb_owner_active(dcp) ||
+        cur_boot_args.video.width != DCP_IOMFB_J313_PANEL_WIDTH ||
+        cur_boot_args.video.height != DCP_IOMFB_J313_PANEL_HEIGHT)
+        return false;
+    owner_swap_id = dcp_iomfb_owner_present_slots(dcp, layers, remove_mask);
+    if (owner_swap_id <= 0)
+        return false;
+    scanout_owner_swap_id = (u32)owner_swap_id;
+    scanout_owner_surface_iova = layers[0].iova;
+    scanout_swap_active = true;
+    scanout_quiescing = quiescing;
+    if (++scanout_cookie == 0)
+        ++scanout_cookie;
+    *cookie = scanout_cookie;
+    return true;
+}
+
+bool display_scanout_present_layers_begin(
+    const struct dcp_iomfb_present_layer layers[DCP_IOMFB_J313_LAYERS],
+    u32 remove_mask, u64 *cookie)
+{
+    return display_scanout_owner_slots_begin(layers, remove_mask, false, cookie);
+}
+
+/* RELEASE after a two-layer commit: display_scanout_quiesce_begin's boot
+ * framebuffer in slot 0 and, in the same swap, slot 1 removed (enable bit
+ * set, surface null) so DCP stops reading the guest pool before it is
+ * unmapped. */
+bool display_scanout_quiesce_slot1_begin(u64 *cookie)
+{
+    struct dcp_iomfb_present_layer layers[DCP_IOMFB_J313_LAYERS];
+
+    if (!fb_dva)
+        return false;
+    memset(layers, 0, sizeof(layers));
+    layers[0] = (struct dcp_iomfb_present_layer){
+        .iova = fb_dva, .width = cur_boot_args.video.width,
+        .height = cur_boot_args.video.height,
+        .stride = cur_boot_args.video.stride,
+        .dcp_format = DCP_IOMFB_FORMAT_BGRA,
+        .source = {0, 0, cur_boot_args.video.width, cur_boot_args.video.height},
+        .destination = {0, 0, cur_boot_args.video.width,
+                        cur_boot_args.video.height},
+        .surface_id = 3};
+    return display_scanout_owner_slots_begin(layers, 1u << 1, true, cookie);
+}
+
 int display_scanout_quiesce_poll(u64 cookie)
 {
     enum dcp_ib_swap_async_result result;

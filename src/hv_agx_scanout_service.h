@@ -75,6 +75,16 @@ struct hv_agx_scanout_platform_ops {
     bool (*quiesce_begin)(void *opaque, uint64_t *cookie);
     enum hv_agx_scanout_async_result (*quiesce_poll)(void *opaque,
                                                      uint64_t cookie);
+    /* V3.  present_layers_begin starts the one DCP swap of a COMMIT_LAYERS
+     * request (layers at pool_iova + Layers[i].SurfaceOffset, slot 1 removed
+     * when request->RemoveSlot1); completion uses present_poll and
+     * present_latch_poll.  quiesce_slot1_begin is quiesce_begin whose swap
+     * also removes DCP slot 1 (a RELEASE with RemoveSlot1).  Absent ops
+     * make those requests fail closed. */
+    bool (*present_layers_begin)(void *opaque, uint64_t pool_iova,
+                                 const struct hv_agx_scanout_request *request,
+                                 uint64_t *cookie);
+    bool (*quiesce_slot1_begin)(void *opaque, uint64_t *cookie);
 };
 
 enum hv_agx_scanout_service_state {

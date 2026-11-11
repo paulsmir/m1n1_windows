@@ -99,6 +99,107 @@ static bool surface_valid(const struct hv_agx_scanout_broker *broker)
     return true;
 }
 
+static bool two_layers_advertised(const struct hv_agx_scanout_broker *broker)
+{
+    return (broker->capabilities & HV_AGX_SCANOUT_CAP_TWO_LAYERS) != 0;
+}
+
+static bool scale_ok(uint32_t source, uint32_t destination)
+{
+    return (uint64_t)destination <= (uint64_t)HV_AGX_SCANOUT_V3_MAX_SCALE * source &&
+           (uint64_t)source <= (uint64_t)HV_AGX_SCANOUT_V3_MAX_SCALE * destination;
+}
+
+/* V3: one raw record -> validated layer, or the refusal code. */
+static enum hv_agx_scanout_result
+layer_validate(const struct hv_agx_scanout_broker *broker,
+               const struct hv_agx_scanout_layer_staging *raw,
+               struct hv_agx_scanout_layer *layer)
+{
+    uint32_t src_x = HV_AGX_SCANOUT_DEST_LOW(raw->src_origin);
+    uint32_t src_y = HV_AGX_SCANOUT_DEST_HIGH(raw->src_origin);
+    uint32_t src_w = HV_AGX_SCANOUT_DEST_LOW(raw->src_size);
+    uint32_t src_h = HV_AGX_SCANOUT_DEST_HIGH(raw->src_size);
+    uint32_t dst_x = HV_AGX_SCANOUT_DEST_LOW(raw->dst_origin);
+    uint32_t dst_y = HV_AGX_SCANOUT_DEST_HIGH(raw->dst_origin);
+    uint32_t dst_w = HV_AGX_SCANOUT_DEST_LOW(raw->dst_size);
+    uint32_t dst_h = HV_AGX_SCANOUT_DEST_HIGH(raw->dst_size);
+
+    if (raw->reserved0 || raw->reserved1 ||
+        (raw->flags & ~HV_AGX_SCANOUT_LAYER_FLAGS_VALID))
+        return HV_AGX_SCANOUT_RESULT_LAYER_RESERVED;
+    if (raw->format != HV_AGX_SCANOUT_FORMAT_BGRA8888 &&
+        raw->format != HV_AGX_SCANOUT_FORMAT_RGBA8888)
+        return HV_AGX_SCANOUT_RESULT_LAYER_FORMAT;
+    if (!raw->width || raw->width > HV_AGX_SCANOUT_J313_WIDTH || !raw->height ||
+        raw->height > HV_AGX_SCANOUT_J313_HEIGHT)
+        return HV_AGX_SCANOUT_RESULT_LAYER_GEOMETRY;
+    if ((uint64_t)raw->stride < (uint64_t)raw->width * 4 || (raw->stride & 63))
+        return HV_AGX_SCANOUT_RESULT_LAYER_STRIDE;
+    if (raw->surface_size != (uint64_t)raw->stride * raw->height)
+        return HV_AGX_SCANOUT_RESULT_LAYER_GEOMETRY;
+    if ((raw->surface_offset & (HV_AGX_SCANOUT_ALIGNMENT - 1)) != 0 ||
+        broker->registered_pool_size != broker->pool_size ||
+        add_overflows(raw->surface_offset, raw->surface_size) ||
+        raw->surface_offset + raw->surface_size > broker->registered_pool_size)
+        return HV_AGX_SCANOUT_RESULT_LAYER_OUTSIDE_POOL;
+    if (!src_w || !src_h || src_w > raw->width || src_x > raw->width - src_w ||
+        src_h > raw->height || src_y > raw->height - src_h)
+        return HV_AGX_SCANOUT_RESULT_LAYER_SOURCE_RECT;
+    if (dst_w < HV_AGX_SCANOUT_V3_MIN_EXTENT ||
+        dst_h < HV_AGX_SCANOUT_V3_MIN_EXTENT ||
+        dst_w > HV_AGX_SCANOUT_J313_WIDTH ||
+        dst_x > HV_AGX_SCANOUT_J313_WIDTH - dst_w ||
+        dst_h > HV_AGX_SCANOUT_J313_HEIGHT ||
+        dst_y > HV_AGX_SCANOUT_J313_HEIGHT - dst_h)
+        return HV_AGX_SCANOUT_RESULT_LAYER_DEST_RECT;
+    if (!scale_ok(src_w, dst_w) || !scale_ok(src_h, dst_h))
+        return HV_AGX_SCANOUT_RESULT_LAYER_SCALE;
+    *layer = (struct hv_agx_scanout_layer){
+        .SurfaceOffset = raw->surface_offset,
+        .SurfaceSize = raw->surface_size,
+        .Width = raw->width,
+        .Height = raw->height,
+        .Stride = raw->stride,
+        .Format = raw->format,
+        .SrcX = src_x, .SrcY = src_y, .SrcWidth = src_w, .SrcHeight = src_h,
+        .DstX = dst_x, .DstY = dst_y, .DstWidth = dst_w, .DstHeight = dst_h,
+        .Flags = raw->flags,
+    };
+    return HV_AGX_SCANOUT_RESULT_OK;
+}
+
+/* V3: the whole commit -> validated layers, or the refusal code. */
+static enum hv_agx_scanout_result
+commit_validate(const struct hv_agx_scanout_broker *broker,
+                struct hv_agx_scanout_layer layers[HV_AGX_SCANOUT_V3_LAYERS])
+{
+    uint32_t count = broker->staging_layer_count;
+    enum hv_agx_scanout_result result;
+
+    if (!(broker->negotiated & HV_AGX_SCANOUT_CAP_TWO_LAYERS))
+        return HV_AGX_SCANOUT_RESULT_LAYERS_NOT_NEGOTIATED;
+    if (count == 0 || count > HV_AGX_SCANOUT_V3_LAYERS)
+        return HV_AGX_SCANOUT_RESULT_LAYER_COUNT;
+    for (uint32_t i = 0; i < count; i++) {
+        result = layer_validate(broker, &broker->staging_layers[i], &layers[i]);
+        if (result != HV_AGX_SCANOUT_RESULT_OK)
+            return result;
+    }
+    if (count == 2) {
+        const struct hv_agx_scanout_layer *a = &layers[0];
+        const struct hv_agx_scanout_layer *b = &layers[1];
+
+        if (a->SurfaceOffset == b->SurfaceOffset)
+            return HV_AGX_SCANOUT_RESULT_LAYER_SAME_SURFACE;
+        /* Both ranges were proven inside the pool, so no sum overflows. */
+        if (a->SurfaceOffset < b->SurfaceOffset + b->SurfaceSize &&
+            b->SurfaceOffset < a->SurfaceOffset + a->SurfaceSize)
+            return HV_AGX_SCANOUT_RESULT_LAYER_OVERLAP;
+    }
+    return HV_AGX_SCANOUT_RESULT_OK;
+}
+
 static void reset_destination(struct hv_agx_scanout_broker *broker)
 {
     broker->staging_dest_origin = 0;
@@ -108,6 +209,8 @@ static void reset_destination(struct hv_agx_scanout_broker *broker)
 static bool submit(struct hv_agx_scanout_broker *broker, uint32_t command)
 {
     uint64_t sequence = broker->staging_sequence;
+    struct hv_agx_scanout_layer layers[HV_AGX_SCANOUT_V3_LAYERS];
+    enum hv_agx_scanout_result layer_result;
 
     if (!sequence_fresh(broker, sequence)) {
         reject(broker, HV_AGX_SCANOUT_RESULT_STALE_SEQUENCE);
@@ -139,6 +242,29 @@ static bool submit(struct hv_agx_scanout_broker *broker, uint32_t command)
              broker->state != HV_AGX_SCANOUT_ACTIVE) ||
             !surface_valid(broker)) {
             reject_terminal(broker, HV_AGX_SCANOUT_RESULT_INVALID_SURFACE, sequence);
+            return true;
+        }
+        if (broker->state == HV_AGX_SCANOUT_ACTIVE &&
+            broker->latched_sequence != broker->applied_sequence) {
+            reject(broker, HV_AGX_SCANOUT_RESULT_BUSY);
+            return true;
+        }
+        /* V3: the one-slot swap leaves DCP slot 1 untouched. */
+        if (broker->slot1_latched) {
+            reject_terminal(broker, HV_AGX_SCANOUT_RESULT_SLOT1_LATCHED, sequence);
+            return true;
+        }
+    } else if (command == HV_AGX_SCANOUT_CMD_COMMIT_LAYERS &&
+               two_layers_advertised(broker)) {
+        if (broker->state != HV_AGX_SCANOUT_READY &&
+            broker->state != HV_AGX_SCANOUT_ACTIVE) {
+            reject_terminal(broker, HV_AGX_SCANOUT_RESULT_INVALID_SURFACE, sequence);
+            return true;
+        }
+        memset(layers, 0, sizeof(layers));
+        layer_result = commit_validate(broker, layers);
+        if (layer_result != HV_AGX_SCANOUT_RESULT_OK) {
+            reject_terminal(broker, layer_result, sequence);
             return true;
         }
         if (broker->state == HV_AGX_SCANOUT_ACTIVE &&
@@ -178,6 +304,28 @@ static bool submit(struct hv_agx_scanout_broker *broker, uint32_t command)
         broker->pending.DestY = 0;
         broker->pending.DestWidth = HV_AGX_SCANOUT_J313_WIDTH;
         broker->pending.DestHeight = HV_AGX_SCANOUT_J313_HEIGHT;
+    }
+    if (command == HV_AGX_SCANOUT_CMD_COMMIT_LAYERS) {
+        /* The V1/V2 fields describe record 0 (bounds checks, receipts). */
+        broker->pending.LayerCount = broker->staging_layer_count;
+        memcpy(broker->pending.Layers, layers, sizeof(layers));
+        broker->pending.SurfaceOffset = layers[0].SurfaceOffset;
+        broker->pending.SurfaceSize = layers[0].SurfaceSize;
+        broker->pending.Width = layers[0].Width;
+        broker->pending.Height = layers[0].Height;
+        broker->pending.Stride = layers[0].Stride;
+        broker->pending.Format = layers[0].Format;
+        broker->pending.DestX = layers[0].DstX;
+        broker->pending.DestY = layers[0].DstY;
+        broker->pending.DestWidth = layers[0].DstWidth;
+        broker->pending.DestHeight = layers[0].DstHeight;
+        /* Slot-1 transition (a): a one-layer commit after a two-layer one
+         * removes slot 1; every later one-layer commit leaves it alone. */
+        broker->pending.RemoveSlot1 =
+            broker->pending.LayerCount == 1 && broker->slot1_latched;
+    } else if (command == HV_AGX_SCANOUT_CMD_RELEASE) {
+        /* Slot-1 transition (b): RELEASE quiesces both slots. */
+        broker->pending.RemoveSlot1 = broker->slot1_latched;
     }
     broker->state_before_pending = broker->state;
     broker->state = command == HV_AGX_SCANOUT_CMD_RELEASE ? HV_AGX_SCANOUT_QUIESCING
@@ -227,6 +375,136 @@ void hv_agx_scanout_broker_init_v2(struct hv_agx_scanout_broker *broker,
     broker->capabilities |= HV_AGX_SCANOUT_CAP_SCALED_SOURCE;
     if (latch_source_proven)
         broker->capabilities |= HV_AGX_SCANOUT_V2_LATCH_CAPABILITIES;
+}
+
+bool hv_agx_scanout_broker_enable_two_layers(struct hv_agx_scanout_broker *broker)
+{
+    if (!broker || broker->abi_version != HV_AGX_SCANOUT_ABI_VERSION_V2 ||
+        (broker->capabilities & HV_AGX_SCANOUT_V2_LATCH_CAPABILITIES) !=
+            HV_AGX_SCANOUT_V2_LATCH_CAPABILITIES ||
+        broker->state != HV_AGX_SCANOUT_UNREGISTERED)
+        return false;
+    broker->capabilities |= HV_AGX_SCANOUT_CAP_TWO_LAYERS;
+    return true;
+}
+
+/* V3 registers; only decoded while CAP_TWO_LAYERS is advertised. */
+static bool v3_layer_field(uint64_t offset, unsigned *index, uint64_t *field)
+{
+    if (offset < HV_AGX_SCANOUT_REG_LAYER0 ||
+        offset >= HV_AGX_SCANOUT_REG_LAYER0 +
+                      HV_AGX_SCANOUT_V3_LAYERS * HV_AGX_SCANOUT_V3_LAYER_RECORD_SIZE)
+        return false;
+    *index = (unsigned)((offset - HV_AGX_SCANOUT_REG_LAYER0) /
+                        HV_AGX_SCANOUT_V3_LAYER_RECORD_SIZE);
+    *field = (offset - HV_AGX_SCANOUT_REG_LAYER0) %
+             HV_AGX_SCANOUT_V3_LAYER_RECORD_SIZE;
+    return true;
+}
+
+static uint32_t *v3_layer_u32(struct hv_agx_scanout_layer_staging *layer,
+                              uint64_t field)
+{
+    switch (field) {
+    case HV_AGX_SCANOUT_LAYER_WIDTH: return &layer->width;
+    case HV_AGX_SCANOUT_LAYER_HEIGHT: return &layer->height;
+    case HV_AGX_SCANOUT_LAYER_STRIDE: return &layer->stride;
+    case HV_AGX_SCANOUT_LAYER_FORMAT: return &layer->format;
+    case HV_AGX_SCANOUT_LAYER_SRC_ORIGIN: return &layer->src_origin;
+    case HV_AGX_SCANOUT_LAYER_SRC_SIZE: return &layer->src_size;
+    case HV_AGX_SCANOUT_LAYER_DST_ORIGIN: return &layer->dst_origin;
+    case HV_AGX_SCANOUT_LAYER_DST_SIZE: return &layer->dst_size;
+    case HV_AGX_SCANOUT_LAYER_FLAGS: return &layer->flags;
+    case HV_AGX_SCANOUT_LAYER_RESERVED0: return &layer->reserved0;
+    default: return NULL;
+    }
+}
+
+static uint64_t *v3_layer_u64(struct hv_agx_scanout_layer_staging *layer,
+                              uint64_t field)
+{
+    switch (field) {
+    case HV_AGX_SCANOUT_LAYER_SURFACE_OFFSET: return &layer->surface_offset;
+    case HV_AGX_SCANOUT_LAYER_SURFACE_SIZE: return &layer->surface_size;
+    case HV_AGX_SCANOUT_LAYER_RESERVED1: return &layer->reserved1;
+    default: return NULL;
+    }
+}
+
+static bool v3_mmio(struct hv_agx_scanout_broker *broker, uint64_t offset,
+                    uint64_t *value, bool write, unsigned width)
+{
+    unsigned index;
+    uint64_t field;
+
+    if (!two_layers_advertised(broker) ||
+        offset >= HV_AGX_SCANOUT_V3_MMIO_SIZE)
+        return false;
+    if (width == 2) {
+        uint32_t *slot;
+
+        if (offset & 3)
+            return false;
+        switch (offset) {
+        case HV_AGX_SCANOUT_REG_NEGOTIATED:
+            if (!write) {
+                *value = broker->negotiated;
+            } else if (broker->state == HV_AGX_SCANOUT_UNREGISTERED &&
+                       ((uint32_t)*value & ~HV_AGX_SCANOUT_CAP_TWO_LAYERS) == 0 &&
+                       (*value >> 32) == 0) {
+                broker->negotiated = (uint32_t)*value;
+            }
+            return true;
+        case HV_AGX_SCANOUT_REG_LAYER_COUNT:
+            if (write)
+                broker->staging_layer_count = (uint32_t)*value;
+            else
+                *value = broker->staging_layer_count;
+            return true;
+        case HV_AGX_SCANOUT_REG_ACTIVE_LAYERS:
+            if (write)
+                return false;
+            *value = (broker->state == HV_AGX_SCANOUT_ACTIVE
+                          ? HV_AGX_SCANOUT_ACTIVE_SLOT0 : 0u) |
+                     (broker->slot1_latched ? HV_AGX_SCANOUT_ACTIVE_SLOT1 : 0u);
+            return true;
+        default:
+            break;
+        }
+        if (!v3_layer_field(offset, &index, &field))
+            return false;
+        slot = v3_layer_u32(&broker->staging_layers[index], field);
+        if (!slot)
+            return false;
+        if (write)
+            *slot = (uint32_t)*value;
+        else
+            *value = *slot;
+        return true;
+    }
+    if (width == 3) {
+        uint64_t *slot;
+
+        if (offset & 7)
+            return false;
+        if (offset == HV_AGX_SCANOUT_REG_ACTIVE_OFFSET_1) {
+            if (write)
+                return false;
+            *value = broker->active_offset_1;
+            return true;
+        }
+        if (!v3_layer_field(offset, &index, &field))
+            return false;
+        slot = v3_layer_u64(&broker->staging_layers[index], field);
+        if (!slot)
+            return false;
+        if (write)
+            *slot = *value;
+        else
+            *value = *slot;
+        return true;
+    }
+    return false;
 }
 
 static bool read_u32(const struct hv_agx_scanout_broker *broker, uint64_t offset,
@@ -330,8 +608,10 @@ static bool read_u64(const struct hv_agx_scanout_broker *broker, uint64_t offset
 bool hv_agx_scanout_broker_mmio(struct hv_agx_scanout_broker *broker, uint64_t offset,
                                 uint64_t *value, bool write, unsigned width)
 {
-    if (!broker || !value || offset >= HV_AGX_SCANOUT_MMIO_SIZE)
+    if (!broker || !value)
         return false;
+    if (offset >= HV_AGX_SCANOUT_MMIO_SIZE)
+        return v3_mmio(broker, offset, value, write, width);
     if (width == 2) {
         if (offset & 3)
             return false;
@@ -457,13 +737,28 @@ bool hv_agx_scanout_broker_complete_present(struct hv_agx_scanout_broker *broker
                                             enum hv_agx_scanout_result result,
                                             uint32_t swap_id)
 {
-    if (!completion_matches(broker, sequence, HV_AGX_SCANOUT_CMD_PRESENT))
+    if (!completion_matches(broker, sequence, HV_AGX_SCANOUT_CMD_PRESENT) &&
+        !completion_matches(broker, sequence, HV_AGX_SCANOUT_CMD_COMMIT_LAYERS))
         return false;
+    /* Slot-1 transition (c): a two-layer commit that reached the service
+     * may have put slot 1 on screen, even when its swap then failed, so the
+     * next one-layer commit or RELEASE removes it. */
+    if (broker->pending.Command == HV_AGX_SCANOUT_CMD_COMMIT_LAYERS &&
+        broker->pending.LayerCount == 2) {
+        broker->slot1_latched = true;
+        broker->slot1_removal_sequence = 0;
+    }
     if (result == HV_AGX_SCANOUT_RESULT_OK && swap_id != 0) {
         broker->active_offset = broker->pending.SurfaceOffset;
         broker->swap_id = swap_id;
         broker->applied_sequence = sequence;
         broker->state = HV_AGX_SCANOUT_ACTIVE;
+        if (broker->pending.Command == HV_AGX_SCANOUT_CMD_COMMIT_LAYERS) {
+            if (broker->pending.LayerCount == 2)
+                broker->active_offset_1 = broker->pending.Layers[1].SurfaceOffset;
+            else if (broker->pending.RemoveSlot1)
+                broker->slot1_removal_sequence = sequence;
+        }
     } else {
         if (result == HV_AGX_SCANOUT_RESULT_OK)
             result = HV_AGX_SCANOUT_RESULT_PRESENT_FAILED;
@@ -488,6 +783,12 @@ bool hv_agx_scanout_broker_mark_latched(struct hv_agx_scanout_broker *broker,
         return false;
     broker->latched_sequence = sequence;
     broker->irq_status |= HV_AGX_SCANOUT_IRQ_LATCHED;
+    /* Slot-1 transition (d): the D589 of the removal swap. */
+    if (broker->slot1_removal_sequence == sequence) {
+        broker->slot1_latched = false;
+        broker->slot1_removal_sequence = 0;
+        broker->active_offset_1 = 0;
+    }
     return true;
 }
 
@@ -531,6 +832,13 @@ bool hv_agx_scanout_broker_complete_release(struct hv_agx_scanout_broker *broker
         broker->registered_pool_ipa = 0;
         broker->registered_pool_size = 0;
         broker->applied_sequence = sequence;
+        /* Slot-1 transition (e): the proven quiesce swap carried the slot-1
+         * removal (pending.RemoveSlot1), and the next owner negotiates
+         * again. */
+        broker->slot1_latched = false;
+        broker->slot1_removal_sequence = 0;
+        broker->active_offset_1 = 0;
+        broker->negotiated = 0;
     } else {
         broker->state = broker->state_before_pending;
         broker->irq_status |= HV_AGX_SCANOUT_IRQ_ERROR;

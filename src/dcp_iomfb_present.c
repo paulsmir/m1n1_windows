@@ -206,10 +206,20 @@ bool dcp_iomfb_present_build_layers_v13_5(
     const struct dcp_iomfb_present_layer layers[DCP_IOMFB_J313_LAYERS],
     bool clear_boot_surfaces)
 {
+    return dcp_iomfb_present_build_slots_v13_5(request, layers,
+                                               clear_boot_surfaces,
+                                               DCP_IOMFB_SLOTS_ALL);
+}
+bool dcp_iomfb_present_build_slots_v13_5(
+    struct dcp_iomfb_present_request *request,
+    const struct dcp_iomfb_present_layer layers[DCP_IOMFB_J313_LAYERS],
+    bool clear_boot_surfaces, uint32_t remove_mask)
+{
     struct iomfb_submit_v13_5 *wire;
     uint32_t enabled = 0;
 
-    if (!request || !layers || !layer_valid(&layers[0]))
+    if (!request || !layers || (remove_mask & ~DCP_IOMFB_SLOTS_ALL) ||
+        !layer_valid(&layers[0]))
         return false;
     for (unsigned i = 1; i < DCP_IOMFB_J313_LAYERS; i++) {
         if (!layers[i].iova)
@@ -231,9 +241,12 @@ bool dcp_iomfb_present_build_layers_v13_5(
         const struct dcp_iomfb_present_layer *layer = &layers[i];
         struct iomfb_surface_base *surface = &wire->surfaces[i].base;
 
+        if (!layer->iova) {
+            if (remove_mask & (1u << i))
+                enabled |= 1u << i; /* enable bit + null surface = removed */
+            continue;
+        }
         enabled |= 1u << i;
-        if (!layer->iova)
-            continue; /* enable bit + null surface = slot removed */
         wire->swap.surface_ids[i] = layer->surface_id;
         wire->swap.source[i] = (struct iomfb_rect){
             layer->source.x, layer->source.y, layer->source.width,

@@ -59,6 +59,15 @@ bool dcp_iomfb_present_build_layers_v13_5(
     struct dcp_iomfb_present_request *request,
     const struct dcp_iomfb_present_layer layers[DCP_IOMFB_J313_LAYERS],
     bool clear_boot_surfaces);
+/* S2 (broker ABI V3): as above, except that a disabled slot gets its enable
+ * bit (= is removed) only when its bit is set in remove_mask; otherwise the
+ * swap leaves that slot untouched, as the one-slot builder does.
+ * remove_mask DCP_IOMFB_SLOTS_ALL is dcp_iomfb_present_build_layers_v13_5. */
+#define DCP_IOMFB_SLOTS_ALL ((1u << DCP_IOMFB_J313_LAYERS) - 1u)
+bool dcp_iomfb_present_build_slots_v13_5(
+    struct dcp_iomfb_present_request *request,
+    const struct dcp_iomfb_present_layer layers[DCP_IOMFB_J313_LAYERS],
+    bool clear_boot_surfaces, uint32_t remove_mask);
 bool dcp_iomfb_present_set_swap_id_v13_5(
     struct dcp_iomfb_present_request *request, uint32_t swap_id);
 bool dcp_iomfb_present_parse_start_v13_5(

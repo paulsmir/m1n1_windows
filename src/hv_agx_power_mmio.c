@@ -21,6 +21,7 @@
 #include "hv_agx_g2.generated.h"
 #include "hv_agx_power_broker.h"
 #include "hv_agx_scanout_broker.h"
+#include "hv_agx_scanout_layers.h"
 #include "hv_agx_scanout_service.h"
 #include "hv_vgic.h"
 #include "display.h"
@@ -633,6 +634,29 @@ static bool scanout_present_begin(void *opaque, uint64_t surface_iova,
         cookie);
 }
 
+/* S2 (broker ABI V3): the broker validated every record against the pool,
+ * the panel and DCP's limits; the pure translation lives in
+ * hv_agx_scanout_layers.h and the builder checks the DCP rules again. */
+static bool scanout_present_layers_begin(void *opaque, uint64_t pool_iova,
+                                         const struct hv_agx_scanout_request *request,
+                                         uint64_t *cookie)
+{
+    struct dcp_iomfb_present_layer layers[DCP_IOMFB_J313_LAYERS];
+    uint32_t remove_mask = 0;
+
+    (void)opaque;
+    if (!hv_agx_scanout_request_to_dcp_layers(request, pool_iova, layers,
+                                              &remove_mask))
+        return false;
+    return display_scanout_present_layers_begin(layers, remove_mask, cookie);
+}
+
+static bool scanout_quiesce_slot1_begin(void *opaque, uint64_t *cookie)
+{
+    (void)opaque;
+    return display_scanout_quiesce_slot1_begin(cookie);
+}
+
 #ifdef EXP806_SCANOUT_PATTERN
 static bool scanout_diagnostic_fill(void *opaque, uint64_t surface_pa,
                                      uint64_t surface_iova,
@@ -830,6 +854,8 @@ static const struct hv_agx_scanout_platform_ops scanout_ops = {
     .present_latch_poll = scanout_present_latch_poll,
     .quiesce_begin = scanout_quiesce_begin,
     .quiesce_poll = scanout_quiesce_poll,
+    .present_layers_begin = scanout_present_layers_begin,
+    .quiesce_slot1_begin = scanout_quiesce_slot1_begin,
 };
 
 static u32 ov5_beacon[12];
@@ -930,8 +956,10 @@ static bool handle_agx_power_broker_locked(struct exc_info *ctx, u64 addr, u64 *
         *value = 0;
         return true;
     }
+    /* The V3 window is decoded only while CAP_TWO_LAYERS is advertised; the
+     * broker refuses 0xa8.. otherwise, as the power broker did before. */
     if (offset >= HV_AGX_SCANOUT_MMIO_OFFSET &&
-        offset < HV_AGX_SCANOUT_MMIO_OFFSET + HV_AGX_SCANOUT_MMIO_SIZE) {
+        offset < HV_AGX_SCANOUT_MMIO_OFFSET + HV_AGX_SCANOUT_V3_MMIO_SIZE) {
         broker_lock_enter(&ticket, BROKER_CLASS_SCANOUT);
         handled = hv_agx_scanout_broker_mmio(
             &scanout_broker, offset - HV_AGX_SCANOUT_MMIO_OFFSET, value, write,
@@ -1016,6 +1044,10 @@ bool hv_agx_g2_resources_map(void)
     } else if (display_scanout_latch_source_proven()) {
         hv_agx_scanout_broker_init_v2(&scanout_broker, true);
         printf("HV: AGX scanout ABI v2 enabled with proven IOMFB latch source\n");
+#ifdef AGX_SCANOUT_TWO_LAYERS
+        if (hv_agx_scanout_broker_enable_two_layers(&scanout_broker))
+            printf("HV: AGX scanout CAP_TWO_LAYERS (ABI V3) advertised\n");
+#endif
     } else {
         hv_agx_scanout_broker_init(&scanout_broker);
         printf("HV: AGX scanout stays ABI v1 without a proven latch source\n");

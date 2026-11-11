@@ -103,6 +103,15 @@ CFG += AGX_GUEST_VMID1
 CFLAGS += -DAGX_GUEST_VMID1=1
 endif
 
+# S2: scanout broker ABI V3 (two DCP layers per commit).  Off by default:
+# without it the broker is byte-identical V1/V2.
+ifeq ($(AGX_SCANOUT_TWO_LAYERS),1)
+ifneq ($(IOMFB_FULL_OWNER),1)
+$(error AGX_SCANOUT_TWO_LAYERS requires IOMFB_FULL_OWNER=1)
+endif
+CFG += AGX_SCANOUT_TWO_LAYERS
+endif
+
 ifeq ($(AGX_LOCAL_RESERVE_V2),1)
 ifneq ($(IOMFB_FULL_OWNER),1)
 $(error AGX_LOCAL_RESERVE_V2 requires IOMFB_FULL_OWNER=1)

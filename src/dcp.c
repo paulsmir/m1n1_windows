@@ -712,14 +712,23 @@ int dcp_iomfb_owner_present_layers(
     dcp_dev_t *dcp,
     const struct dcp_iomfb_present_layer layers[DCP_IOMFB_J313_LAYERS])
 {
+    return dcp_iomfb_owner_present_slots(dcp, layers, DCP_IOMFB_SLOTS_ALL);
+}
+
+int dcp_iomfb_owner_present_slots(
+    dcp_dev_t *dcp,
+    const struct dcp_iomfb_present_layer layers[DCP_IOMFB_J313_LAYERS],
+    u32 remove_mask)
+{
     u8 start_input[DCP_IOMFB_V13_5_SWAP_START_SIZE];
 
     if (!dcp_iomfb_owner_active(dcp) || dcp->iomfb_expected_swap_id ||
         !dcp_iomfb_present_build_start_v13_5(start_input,
                                               sizeof(start_input)) ||
-        !dcp_iomfb_present_build_layers_v13_5(&dcp->iomfb_present_request,
-                                               layers,
-                                               !dcp->iomfb_surfaces_cleared))
+        !dcp_iomfb_present_build_slots_v13_5(&dcp->iomfb_present_request,
+                                              layers,
+                                              !dcp->iomfb_surfaces_cleared,
+                                              remove_mask))
         return -1;
     return dcp_iomfb_owner_submit_built(dcp, start_input);
 }

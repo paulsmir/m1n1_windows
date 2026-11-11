@@ -51,5 +51,13 @@ int display_scanout_latch_poll(u32 expected_swap_id);
 bool display_scanout_observe_latched(u32 *swap_id, u64 *surface_iova);
 bool display_scanout_quiesce_begin(u64 *cookie);
 int display_scanout_quiesce_poll(u64 cookie);
+/* S2 (broker ABI V3, IOMFB owner only): one swap carrying DCP slots 0 and 1
+ * (dcp_iomfb_owner_present_slots); completion via display_scanout_present_poll
+ * and display_scanout_latch_poll.  quiesce_slot1_begin is quiesce_begin whose
+ * swap also removes slot 1; completion via display_scanout_quiesce_poll. */
+bool display_scanout_present_layers_begin(
+    const struct dcp_iomfb_present_layer layers[DCP_IOMFB_J313_LAYERS],
+    u32 remove_mask, u64 *cookie);
+bool display_scanout_quiesce_slot1_begin(u64 *cookie);
 
 #endif

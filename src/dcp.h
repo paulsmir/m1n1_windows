@@ -84,6 +84,12 @@ int dcp_iomfb_owner_present(dcp_dev_t *dcp, u64 surface_iova, u32 width,
 int dcp_iomfb_owner_present_layers(
     dcp_dev_t *dcp,
     const struct dcp_iomfb_present_layer layers[DCP_IOMFB_J313_LAYERS]);
+/* S2 (broker ABI V3): dcp_iomfb_present_build_slots_v13_5 swap; a disabled
+ * slot is removed only when its bit is in remove_mask. */
+int dcp_iomfb_owner_present_slots(
+    dcp_dev_t *dcp,
+    const struct dcp_iomfb_present_layer layers[DCP_IOMFB_J313_LAYERS],
+    u32 remove_mask);
 
 dcp_dev_t *dcp_init(const display_config_t *config);
 

@@ -76,6 +76,8 @@ hv_agx_config_snapshot_test
 hv_agx_power_broker_test
 hv_agx_scanout_broker_test
 hv_agx_scanout_service_test
+hv_agx_scanout_legacy_replay_test
+hv_agx_scanout_v3_test
 hv_sgi_pending_test
 hv_sgi_diag_test
 hv_vgic_diag_test
@@ -354,6 +356,13 @@ for name in "$@"; do
         hv_agx_scanout_service_test)
             definitions="-DHV_AGX_SCANOUT_SERVICE_HOST_TEST"
             sources="$sources src/hv_agx_scanout_broker.c src/hv_agx_scanout_service.c"
+            ;;
+        hv_agx_scanout_legacy_replay_test)
+            sources="$sources src/hv_agx_scanout_broker.c src/hv_agx_scanout_service.c"
+            ;;
+        hv_agx_scanout_v3_test)
+            definitions="-DDCP_IOMFB_PRESENT_HOST_TEST"
+            sources="$sources src/hv_agx_scanout_broker.c src/hv_agx_scanout_service.c src/dcp_iomfb_present.c"
             ;;
         hv_sgi_pending_test)
             definitions="-DHV_SGI_PENDING_HOST_TEST"
