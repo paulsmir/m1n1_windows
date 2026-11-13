@@ -328,8 +328,10 @@ static enum hv_agx_gpuva_v5_result publish_entry(struct hv_agx_gpuva_v5 *b,
         goto published;
 #endif
     for (slot = 1; slot < HV_AGX_GPUVA_V5_SLOTS; ++slot)
-        if (b->slots[slot].occupied && b->slots[slot].owner == owner &&
-            !b->ops.invalidate(b->ops.context, slot)) goto rollback;
+        if (b->slots[slot].occupied && b->slots[slot].owner == owner) {
+            if (!b->ops.invalidate(b->ops.context, slot)) goto rollback;
+            ++b->stat_tlbi;
+        }
 #ifdef AGX_GPUVA_MAP_NO_TLBI
 published:
 #endif
@@ -736,6 +738,14 @@ enum hv_agx_gpuva_v5_result hv_agx_gpuva_v5_update_leaf(
     if (result == HV_AGX_GPUVA_V5_OK) {
         backing_leaf_ref(b, before, false);
         backing_leaf_ref(b, descriptor, true);
+        /* MP-1 receipt: AttrIndx (descriptor bits 4:2) of the leaf written */
+        if (!(descriptor & 1u))
+            ++b->stat_clear;
+        else if (((descriptor >> 2) & 7u) == 0u) {
+            ++b->stat_cached;
+            b->stat_last_cached = descriptor;
+        } else
+            ++b->stat_shared;
     }
     return result;
 }

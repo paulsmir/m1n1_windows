@@ -242,13 +242,20 @@ static void gpuva_execute(void *context, const AGX_GPUVA_V5_REQUEST *q,
             q->ProcessGeneration,q->TableIpa,q->Index,logical,
             q->AllocationGeneration,q->Flags,q->ValidMask,q->WritableMask);
 #ifdef AGX_GPUVA_PRIVATE_CACHED
-        /* GC receipt: the first cached publication, then every 65536th. */
-        if (result == HV_AGX_GPUVA_V5_OK &&
-            (q->Flags & AGX_GPUVA_V5_LEAF_PRIVATE_CACHED)) {
-            static uint64_t gc_cached_leaves;
-            if ((gc_cached_leaves++ & 0xffffu) == 0)
-                printf("GPUVA-GC: private cached leaves %llu\n",
-                       (unsigned long long)gc_cached_leaves);
+        /* GC / MP-1 receipt (both switch arms of the GC build): the first
+         * leaf update and then every 16384th print the publication counts by
+         * attribute, clears, ASID invalidations and the last cached leaf
+         * descriptor written (expected ...C83; shared leaves are ...C8B). */
+        if (result == HV_AGX_GPUVA_V5_OK) {
+            static uint64_t gc_updates;
+            if ((gc_updates++ & 0x3fffu) == 0)
+                printf("GPUVA-GC: updates %llu leaves cached %llu shared %llu clear %llu tlbi %llu last-cached 0x%llx\n",
+                       (unsigned long long)gc_updates,
+                       (unsigned long long)gpuva_v5.stat_cached,
+                       (unsigned long long)gpuva_v5.stat_shared,
+                       (unsigned long long)gpuva_v5.stat_clear,
+                       (unsigned long long)gpuva_v5.stat_tlbi,
+                       (unsigned long long)gpuva_v5.stat_last_cached);
         }
 #endif
         break;

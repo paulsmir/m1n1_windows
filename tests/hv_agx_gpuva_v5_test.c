@@ -556,6 +556,10 @@ static void private_cached_leaf(void)
         15u | AGX_GPUVA_V5_LEAF_PRIVATE_CACHED,15,15)==HV_AGX_GPUVA_V5_OK);
     uint64_t cached = f->broker.tables[l2].entries[8];
     assert(((cached >> 2) & 7u) == 0u && (cached & ~(7ULL << 2)) == (shared & ~(7ULL << 2)));
+    /* MP-1 receipt: the cached publication is counted and its descriptor kept
+     * (low 12 bits C83 = AttrIndx 0, macOS's cached user leaf; shared is C8B) */
+    assert(f->broker.stat_cached == 1u && f->broker.stat_last_cached == cached);
+    assert((cached & 0xfffu) == 0xc83u && (shared & 0xfffu) == 0xc8bu);
     /* back to coherent from a cached prior descriptor */
     assert(hv_agx_gpuva_v5_update_leaf(&f->broker,1,1,P_L2,8,logical,17,15,15,15)==HV_AGX_GPUVA_V5_OK);
     assert(f->broker.tables[l2].entries[8] == shared);

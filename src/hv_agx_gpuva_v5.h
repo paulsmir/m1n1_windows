@@ -112,6 +112,11 @@ struct hv_agx_gpuva_v5 {
     /* Attached request/response page; never a table or a backing. */
     uint64_t mailbox_pa;
     bool active, tainted;
+    /* MP-1 receipt (counted in every build, printed by the GC build): leaf
+     * publications by attribute (MEMATTR 0 cached / 2 shared), leaf clears,
+     * ASID invalidations issued by publish_entry, and the last cached leaf
+     * descriptor written. */
+    uint64_t stat_cached, stat_shared, stat_clear, stat_tlbi, stat_last_cached;
 };
 
 enum hv_agx_gpuva_v5_result hv_agx_gpuva_v5_init(
